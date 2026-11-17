@@ -1,0 +1,730 @@
+package transport
+
+import (
+	"crypto/rand"
+	"encoding/binary"
+	"errors"
+	"fmt"
+	"io"
+	"net"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"nexlab/internal/core"
+	"nexlab/internal/protocol"
+
+	"github.com/xtaci/smux"
+)
+
+const (
+	defaultKCPMTU     = 1350
+	defaultKCPSndWnd  = 256
+	defaultKCPRcvWnd  = 256
+	defaultKCPInterval = 10
+	streamTagEnvelope = byte(0xFE)
+)
+
+var (
+	ErrConnClosed    = errors.New("transport: connection closed")
+	ErrListenerClosed = errors.New("transport: listener closed")
+	ErrReadTimeout   = &netTimeoutError{msg: "i/o timeout"}
+)
+
+type netTimeoutError struct {
+	msg string
+}
+
+func (e *netTimeoutError) Error() string   { return e.msg }
+func (e *netTimeoutError) Timeout() bool   { return true }
+func (e *netTimeoutError) Temporary() bool { return true }
+
+// KCPConfig configures KCPConn and SmuxSession parameters.
+type KCPConfig struct {
+	Conv         uint32
+	MTU          int
+	SndWnd       int
+	RcvWnd       int
+	NoDelay      int
+	Interval     int
+	FastResend   int
+	NoCwnd       int
+	Cipher       *FrameCipher
+	DataShards   int
+	ParityShards int
+}
+
+func DefaultKCPConfig() KCPConfig {
+	return KCPConfig{
+		MTU:        defaultKCPMTU,
+		SndWnd:     defaultKCPSndWnd,
+		RcvWnd:     defaultKCPRcvWnd,
+		NoDelay:    1,
+		Interval:   defaultKCPInterval,
+		FastResend: 2,
+		NoCwnd:     1,
+	}
+}
+
+// KCPConn wraps a KCP state machine over a UDP PacketConn to implement net.Conn.
+type KCPConn struct {
+	kcp        *KCP
+	udpConn    net.PacketConn
+	remoteAddr net.Addr
+	localAddr  net.Addr
+	ownsConn   bool
+	cipher     *FrameCipher
+
+	mu            sync.Mutex
+	readDeadline  time.Time
+	writeDeadline time.Time
+	closed        bool
+	closeOnce     sync.Once
+	done          chan struct{}
+
+	chReadEvent  chan struct{}
+	chWriteEvent chan struct{}
+	chUpdate     chan struct{}
+	onClose      func()
+
+	startTime time.Time
+}
+
+func newKCPConn(conv uint32, udpConn net.PacketConn, remoteAddr net.Addr, ownsConn bool, cfg KCPConfig, onClose func()) *KCPConn {
+	if cfg.MTU <= 0 {
+		cfg.MTU = defaultKCPMTU
+	}
+	if cfg.SndWnd <= 0 {
+		cfg.SndWnd = defaultKCPSndWnd
+	}
+	if cfg.RcvWnd <= 0 {
+		cfg.RcvWnd = defaultKCPRcvWnd
+	}
+	if cfg.Interval <= 0 {
+		cfg.Interval = defaultKCPInterval
+	}
+
+	kc := &KCPConn{
+		udpConn:      udpConn,
+		remoteAddr:   remoteAddr,
+		localAddr:    udpConn.LocalAddr(),
+		ownsConn:     ownsConn,
+		cipher:       cfg.Cipher,
+		done:         make(chan struct{}),
+		chReadEvent:  make(chan struct{}, 1),
+		chWriteEvent: make(chan struct{}, 1),
+		chUpdate:     make(chan struct{}, 1),
+		onClose:      onClose,
+		startTime:    time.Now(),
+	}
+
+	kcp := NewKCP(conv, func(buf []byte, size int) {
+		if size <= 0 {
+			return
+		}
+		pkt := make([]byte, size)
+		copy(pkt, buf[:size])
+		if kc.cipher != nil {
+			enc, err := kc.cipher.Encrypt(pkt)
+			if err != nil {
+				return
+			}
+			pkt = enc
+		}
+		_, _ = kc.udpConn.WriteTo(pkt, kc.remoteAddr)
+	})
+	_ = kcp.SetMTU(cfg.MTU)
+	kcp.WndSize(cfg.SndWnd, cfg.RcvWnd)
+	kcp.NoDelay(cfg.NoDelay, cfg.Interval, cfg.FastResend, cfg.NoCwnd)
+	kcp.SetStreamMode(true)
+	kc.kcp = kcp
+
+	go kc.updateLoop()
+	return kc
+}
+
+func (c *KCPConn) currentMS() uint32 {
+	return uint32(time.Since(c.startTime).Milliseconds())
+}
+
+func signalChan(ch chan struct{}) {
+	select {
+	case ch <- struct{}{}:
+	default:
+	}
+}
+
+func (c *KCPConn) updateLoop() {
+	ticker := time.NewTicker(time.Duration(defaultKCPInterval) * time.Millisecond)
+	defer ticker.Stop()
+
+	c.kcp.Update(c.currentMS())
+	for {
+		select {
+		case <-c.done:
+			return
+		case <-c.chUpdate:
+			c.kcp.Update(c.currentMS())
+			c.kcp.Flush()
+		case <-ticker.C:
+			c.kcp.Update(c.currentMS())
+		}
+	}
+}
+
+func (c *KCPConn) input(pkt []byte) error {
+	if c.cipher != nil {
+		dec, err := c.cipher.Decrypt(pkt)
+		if err != nil {
+			return err
+		}
+		pkt = dec
+	}
+	if err := c.kcp.Input(pkt); err != nil {
+		return err
+	}
+	if c.kcp.PeekSize() >= 0 {
+		signalChan(c.chReadEvent)
+	}
+	signalChan(c.chWriteEvent)
+	signalChan(c.chUpdate)
+	return nil
+}
+
+func (c *KCPConn) Read(b []byte) (int, error) {
+	for {
+		c.mu.Lock()
+		closed := c.closed
+		deadline := c.readDeadline
+		c.mu.Unlock()
+		if closed {
+			return 0, io.EOF
+		}
+
+		n, err := c.kcp.Recv(b)
+		if err != nil {
+			return 0, err
+		}
+		if n > 0 {
+			return n, nil
+		}
+
+		var timer *time.Timer
+		var timeoutCh <-chan time.Time
+		if !deadline.IsZero() {
+			wait := time.Until(deadline)
+			if wait <= 0 {
+				return 0, ErrReadTimeout
+			}
+			timer = time.NewTimer(wait)
+			timeoutCh = timer.C
+		}
+
+		select {
+		case <-c.done:
+			if timer != nil {
+				timer.Stop()
+			}
+			return 0, io.EOF
+		case <-c.chReadEvent:
+			if timer != nil {
+				timer.Stop()
+			}
+		case <-timeoutCh:
+			return 0, ErrReadTimeout
+		}
+	}
+}
+
+func (c *KCPConn) Write(b []byte) (int, error) {
+	if len(b) == 0 {
+		return 0, nil
+	}
+	written := 0
+	const maxChunk = 16 * 1024
+	for written < len(b) {
+		c.mu.Lock()
+		closed := c.closed
+		deadline := c.writeDeadline
+		c.mu.Unlock()
+		if closed {
+			return written, ErrConnClosed
+		}
+
+		if c.kcp.WaitSnd() >= int(c.kcp.sndWnd)*2 {
+			var timer *time.Timer
+			var timeoutCh <-chan time.Time
+			if !deadline.IsZero() {
+				wait := time.Until(deadline)
+				if wait <= 0 {
+					return written, ErrReadTimeout
+				}
+				timer = time.NewTimer(wait)
+				timeoutCh = timer.C
+			}
+			select {
+			case <-c.done:
+				if timer != nil {
+					timer.Stop()
+				}
+				return written, ErrConnClosed
+			case <-c.chWriteEvent:
+				if timer != nil {
+					timer.Stop()
+				}
+			case <-timeoutCh:
+				return written, ErrReadTimeout
+			}
+			continue
+		}
+
+		end := written + maxChunk
+		if end > len(b) {
+			end = len(b)
+		}
+		n, err := c.kcp.Send(b[written:end])
+		if err != nil {
+			return written, err
+		}
+		written += n
+		signalChan(c.chUpdate)
+	}
+	return written, nil
+}
+
+func (c *KCPConn) Close() error {
+	var err error
+	c.closeOnce.Do(func() {
+		c.mu.Lock()
+		c.closed = true
+		c.mu.Unlock()
+		close(c.done)
+		if c.ownsConn && c.udpConn != nil {
+			err = c.udpConn.Close()
+		}
+		if c.onClose != nil {
+			c.onClose()
+		}
+	})
+	return err
+}
+
+func (c *KCPConn) LocalAddr() net.Addr  { return c.localAddr }
+func (c *KCPConn) RemoteAddr() net.Addr { return c.remoteAddr }
+
+func (c *KCPConn) SetDeadline(t time.Time) error {
+	c.mu.Lock()
+	c.readDeadline = t
+	c.writeDeadline = t
+	c.mu.Unlock()
+	return nil
+}
+
+func (c *KCPConn) SetReadDeadline(t time.Time) error {
+	c.mu.Lock()
+	c.readDeadline = t
+	c.mu.Unlock()
+	return nil
+}
+
+func (c *KCPConn) SetWriteDeadline(t time.Time) error {
+	c.mu.Lock()
+	c.writeDeadline = t
+	c.mu.Unlock()
+	return nil
+}
+
+func (c *KCPConn) Stats() KCPStats {
+	return c.kcp.Stats()
+}
+
+// KCPListener accepts incoming KCP connections multiplexed over a single UDP socket.
+type KCPListener struct {
+	udpConn  net.PacketConn
+	cfg      KCPConfig
+	mu       sync.Mutex
+	sessions map[string]*KCPConn
+	acceptCh chan *KCPConn
+	done     chan struct{}
+	closed   bool
+}
+
+func ListenKCP(addr string, cfg KCPConfig) (*KCPListener, error) {
+	pc, err := net.ListenPacket("udp4", addr)
+	if err != nil {
+		return nil, err
+	}
+	return ServeKCP(pc, cfg), nil
+}
+
+func ServeKCP(pc net.PacketConn, cfg KCPConfig) *KCPListener {
+	l := &KCPListener{
+		udpConn:  pc,
+		cfg:      cfg,
+		sessions: make(map[string]*KCPConn),
+		acceptCh: make(chan *KCPConn, 128),
+		done:     make(chan struct{}),
+	}
+	go l.readLoop()
+	return l
+}
+
+func (l *KCPListener) readLoop() {
+	buf := make([]byte, 64*1024)
+	for {
+		n, raddr, err := l.udpConn.ReadFrom(buf)
+		if err != nil {
+			select {
+			case <-l.done:
+				return
+			default:
+				continue
+			}
+		}
+		pkt := make([]byte, n)
+		copy(pkt, buf[:n])
+
+		plain := pkt
+		if l.cfg.Cipher != nil {
+			dec, err := l.cfg.Cipher.Decrypt(pkt)
+			if err != nil {
+				continue
+			}
+			plain = dec
+		}
+		if len(plain) < int(IKCP_OVERHEAD) {
+			continue
+		}
+		conv := binary.LittleEndian.Uint32(plain[0:4])
+		key := fmt.Sprintf("%s#%d", raddr.String(), conv)
+
+		l.mu.Lock()
+		if l.closed {
+			l.mu.Unlock()
+			return
+		}
+		conn, exists := l.sessions[key]
+		if !exists {
+			connCfg := l.cfg
+			connCfg.Cipher = l.cfg.Cipher
+			conn = newKCPConn(conv, l.udpConn, raddr, false, connCfg, func() {
+				l.mu.Lock()
+				delete(l.sessions, key)
+				l.mu.Unlock()
+			})
+			l.sessions[key] = conn
+			l.mu.Unlock()
+
+			// Feed first packet before queuing so KCP state initializes.
+			if l.cfg.Cipher != nil {
+				_ = conn.kcp.Input(plain)
+				if conn.kcp.PeekSize() >= 0 {
+					signalChan(conn.chReadEvent)
+				}
+				signalChan(conn.chUpdate)
+			} else {
+				_ = conn.input(pkt)
+			}
+
+			select {
+			case l.acceptCh <- conn:
+			case <-l.done:
+				_ = conn.Close()
+				return
+			}
+			continue
+		}
+		l.mu.Unlock()
+
+		if l.cfg.Cipher != nil {
+			_ = conn.kcp.Input(plain)
+			if conn.kcp.PeekSize() >= 0 {
+				signalChan(conn.chReadEvent)
+			}
+			signalChan(conn.chWriteEvent)
+			signalChan(conn.chUpdate)
+		} else {
+			_ = conn.input(pkt)
+		}
+	}
+}
+
+func (l *KCPListener) Accept() (net.Conn, error) {
+	select {
+	case conn := <-l.acceptCh:
+		return conn, nil
+	case <-l.done:
+		return nil, ErrListenerClosed
+	}
+}
+
+func (l *KCPListener) Addr() net.Addr {
+	return l.udpConn.LocalAddr()
+}
+
+func (l *KCPListener) Close() error {
+	l.mu.Lock()
+	if l.closed {
+		l.mu.Unlock()
+		return nil
+	}
+	l.closed = true
+	conns := make([]*KCPConn, 0, len(l.sessions))
+	for _, c := range l.sessions {
+		conns = append(conns, c)
+	}
+	l.mu.Unlock()
+
+	close(l.done)
+	for _, c := range conns {
+		_ = c.Close()
+	}
+	return l.udpConn.Close()
+}
+
+// DialKCP opens a KCPConn to the remote UDP address.
+func DialKCP(addr string, cfg KCPConfig) (*KCPConn, error) {
+	raddr, err := net.ResolveUDPAddr("udp4", addr)
+	if err != nil {
+		return nil, err
+	}
+	pc, err := net.ListenPacket("udp4", ":0")
+	if err != nil {
+		return nil, err
+	}
+	conv := cfg.Conv
+	if conv == 0 {
+		var b [4]byte
+		_, _ = rand.Read(b[:])
+		conv = binary.LittleEndian.Uint32(b[:])
+		if conv == 0 {
+			conv = 1
+		}
+	}
+	kc := newKCPConn(conv, pc, raddr, true, cfg, nil)
+	go func() {
+		buf := make([]byte, 64*1024)
+		for {
+			n, _, err := pc.ReadFrom(buf)
+			if err != nil {
+				select {
+				case <-kc.done:
+					return
+				default:
+					continue
+				}
+			}
+			pkt := make([]byte, n)
+			copy(pkt, buf[:n])
+			_ = kc.input(pkt)
+		}
+	}()
+	return kc, nil
+}
+
+type IncomingStream struct {
+	Kind   protocol.StreamKind
+	Stream io.ReadWriteCloser
+}
+
+var sessionSeq atomic.Uint64
+
+// SmuxSession wraps a KCPConn (or any net.Conn) with github.com/xtaci/smux and implements core.Session.
+type SmuxSession struct {
+	id         string
+	conn       net.Conn
+	mux        *smux.Session
+	onEnvelope func(core.Session, protocol.Envelope)
+	onStream   func(core.Session, protocol.StreamKind, io.ReadWriteCloser)
+	onClose    func(core.Session)
+
+	ctrlMu     sync.Mutex
+	ctrlStream io.ReadWriteCloser
+
+	incomingCh chan IncomingStream
+	done       chan struct{}
+	closeOnce  sync.Once
+}
+
+func NewSmuxSession(conn net.Conn, isServer bool, onEnvelope func(core.Session, protocol.Envelope)) (*SmuxSession, error) {
+	smuxCfg := smux.DefaultConfig()
+	smuxCfg.KeepAliveInterval = 5 * time.Second
+	smuxCfg.KeepAliveTimeout = 20 * time.Second
+	smuxCfg.MaxReceiveBuffer = 4 * 1024 * 1024
+	smuxCfg.MaxStreamBuffer = 1024 * 1024
+
+	var mux *smux.Session
+	var err error
+	if isServer {
+		mux, err = smux.Server(conn, smuxCfg)
+	} else {
+		mux, err = smux.Client(conn, smuxCfg)
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	s := &SmuxSession{
+		id:         fmt.Sprintf("sess-%d", sessionSeq.Add(1)),
+		conn:       conn,
+		mux:        mux,
+		onEnvelope: onEnvelope,
+		incomingCh: make(chan IncomingStream, 64),
+		done:       make(chan struct{}),
+	}
+	go s.acceptLoop()
+	return s, nil
+}
+
+func (s *SmuxSession) SetID(id string) {
+	s.id = id
+}
+
+func (s *SmuxSession) SetOnEnvelope(fn func(core.Session, protocol.Envelope)) {
+	s.onEnvelope = fn
+}
+
+func (s *SmuxSession) SetOnStream(fn func(core.Session, protocol.StreamKind, io.ReadWriteCloser)) {
+	s.onStream = fn
+}
+
+func (s *SmuxSession) SetOnClose(fn func(core.Session)) {
+	s.onClose = fn
+}
+
+func (s *SmuxSession) ID() string {
+	return s.id
+}
+
+func (s *SmuxSession) RemoteAddr() string {
+	if s.conn == nil || s.conn.RemoteAddr() == nil {
+		return ""
+	}
+	return s.conn.RemoteAddr().String()
+}
+
+func (s *SmuxSession) OpenStream(kind protocol.StreamKind) (io.ReadWriteCloser, error) {
+	stream, err := s.mux.OpenStream()
+	if err != nil {
+		return nil, err
+	}
+	if _, err := stream.Write([]byte{byte(kind)}); err != nil {
+		_ = stream.Close()
+		return nil, err
+	}
+	return stream, nil
+}
+
+func (s *SmuxSession) AcceptStream() (protocol.StreamKind, io.ReadWriteCloser, error) {
+	select {
+	case item := <-s.incomingCh:
+		return item.Kind, item.Stream, nil
+	case <-s.done:
+		return 0, nil, io.EOF
+	}
+}
+
+func (s *SmuxSession) SendEnvelope(env protocol.Envelope) error {
+	raw, err := protocol.EncodeEnvelope(env)
+	if err != nil {
+		return err
+	}
+	s.ctrlMu.Lock()
+	defer s.ctrlMu.Unlock()
+
+	if s.ctrlStream == nil {
+		st, err := s.mux.OpenStream()
+		if err != nil {
+			return err
+		}
+		if _, err := st.Write([]byte{streamTagEnvelope}); err != nil {
+			_ = st.Close()
+			return err
+		}
+		s.ctrlStream = st
+	}
+	if err := protocol.WriteFrame(s.ctrlStream, protocol.StreamControl, env.Type, raw); err != nil {
+		_ = s.ctrlStream.Close()
+		s.ctrlStream = nil
+		return err
+	}
+	return nil
+}
+
+func (s *SmuxSession) acceptLoop() {
+	defer func() {
+		_ = s.Close()
+	}()
+	for {
+		stream, err := s.mux.AcceptStream()
+		if err != nil {
+			return
+		}
+		go s.handleAcceptedStream(stream)
+	}
+}
+
+func (s *SmuxSession) handleAcceptedStream(stream *smux.Stream) {
+	var tag [1]byte
+	if _, err := io.ReadFull(stream, tag[:]); err != nil {
+		_ = stream.Close()
+		return
+	}
+	if tag[0] == streamTagEnvelope {
+		defer stream.Close()
+		for {
+			_, _, payload, err := protocol.ReadFrame(stream)
+			if err != nil {
+				return
+			}
+			env, err := protocol.DecodeEnvelope(payload)
+			if err != nil {
+				continue
+			}
+			if s.onEnvelope != nil {
+				s.onEnvelope(s, env)
+			}
+		}
+	}
+
+	kind := protocol.StreamKind(tag[0])
+	if s.onStream != nil {
+		s.onStream(s, kind, stream)
+		return
+	}
+	select {
+	case s.incomingCh <- IncomingStream{Kind: kind, Stream: stream}:
+	case <-s.done:
+		_ = stream.Close()
+	}
+}
+
+func (s *SmuxSession) KCPStats() (KCPStats, bool) {
+	if kc, ok := s.conn.(*KCPConn); ok {
+		return kc.Stats(), true
+	}
+	return KCPStats{}, false
+}
+
+func (s *SmuxSession) Close() error {
+	var err error
+	s.closeOnce.Do(func() {
+		close(s.done)
+		s.ctrlMu.Lock()
+		if s.ctrlStream != nil {
+			_ = s.ctrlStream.Close()
+			s.ctrlStream = nil
+		}
+		s.ctrlMu.Unlock()
+		if s.mux != nil {
+			err = s.mux.Close()
+		}
+		if s.conn != nil {
+			_ = s.conn.Close()
+		}
+		if s.onClose != nil {
+			s.onClose(s)
+		}
+	})
+	return err
+}
