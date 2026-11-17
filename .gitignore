@@ -1,0 +1,23 @@
+# Binaries & build outputs
+/bin/
+/dist/
+/build/out/
+*.exe
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+*.prof
+
+# IDE & OS
+.vscode/
+.idea/
+Thumbs.db
+.DS_Store
+
+# Runtime data
+*.log
+*.db
+*.mp4
+
