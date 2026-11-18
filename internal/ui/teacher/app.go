@@ -743,7 +743,9 @@ func (a *App) buildMainWorkspace(c *ui.Context, pal theme.Palette, students []co
 }
 
 func (a *App) buildSeatMapTab(c *ui.Context, pal theme.Palette, students []core.StudentInfo) {
-	ui.Scroll(c).Grow(1).Padding(12).Gap(10).Children(func() {
+	var childClicked bool
+	scroll := ui.Scroll(c).Grow(1).Padding(12).Gap(10)
+	scroll.Children(func() {
 		ui.Row(c).AlignItems(ui.Center).Gap(8).Children(func() {
 			ui.Text(c, "机房座位拓扑图").FontSize(15).Bold()
 			ui.Badge(c, fmt.Sprintf("显示 %d 台", len(students)))
@@ -752,14 +754,16 @@ func (a *App) buildSeatMapTab(c *ui.Context, pal theme.Palette, students []core.
 			}
 			if len(students) > 0 {
 				if ui.Button(c, "全选 (Ctrl+A)").Padding(3, 10).Clicked() {
+					childClicked = true
 					a.selectAllStudents(students)
 				}
 			}
 			if ui.Button(c, "自动排座").Padding(3, 10).Clicked() {
+				childClicked = true
 				a.autoLayoutSeats()
 			}
 			ui.Spacer(c)
-			ui.Text(c, "提示：Ctrl+A全选、右键批量操作、双击监控，拖动卡片可调换座位").FontSize(11).TextColor(pal.TextMuted)
+			ui.Text(c, "提示：Ctrl+左键多选、Ctrl+A全选、点空白处取消、右键批量操作").FontSize(11).TextColor(pal.TextMuted)
 		})
 
 		if len(students) == 0 {
@@ -771,13 +775,18 @@ func (a *App) buildSeatMapTab(c *ui.Context, pal theme.Palette, students []core.
 
 		ui.Row(c).Wrap().Gap(12).Children(func() {
 			for _, st := range students {
-				a.buildSeatCard(c, pal, st)
+				if a.buildSeatCard(c, pal, st) {
+					childClicked = true
+				}
 			}
 		})
 	})
+	if scroll.Clicked() && !childClicked {
+		a.clearSelection()
+	}
 }
 
-func (a *App) buildSeatCard(c *ui.Context, pal theme.Palette, st core.StudentInfo) {
+func (a *App) buildSeatCard(c *ui.Context, pal theme.Palette, st core.StudentInfo) bool {
 	selected := a.isSelected(st.ID)
 	bg := pal.Card
 	border := pal.CardBorder
@@ -832,19 +841,28 @@ func (a *App) buildSeatCard(c *ui.Context, pal theme.Palette, st core.StudentInf
 		ui.Text(c, fmt.Sprintf("%s · %dms", st.IP, st.RTTMs)).FontSize(10).TextColor(pal.TextMuted).SingleLine()
 	})
 
+	interacted := false
 	if card.Clicked() {
-		a.selectSingle(st.ID)
+		interacted = true
+		if (card.ClickModifiers() & (ui.Ctrl | ui.Cmd)) != 0 {
+			a.toggleSelect(st.ID)
+		} else {
+			a.selectSingle(st.ID)
+		}
 	}
 	if card.DoubleClicked() {
+		interacted = true
 		a.selectSingle(st.ID)
 		a.monitoring = true
 		a.mainTab = TabMonitorWall
 		a.statusNote = fmt.Sprintf("正在重点监控 %s", st.MachineName)
 		a.applyMonitorState()
 	}
+	return interacted
 }
 
 func (a *App) buildMonitorWallTab(c *ui.Context, pal theme.Palette, students []core.StudentInfo) {
+	var childClicked bool
 	ui.Column(c).Grow(1).Padding(12).Gap(10).Children(func() {
 		ui.Row(c).AlignItems(ui.Center).Gap(8).Children(func() {
 			ui.Text(c, "多画面屏幕监控墙").FontSize(15).Bold()
@@ -854,24 +872,28 @@ func (a *App) buildMonitorWallTab(c *ui.Context, pal theme.Palette, students []c
 			}
 			if len(students) > 0 {
 				if ui.Button(c, "全选 (Ctrl+A)").Padding(3, 10).Clicked() {
+					childClicked = true
 					a.selectAllStudents(students)
 				}
 			}
 			ui.Spacer(c)
 			if a.monitoring {
 				if ui.Button(c, "停止监控").Clicked() {
+					childClicked = true
 					a.monitoring = false
 					a.applyMonitorState()
 				}
 			} else {
 				if ui.PrimaryButton(c, "开启监控轮询").Clicked() {
+					childClicked = true
 					a.monitoring = true
 					a.applyMonitorState()
 				}
 			}
 		})
 
-		ui.Scroll(c).Grow(1).Children(func() {
+		scroll := ui.Scroll(c).Grow(1)
+		scroll.Children(func() {
 			ui.Row(c).Wrap().Gap(12).Children(func() {
 				for _, st := range students {
 					a.mu.Lock()
@@ -891,16 +913,25 @@ func (a *App) buildMonitorWallTab(c *ui.Context, pal theme.Palette, students []c
 						ui.Row(c).AlignItems(ui.Center).Gap(6).Children(func() {
 							ui.Text(c, st.MachineName).FontSize(12).Bold().Grow(1).SingleLine()
 							if ui.Button(c, "远控").Padding(2, 6).Clicked() {
+								childClicked = true
 								a.StartRemoteControl(st.ID)
 							}
 						})
 					})
 					if tile.Clicked() {
-						a.selectSingle(st.ID)
+						childClicked = true
+						if (tile.ClickModifiers() & (ui.Ctrl | ui.Cmd)) != 0 {
+							a.toggleSelect(st.ID)
+						} else {
+							a.selectSingle(st.ID)
+						}
 					}
 				}
 			})
 		})
+		if scroll.Clicked() && !childClicked {
+			a.clearSelection()
+		}
 	})
 }
 
@@ -1826,6 +1857,31 @@ func (a *App) selectSingle(id string) {
 	a.selectedID = id
 	if id != "" {
 		a.selectedIDs[id] = true
+	}
+}
+
+func (a *App) toggleSelect(id string) {
+	if id == "" {
+		return
+	}
+	if a.selectedIDs == nil {
+		a.selectedIDs = make(map[string]bool)
+		if a.selectedID != "" {
+			a.selectedIDs[a.selectedID] = true
+		}
+	}
+	if a.selectedIDs[id] {
+		delete(a.selectedIDs, id)
+		if a.selectedID == id {
+			a.selectedID = ""
+			for k := range a.selectedIDs {
+				a.selectedID = k
+				break
+			}
+		}
+	} else {
+		a.selectedIDs[id] = true
+		a.selectedID = id
 	}
 }
 

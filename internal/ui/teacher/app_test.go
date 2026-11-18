@@ -224,4 +224,32 @@ func TestTeacherSelectAllAndBatchOperations(t *testing.T) {
 	if got := len(app.resolveFileTargets()); got != len(students) {
 		t.Fatalf("expected resolveFileTargets to return all %d selected students, got %d", len(students), got)
 	}
+
+	// Ctrl+Click individual toggle & clear on blank area click
+	app.clearSelection()
+	app.SetMainTab(TabSeatMap)
+	tester.Frame()
+	r0, ok0 := tester.Find(students[0].MachineName + " " + students[0].StudentNo)
+	r1, ok1 := tester.Find(students[1].MachineName + " " + students[1].StudentNo)
+	if !ok0 || !ok1 {
+		t.Fatalf("expected seat cards found in tester")
+	}
+	tester.ClickAtWith(ui.Ctrl, r0.X, r0.Y)
+	tester.Frame()
+	tester.ClickAtWith(ui.Ctrl, r1.X, r1.Y)
+	tester.Frame()
+	if got := len(app.targetStudentIDs()); got != 2 {
+		t.Fatalf("expected 2 selected students after Ctrl+Click, got %d", got)
+	}
+	tester.ClickAtWith(ui.Ctrl, r0.X, r0.Y)
+	tester.Frame()
+	if got := len(app.targetStudentIDs()); got != 1 || app.targetStudentIDs()[0] != students[1].ID {
+		t.Fatalf("expected only student[1] selected after Ctrl+Click deselect, got %v", app.targetStudentIDs())
+	}
+	// Click blank area at bottom-right of SeatMap scroll area
+	tester.ClickAtWith(0, 900, 720)
+	tester.Frame()
+	if got := len(app.targetStudentIDs()); got != 0 {
+		t.Fatalf("expected 0 selected students after clicking blank area, got %d", got)
+	}
 }
