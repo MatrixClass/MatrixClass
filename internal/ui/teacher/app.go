@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/egoist/mygo"
@@ -136,6 +137,16 @@ type App struct {
 	studentTable ui.ListState
 	selectedRow  int
 	settingsOpen bool
+
+	// Lock-free snapshots for background media/transport goroutines
+	broadcastFlag         atomic.Bool
+	broadcastWindowedFlag atomic.Bool
+	voiceFlag             atomic.Bool
+	theatreFlag           atomic.Bool
+	mcastFlag             atomic.Bool
+	qualValue             atomic.Int64
+	demoIDMu              sync.RWMutex
+	demoIDAtomic          string
 }
 
 // New creates a Teacher Console App wired to core interfaces.
@@ -194,7 +205,20 @@ func New(opts Options) *App {
 	}
 	app.studentTable.Selected = &app.selectedRow
 	app.studentTable.RoundRows = true
+	app.syncRuntimeFlags()
 	return app
+}
+
+func (a *App) syncRuntimeFlags() {
+	a.broadcastFlag.Store(a.broadcasting)
+	a.broadcastWindowedFlag.Store(a.broadcastWindowed)
+	a.voiceFlag.Store(a.voiceActive)
+	a.theatreFlag.Store(a.theatre.Playing)
+	a.mcastFlag.Store(a.useMulticast)
+	a.qualValue.Store(int64(a.monitorQual))
+	a.demoIDMu.Lock()
+	a.demoIDAtomic = a.studentDemoID
+	a.demoIDMu.Unlock()
 }
 
 // AttachWindow binds the MyGo window and installs the native menu bar.
@@ -276,10 +300,20 @@ func (a *App) UpdateMonitorFrame(studentID string, frame *core.VideoFrame) {
 		return
 	}
 	a.mu.Lock()
-	bmp := a.ensureTileBitmap(studentID, frame.Width, frame.Height)
+	w := a.win
+	if w == nil {
+		bmp := a.ensureTileBitmap(studentID, frame.Width, frame.Height)
+		a.mu.Unlock()
+		updateBitmapFromFrame(bmp, frame)
+		return
+	}
 	a.mu.Unlock()
-	updateBitmapFromFrame(bmp, frame)
-	a.Invalidate()
+	w.Update(func() {
+		a.mu.Lock()
+		bmp := a.ensureTileBitmap(studentID, frame.Width, frame.Height)
+		a.mu.Unlock()
+		updateBitmapFromFrame(bmp, frame)
+	})
 }
 
 // UpdateRemoteFrame updates the live Remote Control interactive screen bitmap.
@@ -288,13 +322,26 @@ func (a *App) UpdateRemoteFrame(studentID string, frame *core.VideoFrame) {
 		return
 	}
 	a.mu.Lock()
-	if a.remoteBitmap == nil {
-		a.remoteBitmap = ui.NewBitmap(image.NewRGBA(image.Rect(0, 0, frame.Width, frame.Height)))
+	w := a.win
+	if w == nil {
+		if a.remoteBitmap == nil {
+			a.remoteBitmap = ui.NewBitmap(image.NewRGBA(image.Rect(0, 0, frame.Width, frame.Height)))
+		}
+		bmp := a.remoteBitmap
+		a.mu.Unlock()
+		updateBitmapFromFrame(bmp, frame)
+		return
 	}
-	bmp := a.remoteBitmap
 	a.mu.Unlock()
-	updateBitmapFromFrame(bmp, frame)
-	a.Invalidate()
+	w.Update(func() {
+		a.mu.Lock()
+		if a.remoteBitmap == nil {
+			a.remoteBitmap = ui.NewBitmap(image.NewRGBA(image.Rect(0, 0, frame.Width, frame.Height)))
+		}
+		bmp := a.remoteBitmap
+		a.mu.Unlock()
+		updateBitmapFromFrame(bmp, frame)
+	})
 }
 
 // UpdateDemoFrame updates the Student Demo preview bitmap on the Teacher Console.
@@ -303,13 +350,26 @@ func (a *App) UpdateDemoFrame(studentID string, frame *core.VideoFrame) {
 		return
 	}
 	a.mu.Lock()
-	if a.demoBitmap == nil {
-		a.demoBitmap = ui.NewBitmap(image.NewRGBA(image.Rect(0, 0, frame.Width, frame.Height)))
+	w := a.win
+	if w == nil {
+		if a.demoBitmap == nil {
+			a.demoBitmap = ui.NewBitmap(image.NewRGBA(image.Rect(0, 0, frame.Width, frame.Height)))
+		}
+		bmp := a.demoBitmap
+		a.mu.Unlock()
+		updateBitmapFromFrame(bmp, frame)
+		return
 	}
-	bmp := a.demoBitmap
 	a.mu.Unlock()
-	updateBitmapFromFrame(bmp, frame)
-	a.Invalidate()
+	w.Update(func() {
+		a.mu.Lock()
+		if a.demoBitmap == nil {
+			a.demoBitmap = ui.NewBitmap(image.NewRGBA(image.Rect(0, 0, frame.Width, frame.Height)))
+		}
+		bmp := a.demoBitmap
+		a.mu.Unlock()
+		updateBitmapFromFrame(bmp, frame)
+	})
 }
 
 func updateBitmapFromFrame(bmp *ui.Bitmap, frame *core.VideoFrame) {
@@ -424,6 +484,8 @@ func (a *App) View(c *ui.Context) {
 	ui.Modal(c, &a.remoteControlOpen, func() {
 		a.buildRemoteControlModal(c, pal)
 	})
+
+	a.syncRuntimeFlags()
 }
 
 func (a *App) buildToolbar(c *ui.Context, pal theme.Palette) {
@@ -616,11 +678,12 @@ func (a *App) buildMainWorkspace(c *ui.Context, pal theme.Palette, students []co
 		ui.Row(c).Background(pal.ChromeBar).Padding(4, 10).AlignItems(ui.Center).BorderWidth(0, 0, 1, 0).BorderColor(pal.CardBorder).Children(func() {
 			ui.Tabs(c, &a.mainTab, "座位视图", "屏幕监控", "网络影院", "随堂测验", "文件与作业")
 			ui.Spacer(c)
-			if a.broadcasting {
-				ui.Checkbox(c, &a.broadcastWindowed, "窗口模式广播").OnChange(func() {
+			ui.Checkbox(c, &a.broadcastWindowed, "窗口模式广播").OnChange(func() {
+				a.syncRuntimeFlags()
+				if a.broadcasting {
 					a.applyBroadcastState()
-				})
-			}
+				}
+			})
 		})
 
 		switch a.mainTab {
@@ -1337,25 +1400,35 @@ func (a *App) ToggleBroadcast() {
 }
 
 func (a *App) applyBroadcastState() {
+	a.syncRuntimeFlags()
 	if a.broadcasting {
-		mode := core.BroadcastFullScreen
-		if a.broadcastWindowed {
-			mode = core.BroadcastWindowed
-		}
+		cfg := a.CurrentBroadcastConfig()
 		a.activeModeLabel = "屏幕广播"
-		a.statusNote = fmt.Sprintf("正在向全班广播教师屏幕 (%s)", mode)
-		a.sendControlEnvelope(protocol.MsgBroadcastStart, core.BroadcastConfig{
-			Mode:         mode,
-			WithAudio:    true,
-			FPS:          24,
-			Quality:      int(a.monitorQual),
-			UseMulticast: a.useMulticast,
-			SourceID:     a.teacherID,
-		}, nil)
+		a.statusNote = fmt.Sprintf("正在向全班广播教师屏幕 (%s)", cfg.Mode)
+		a.sendControlEnvelope(protocol.MsgBroadcastStart, cfg, nil)
 	} else {
 		a.activeModeLabel = "待机监听"
 		a.statusNote = "已停止屏幕广播"
 		a.sendControlEnvelope(protocol.MsgBroadcastStop, nil, nil)
+	}
+}
+
+func (a *App) CurrentBroadcastConfig() core.BroadcastConfig {
+	mode := core.BroadcastFullScreen
+	if a.broadcastWindowedFlag.Load() {
+		mode = core.BroadcastWindowed
+	}
+	qual := int(a.qualValue.Load())
+	if qual <= 0 {
+		qual = 75
+	}
+	return core.BroadcastConfig{
+		Mode:         mode,
+		WithAudio:    true,
+		FPS:          24,
+		Quality:      qual,
+		UseMulticast: a.mcastFlag.Load(),
+		SourceID:     a.teacherID,
 	}
 }
 
@@ -1365,6 +1438,7 @@ func (a *App) ToggleVoice() {
 }
 
 func (a *App) applyVoiceState() {
+	a.syncRuntimeFlags()
 	if a.voiceActive {
 		a.activeModeLabel = "语音广播"
 		a.statusNote = "全班语音广播开启中"
@@ -1999,21 +2073,26 @@ func (a *App) SetSideTab(tab int)  { a.sideTab = tab }
 func (a *App) Volume() float64     { return a.volume }
 func (a *App) MonitorFPS() float64 { return a.monitorFPS }
 func (a *App) MonitorQual() float64 {
-	return a.monitorQual
+	return float64(a.qualValue.Load())
 }
-func (a *App) Broadcasting() bool { return a.broadcasting }
+func (a *App) Broadcasting() bool { return a.broadcastFlag.Load() }
 func (a *App) ScreenLocked() bool { return a.screenLocked }
 func (a *App) SelectedID() string   { return a.selectedID }
-func (a *App) VoiceActive() bool  { return a.voiceActive }
+func (a *App) VoiceActive() bool  { return a.voiceFlag.Load() }
 func (a *App) Monitoring() bool   { return a.monitoring }
 func (a *App) RemoteControlID() string {
 	return a.remoteControlID
 }
 func (a *App) StudentDemoID() string {
-	return a.studentDemoID
+	a.demoIDMu.RLock()
+	defer a.demoIDMu.RUnlock()
+	return a.demoIDAtomic
 }
 func (a *App) TheatrePlaying() bool {
-	return a.theatre.Playing
+	return a.theatreFlag.Load()
+}
+func (a *App) UseMulticast() bool {
+	return a.mcastFlag.Load()
 }
 
 func mapUIButton(btn int) int {

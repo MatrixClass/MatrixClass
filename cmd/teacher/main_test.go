@@ -88,6 +88,12 @@ func TestEndToEndTeacherStudentKCPIntegration(t *testing.T) {
 
 	stTransport.OnEnvelope(func(_ core.Session, env protocol.Envelope) {
 		switch env.Type {
+		case protocol.MsgBroadcastStart:
+			var cfg core.BroadcastConfig
+			_ = json.Unmarshal(env.Payload, &cfg)
+			stApp.StartBroadcast(cfg.Mode == core.BroadcastWindowed)
+		case protocol.MsgBroadcastStop:
+			stApp.ShowFloatingBar()
 		case protocol.MsgScreenLock:
 			var req struct {
 				Locked  bool   `json:"locked"`
@@ -252,5 +258,110 @@ func TestEndToEndTeacherStudentKCPIntegration(t *testing.T) {
 	sumB := sha256.Sum256(gotFile)
 	if hex.EncodeToString(sumA[:]) != hex.EncodeToString(sumB[:]) {
 		t.Fatalf("received file SHA-256 mismatch")
+	}
+}
+
+func TestEndToEndScreenBroadcastOverKCPFallback(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	teacherAddr := freeUDPAddr(t)
+	trRuntime, err := NewRuntime("Lab-Bcast", "teacher-bcast", "教师端", t.TempDir())
+	if err != nil {
+		t.Fatalf("NewRuntime teacher failed: %v", err)
+	}
+	defer trRuntime.Close()
+
+	if err := trRuntime.Start(ctx, teacherAddr, "教师端"); err != nil {
+		t.Fatalf("teacher Start failed: %v", err)
+	}
+
+	// Connect student using --teacher explicit address (no WithMulticastListenAddr, no discovery),
+	// matching `nexlab-student.exe --teacher 127.0.0.1:39100`.
+	stTransport := transport.NewManager(
+		transport.WithDiscoveryConfig(transport.DiscoveryConfig{Port: 0}),
+		transport.WithTeacherAddr(teacherAddr),
+	)
+	defer stTransport.Close()
+
+	stMedia, err := media.NewManager(media.ManagerOptions{PreferH264MFT: false})
+	if err != nil {
+		t.Fatalf("student media init: %v", err)
+	}
+	defer stMedia.Close()
+
+	stApp := student.New(student.Options{
+		StudentID: "stu-bcast-1",
+		StudentNo: "202601",
+		Channel:   "Lab-Bcast",
+		Services: student.Services{
+			Transport: stTransport,
+			Media:     stMedia,
+		},
+	})
+
+	stTransport.OnSession(func(sess core.Session) {
+		env, _ := protocol.NewEnvelope(protocol.MsgStudentRegister, "stu-bcast-1", core.StudentInfo{
+			ID:          "stu-bcast-1",
+			StudentNo:   "202601",
+			MachineName: "PC-BCAST",
+			Channel:     "Lab-Bcast",
+		})
+		_ = sess.SendEnvelope(env)
+	})
+
+	stTransport.OnMulticastData(func(data []byte) {
+		if frame, err := stMedia.DecodeFrame(data); err == nil && frame != nil {
+			stApp.UpdateVideoFrame(frame)
+		}
+	})
+
+	stTransport.OnEnvelope(func(_ core.Session, env protocol.Envelope) {
+		switch env.Type {
+		case protocol.MsgBroadcastStart:
+			var cfg core.BroadcastConfig
+			_ = json.Unmarshal(env.Payload, &cfg)
+			stApp.StartBroadcast(cfg.Mode == core.BroadcastWindowed)
+		case protocol.MsgBroadcastStop:
+			stApp.ShowFloatingBar()
+		}
+	})
+
+	if err := stTransport.StartStudent(ctx, "Lab-Bcast"); err != nil {
+		t.Fatalf("student StartStudent failed: %v", err)
+	}
+
+	deadline := time.Now().Add(4 * time.Second)
+	for time.Now().Before(deadline) && len(trRuntime.Classroom.ListStudents()) == 0 {
+		time.Sleep(25 * time.Millisecond)
+	}
+	if len(trRuntime.Classroom.ListStudents()) == 0 {
+		t.Fatalf("student failed to register on teacher")
+	}
+
+	// Start teacher screen broadcast -> student must switch to ModeBroadcast and decode a real frame
+	trRuntime.App.ToggleBroadcast()
+	deadline = time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if stApp.Mode() == student.ModeBroadcast && stApp.HasVideoFrame() {
+			break
+		}
+		time.Sleep(30 * time.Millisecond)
+	}
+	if stApp.Mode() != student.ModeBroadcast {
+		t.Fatalf("expected student ModeBroadcast (%d), got %d", student.ModeBroadcast, stApp.Mode())
+	}
+	if !stApp.HasVideoFrame() {
+		t.Fatalf("expected student to receive and decode real broadcast video frame")
+	}
+
+	// Stop teacher screen broadcast -> student returns to floating bar
+	trRuntime.App.ToggleBroadcast()
+	deadline = time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) && stApp.Mode() != student.ModeBar {
+		time.Sleep(25 * time.Millisecond)
+	}
+	if stApp.Mode() != student.ModeBar {
+		t.Fatalf("expected student ModeBar (%d) after broadcast stop, got %d", student.ModeBar, stApp.Mode())
 	}
 }

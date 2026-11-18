@@ -179,8 +179,7 @@ func (rt *Runtime) wireHandlers() {
 		case protocol.MsgBroadcastStart:
 			var cfg core.BroadcastConfig
 			_ = json.Unmarshal(env.Payload, &cfg)
-			rt.App.SetBroadcastWindowed(cfg.Mode == core.BroadcastWindowed)
-			rt.App.OpenMode(student.ModeBroadcast)
+			rt.App.StartBroadcast(cfg.Mode == core.BroadcastWindowed)
 		case protocol.MsgBroadcastStop:
 			rt.App.ShowFloatingBar()
 		case protocol.MsgVoiceControl:

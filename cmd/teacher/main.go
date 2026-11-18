@@ -7,6 +7,7 @@ import (
 	"io"
 	"log"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/egoist/mygo"
@@ -47,11 +48,13 @@ type Runtime struct {
 
 	audioMu   sync.Mutex
 	audioMode string // "", "voice", "loopback"
+
+	forceKeyFrame atomic.Bool
 }
 
 func NewRuntime(channel, teacherID, teacherName, archiveDir string) (*Runtime, error) {
 	tr := transport.NewManager()
-	md, err := media.NewManager(media.ManagerOptions{PreferH264MFT: true})
+	md, err := media.NewManager(media.ManagerOptions{PreferH264MFT: false})
 	if err != nil {
 		return nil, err
 	}
@@ -168,6 +171,24 @@ func (rt *Runtime) wireHandlers() {
 				st.Status = core.StatusOnline
 				st.LastSeen = time.Now()
 				rt.Classroom.UpsertStudent(st)
+				if rt.App.Broadcasting() || rt.App.TheatrePlaying() {
+					rt.forceKeyFrame.Store(true)
+					if bEnv, err := protocol.NewEnvelope(protocol.MsgBroadcastStart, rt.teacherID, rt.App.CurrentBroadcastConfig()); err == nil {
+						bEnv.Channel = rt.channel
+						bEnv.Timestamp = time.Now().UnixMilli()
+						_ = sess.SendEnvelope(bEnv)
+					}
+				}
+				if rt.App.ScreenLocked() {
+					if lEnv, err := protocol.NewEnvelope(protocol.MsgScreenLock, rt.teacherID, map[string]any{
+						"locked":  true,
+						"message": "请注意听讲，教师已锁定屏幕。",
+					}); err == nil {
+						lEnv.Channel = rt.channel
+						lEnv.Timestamp = time.Now().UnixMilli()
+						_ = sess.SendEnvelope(lEnv)
+					}
+				}
 			}
 		case protocol.MsgCheckInSubmit:
 			var req struct {
@@ -288,7 +309,7 @@ func (rt *Runtime) Start(ctx context.Context, listenAddr string, teacherName str
 		TeacherName: teacherName,
 		Channel:     rt.channel,
 		MulticastIP: "239.255.42.10",
-		McastPort:   39101,
+		McastPort:   39102,
 		Version:     "0.1.0",
 	}
 	if err := rt.Transport.StartTeacher(ctx, listenAddr, beacon); err != nil {
@@ -321,19 +342,29 @@ func (rt *Runtime) heartbeatLoop(ctx context.Context) {
 func (rt *Runtime) broadcastLoop(ctx context.Context) {
 	ticker := time.NewTicker(66 * time.Millisecond)
 	defer ticker.Stop()
+	wasActive := false
+	var bcastSeq uint64
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
 			rt.syncAudioCapture()
-			if !rt.App.Broadcasting() && !rt.App.TheatrePlaying() {
+			rt.Transport.SetMulticastEnabled(rt.App.UseMulticast())
+			active := rt.App.Broadcasting() || rt.App.TheatrePlaying()
+			if !active {
+				wasActive = false
 				continue
 			}
 			frame, err := rt.Media.CaptureScreenMax(1280, 720)
 			if err != nil {
 				continue
 			}
+			bcastSeq++
+			if !wasActive || rt.forceKeyFrame.Swap(false) || bcastSeq%45 == 0 {
+				frame.KeyFrame = true
+			}
+			wasActive = true
 			encoded, err := rt.Media.EncodeFrame(frame, int(rt.App.MonitorQual()))
 			if err != nil {
 				continue

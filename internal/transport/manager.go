@@ -23,8 +23,10 @@ const (
 	defaultMcastChunkSize = 1200
 	mcastPacketMagic      = uint16(0x4E58) // "NX"
 	mcastHeaderSize       = 14             // magic(2) + seq(8) + idx(2) + total(2)
-	internalNackRequestID = "__nexlab_mcast_nack__"
-	internalFallbackReqID = "__nexlab_mcast_fallback__"
+	internalNackRequestID  = "__nexlab_mcast_nack__"
+	internalFallbackReqID  = "__nexlab_mcast_fallback__"
+	internalMcastInfoReqID = "__nexlab_mcast_info__"
+	internalMcastAckReqID  = "__nexlab_mcast_ack__"
 )
 
 var (
@@ -106,6 +108,11 @@ type mediaFallbackPayload struct {
 	Data []byte `json:"data"`
 }
 
+type mcastInfoPayload struct {
+	MulticastIP string `json:"multicast_ip"`
+	McastPort   int    `json:"mcast_port"`
+}
+
 type ringEntry struct {
 	seq  uint64
 	data []byte
@@ -135,12 +142,16 @@ type Manager struct {
 
 	listener    *KCPListener
 	broadcaster *BeaconBroadcaster
+	beacon      protocol.DiscoveryBeacon
 	mcastConn   *net.UDPConn
 	mcastTarget *net.UDPAddr
 	mcastRxConn net.PacketConn
 
-	sessions map[string]*SmuxSession
-	aliases  map[string]*SmuxSession
+	sessions         map[string]*SmuxSession
+	aliases          map[string]*SmuxSession
+	mcastConfirmed   map[*SmuxSession]bool
+	multicastEnabled atomic.Bool
+	mcastAckSent     atomic.Bool
 
 	ringSize int
 	ring     []ringEntry
@@ -180,12 +191,14 @@ func NewManager(opts ...ManagerOption) *Manager {
 		discoveryCfg:   DefaultDiscoveryConfig(),
 		sessions:       make(map[string]*SmuxSession),
 		aliases:        make(map[string]*SmuxSession),
+		mcastConfirmed: make(map[*SmuxSession]bool),
 		ringSize:       defaultRingBufferSize,
 		mcastReasm:     make(map[uint64]*mcastReassembly),
 		mcastDelivered: make(map[uint64]struct{}),
 		nackPending:    make(map[uint64]time.Time),
 		lastStatsTime:  time.Now(),
 	}
+	m.multicastEnabled.Store(true)
 	for _, opt := range opts {
 		opt(m)
 	}
@@ -217,6 +230,14 @@ func (m *Manager) OnMulticastData(fn func([]byte)) {
 	m.mu.Unlock()
 }
 
+func (m *Manager) SetMulticastEnabled(enabled bool) {
+	m.multicastEnabled.Store(enabled)
+}
+
+func (m *Manager) MulticastEnabled() bool {
+	return m.multicastEnabled.Load()
+}
+
 // StartTeacher starts KCP listener, discovery beacon broadcaster, and optional UDP multicast sender.
 func (m *Manager) StartTeacher(ctx context.Context, listenAddr string, beacon protocol.DiscoveryBeacon) error {
 	m.mu.Lock()
@@ -240,6 +261,7 @@ func (m *Manager) StartTeacher(ctx context.Context, listenAddr string, beacon pr
 	if beacon.Role == "" {
 		beacon.Role = string(core.RoleTeacher)
 	}
+	m.beacon = beacon
 
 	if beacon.MulticastIP != "" && beacon.McastPort > 0 {
 		target, err := net.ResolveUDPAddr("udp4", net.JoinHostPort(beacon.MulticastIP, strconv.Itoa(beacon.McastPort)))
@@ -287,6 +309,20 @@ func (m *Manager) acceptLoop() {
 			m.removeSession(closed.ID())
 		})
 		m.addSession(sess)
+		m.mu.RLock()
+		mcastIP := m.beacon.MulticastIP
+		mcastPort := m.beacon.McastPort
+		m.mu.RUnlock()
+		if mcastIP != "" && mcastPort > 0 {
+			if raw, err := json.Marshal(mcastInfoPayload{MulticastIP: mcastIP, McastPort: mcastPort}); err == nil {
+				_ = sess.SendEnvelope(protocol.Envelope{
+					Type:      protocol.MsgHelloAck,
+					RequestID: internalMcastInfoReqID,
+					Timestamp: time.Now().UnixMilli(),
+					Payload:   raw,
+				})
+			}
+		}
 		m.mu.RLock()
 		cb := m.onSessionCb
 		m.mu.RUnlock()
@@ -362,6 +398,12 @@ func (m *Manager) StartStudent(ctx context.Context, channel string) error {
 }
 
 func (m *Manager) startMulticastReceiver(addrStr string) error {
+	m.mu.RLock()
+	alreadyStarted := m.mcastRxConn != nil
+	m.mu.RUnlock()
+	if alreadyStarted {
+		return nil
+	}
 	udpAddr, err := net.ResolveUDPAddr("udp4", addrStr)
 	if err != nil {
 		return err
@@ -386,6 +428,11 @@ func (m *Manager) startMulticastReceiver(addrStr string) error {
 	}
 
 	m.mu.Lock()
+	if m.mcastRxConn != nil {
+		m.mu.Unlock()
+		_ = pc.Close()
+		return nil
+	}
 	m.mcastRxConn = pc
 	m.mu.Unlock()
 
@@ -411,32 +458,52 @@ func (m *Manager) multicastReadLoop(pc net.PacketConn) {
 			}
 			pkt = dec
 		}
-		m.processIncomingMulticastPacket(pkt)
+		if m.processIncomingMulticastPacket(pkt) && m.role == core.RoleStudent && m.mcastAckSent.CompareAndSwap(false, true) {
+			m.sendMulticastAck()
+		}
 	}
 }
 
-func (m *Manager) processIncomingMulticastPacket(pkt []byte) {
+func (m *Manager) sendMulticastAck() {
+	env := protocol.Envelope{
+		Type:      protocol.MsgHelloAck,
+		RequestID: internalMcastAckReqID,
+		Timestamp: time.Now().UnixMilli(),
+	}
+	m.mu.RLock()
+	var target *SmuxSession
+	for _, s := range m.sessions {
+		target = s
+		break
+	}
+	m.mu.RUnlock()
+	if target != nil {
+		_ = target.SendEnvelope(env)
+	}
+}
+
+func (m *Manager) processIncomingMulticastPacket(pkt []byte) bool {
 	if m.fecDecoder != nil {
 		if _, err := DecodeFECPacket(pkt); err == nil {
 			block, ready, err := m.fecDecoder.DecodeBlock(pkt)
 			if err != nil || !ready || len(block) < 8 {
-				return
+				return true
 			}
 			seq := binary.BigEndian.Uint64(block[0:8])
 			frame := block[8:]
 			m.deliverMulticastFrame(seq, frame)
-			return
+			return true
 		}
 	}
 
 	if len(pkt) < mcastHeaderSize || binary.BigEndian.Uint16(pkt[0:2]) != mcastPacketMagic {
-		return
+		return false
 	}
 	seq := binary.BigEndian.Uint64(pkt[2:10])
 	idx := int(binary.BigEndian.Uint16(pkt[10:12]))
 	total := int(binary.BigEndian.Uint16(pkt[12:14]))
 	if total <= 0 || idx >= total {
-		return
+		return false
 	}
 	payload := pkt[mcastHeaderSize:]
 
@@ -444,7 +511,7 @@ func (m *Manager) processIncomingMulticastPacket(pkt []byte) {
 		frame := make([]byte, len(payload))
 		copy(frame, payload)
 		m.deliverMulticastFrame(seq, frame)
-		return
+		return true
 	}
 
 	m.mcastRxMu.Lock()
@@ -502,6 +569,7 @@ func (m *Manager) processIncomingMulticastPacket(pkt []byte) {
 	if completed != nil {
 		m.emitMulticastFrame(completed)
 	}
+	return true
 }
 
 func (m *Manager) recordDeliveredLocked(seq uint64) {
@@ -617,6 +685,7 @@ func (m *Manager) BroadcastMulticast(frame []byte) error {
 	closed := m.closed
 	mcastConn := m.mcastConn
 	mcastTarget := m.mcastTarget
+	unconfirmed := m.unconfirmedSessionsLocked()
 	m.mu.RUnlock()
 	if closed {
 		return ErrConnClosed
@@ -630,7 +699,7 @@ func (m *Manager) BroadcastMulticast(frame []byte) error {
 	m.ring[int(seq)%m.ringSize] = ringEntry{seq: seq, data: stored}
 	m.mu.Unlock()
 
-	if mcastConn == nil || mcastTarget == nil {
+	if !m.multicastEnabled.Load() || mcastConn == nil || mcastTarget == nil {
 		return m.sendFallbackToAll(seq, stored)
 	}
 
@@ -646,6 +715,9 @@ func (m *Manager) BroadcastMulticast(frame []byte) error {
 			if err := m.writeMulticastPacket(mcastConn, mcastTarget, shard); err != nil {
 				return err
 			}
+		}
+		if len(unconfirmed) > 0 {
+			_ = m.sendFallbackToSessions(unconfirmed, seq, stored)
 		}
 		return nil
 	}
@@ -669,6 +741,9 @@ func (m *Manager) BroadcastMulticast(frame []byte) error {
 		if err := m.writeMulticastPacket(mcastConn, mcastTarget, pkt); err != nil {
 			return err
 		}
+	}
+	if len(unconfirmed) > 0 {
+		_ = m.sendFallbackToSessions(unconfirmed, seq, stored)
 	}
 	return nil
 }
@@ -708,6 +783,36 @@ func (m *Manager) sendFallbackToAll(seq uint64, data []byte) error {
 	return m.BroadcastControl(env, nil)
 }
 
+func (m *Manager) unconfirmedSessionsLocked() []*SmuxSession {
+	var out []*SmuxSession
+	for _, s := range m.sessions {
+		if !m.mcastConfirmed[s] {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+func (m *Manager) sendFallbackToSessions(targets []*SmuxSession, seq uint64, data []byte) error {
+	payload, err := json.Marshal(mediaFallbackPayload{Seq: seq, Data: data})
+	if err != nil {
+		return err
+	}
+	env := protocol.Envelope{
+		Type:      protocol.MsgVideoFrame,
+		RequestID: internalFallbackReqID,
+		Timestamp: time.Now().UnixMilli(),
+		Payload:   payload,
+	}
+	var firstErr error
+	for _, s := range targets {
+		if err := s.SendEnvelope(env); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
+}
+
 // LookupRingFrame fetches a previously broadcast frame from the teacher's ring buffer.
 func (m *Manager) LookupRingFrame(seq uint64) ([]byte, bool) {
 	m.mu.RLock()
@@ -731,6 +836,9 @@ func (m *Manager) removeSession(id string) {
 	m.mu.Lock()
 	s := m.sessions[id]
 	delete(m.sessions, id)
+	if s != nil {
+		delete(m.mcastConfirmed, s)
+	}
 	for alias, target := range m.aliases {
 		if target == s || alias == id {
 			delete(m.aliases, alias)
@@ -782,6 +890,27 @@ func (m *Manager) handleEnvelope(sess core.Session, env protocol.Envelope) {
 		var fb mediaFallbackPayload
 		if err := json.Unmarshal(env.Payload, &fb); err == nil {
 			m.deliverMulticastFrame(fb.Seq, fb.Data)
+		}
+		return
+	}
+
+	if env.Type == protocol.MsgHelloAck && env.RequestID == internalMcastInfoReqID {
+		var info mcastInfoPayload
+		if err := json.Unmarshal(env.Payload, &info); err == nil && info.MulticastIP != "" && info.McastPort > 0 {
+			if m.role == core.RoleStudent {
+				_ = m.startMulticastReceiver(net.JoinHostPort(info.MulticastIP, strconv.Itoa(info.McastPort)))
+			}
+		}
+		return
+	}
+
+	if env.Type == protocol.MsgHelloAck && env.RequestID == internalMcastAckReqID {
+		if sm, ok := sess.(*SmuxSession); ok {
+			m.mu.Lock()
+			if m.sessions[sm.ID()] == sm {
+				m.mcastConfirmed[sm] = true
+			}
+			m.mu.Unlock()
 		}
 		return
 	}

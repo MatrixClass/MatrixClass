@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/egoist/mygo"
@@ -85,6 +86,8 @@ type App struct {
 
 	videoBitmap *ui.Bitmap
 	lastFrameAt time.Time
+	pendingFrame   *core.VideoFrame
+	frameScheduled atomic.Bool
 
 	activePaper   *core.ExamPaper
 	examAnswers   map[string]string
@@ -176,7 +179,32 @@ func (a *App) UpdateVideoFrame(frame *core.VideoFrame) {
 		return
 	}
 	a.mu.Lock()
-	defer a.mu.Unlock()
+	w := a.win
+	if w == nil {
+		a.applyVideoFrameLocked(frame)
+		a.lastFrameAt = time.Now()
+		a.mu.Unlock()
+		return
+	}
+	a.pendingFrame = frame
+	a.mu.Unlock()
+
+	if a.frameScheduled.CompareAndSwap(false, true) {
+		w.Update(func() {
+			a.frameScheduled.Store(false)
+			a.mu.Lock()
+			f := a.pendingFrame
+			a.pendingFrame = nil
+			if f != nil {
+				a.applyVideoFrameLocked(f)
+				a.lastFrameAt = time.Now()
+			}
+			a.mu.Unlock()
+		})
+	}
+}
+
+func (a *App) applyVideoFrameLocked(frame *core.VideoFrame) {
 	if len(frame.NV12Y) > 0 && len(frame.NV12UV) > 0 {
 		if a.videoBitmap == nil {
 			a.videoBitmap = ui.NewBitmap(image.NewRGBA(image.Rect(0, 0, frame.Width, frame.Height)))
@@ -201,13 +229,6 @@ func (a *App) UpdateVideoFrame(frame *core.VideoFrame) {
 			a.videoBitmap.Update(rgba)
 		}
 	}
-	a.lastFrameAt = time.Now()
-	if a.win != nil {
-		w := a.win
-		mygo.RunOnMain(func() {
-			w.Invalidate()
-		})
-	}
 }
 
 func (a *App) ShowFloatingBar() {
@@ -218,7 +239,9 @@ func (a *App) ShowFloatingBar() {
 	a.mu.Unlock()
 	if w != nil {
 		w.Update(func() {
+			a.mu.Lock()
 			a.syncWindowForModeLocked(w)
+			a.mu.Unlock()
 			w.Show()
 			w.Focus()
 		})
@@ -235,7 +258,27 @@ func (a *App) OpenMode(m int) {
 	a.mu.Unlock()
 	if w != nil {
 		w.Update(func() {
+			a.mu.Lock()
 			a.syncWindowForModeLocked(w)
+			a.mu.Unlock()
+			w.Show()
+			w.Focus()
+		})
+	}
+}
+
+func (a *App) StartBroadcast(windowed bool) {
+	a.mu.Lock()
+	a.broadcastWindow = windowed
+	a.mode = ModeBroadcast
+	a.statusNote = "正在接收教师端屏幕广播"
+	w := a.win
+	a.mu.Unlock()
+	if w != nil {
+		w.Update(func() {
+			a.mu.Lock()
+			a.syncWindowForModeLocked(w)
+			a.mu.Unlock()
 			w.Show()
 			w.Focus()
 		})
@@ -249,7 +292,22 @@ func (a *App) SetBroadcastWindowed(windowed bool) {
 	a.mu.Unlock()
 	if w != nil {
 		w.Update(func() {
+			a.mu.Lock()
 			a.syncWindowForModeLocked(w)
+			a.mu.Unlock()
+		})
+	}
+}
+
+func (a *App) syncWindow() {
+	a.mu.Lock()
+	w := a.win
+	a.mu.Unlock()
+	if w != nil {
+		w.Update(func() {
+			a.mu.Lock()
+			a.syncWindowForModeLocked(w)
+			a.mu.Unlock()
 		})
 	}
 }
@@ -365,9 +423,6 @@ func (a *App) syncWindowForModeLocked(w *mygo.Window) {
 
 // View builds the active student interface (floating bar, broadcast viewer, blackout lock, check-in, exam, or chat/homework).
 func (a *App) View(c *ui.Context) {
-	if a.win != nil {
-		a.syncWindowForModeLocked(a.win)
-	}
 	pal := theme.GetPalette(a.dark)
 	c.SetTheme(theme.Theme(a.dark))
 	c.Root().Background(pal.Canvas)
@@ -413,16 +468,20 @@ func (a *App) buildFloatingBarView(c *ui.Context, pal theme.Palette) {
 			}
 			if ui.Button(c, "点名签到").Padding(4, 10).Radius(3).Clicked() {
 				a.mode = ModeCheckIn
+				a.syncWindow()
 			}
 			if ui.Button(c, "随堂测验").Padding(4, 10).Radius(3).Clicked() {
 				a.loadActivePaper()
 				a.mode = ModeExam
+				a.syncWindow()
 			}
 			if ui.Button(c, "作业与消息").Padding(4, 10).Radius(3).Clicked() {
 				a.mode = ModeChat
+				a.syncWindow()
 			}
 			if ui.Button(c, "广播窗口").Padding(4, 10).Radius(3).Clicked() {
 				a.mode = ModeBroadcast
+				a.syncWindow()
 			}
 			collapseLabel := "收起"
 			if a.barCollapsed {
@@ -430,6 +489,7 @@ func (a *App) buildFloatingBarView(c *ui.Context, pal theme.Palette) {
 			}
 			if ui.Button(c, collapseLabel).Padding(4, 8).Radius(3).Clicked() {
 				a.barCollapsed = !a.barCollapsed
+				a.syncWindow()
 			}
 		})
 
@@ -461,18 +521,23 @@ func (a *App) buildBroadcastView(c *ui.Context, pal theme.Palette) {
 			ui.Spacer(c)
 			if ui.Button(c, "切换窗口/全屏").Padding(3, 8).Clicked() {
 				a.broadcastWindow = !a.broadcastWindow
+				a.syncWindow()
 			}
 			if ui.Button(c, "举手").Padding(3, 8).Clicked() {
 				a.ToggleHandRaise()
 			}
 			if ui.Button(c, "返回悬浮条").Padding(3, 8).Clicked() {
 				a.mode = ModeBar
+				a.syncWindow()
 			}
 		})
 
 		ui.Column(c).Grow(1).FillWidth().Center().Padding(12).Children(func() {
-			if a.videoBitmap != nil {
-				ui.Image(c, a.videoBitmap).Fill().Fit(ui.Contain).Radius(2)
+			a.mu.Lock()
+			bmp := a.videoBitmap
+			a.mu.Unlock()
+			if bmp != nil {
+				ui.Image(c, bmp).Fill().Fit(ui.Contain).Radius(2)
 			} else {
 				ui.Text(c, "等待教师端屏幕或网络影院画面...").FontSize(14).TextColor(ui.Hex("#D4D4D4"))
 				ui.Text(c, "当前无视频信号").FontSize(12).TextColor(ui.Hex("#8E8E8E"))
@@ -506,6 +571,7 @@ func (a *App) buildCheckInView(c *ui.Context, pal theme.Palette) {
 			ui.Spacer(c)
 			if ui.Button(c, "返回").Padding(4, 10).Clicked() {
 				a.mode = ModeBar
+				a.syncWindow()
 			}
 		})
 		ui.Text(c, fmt.Sprintf("当前机位：%s，请核对学号后点击签到提交至教师端：", a.machineName)).FontSize(12).TextColor(pal.TextMuted)
@@ -536,6 +602,7 @@ func (a *App) buildExamView(c *ui.Context, pal theme.Palette) {
 			ui.Spacer(c)
 			if ui.Button(c, "返回").Padding(4, 10).Clicked() {
 				a.mode = ModeBar
+				a.syncWindow()
 			}
 		})
 
@@ -603,6 +670,7 @@ func (a *App) buildChatHomeworkView(c *ui.Context, pal theme.Palette) {
 			ui.Spacer(c)
 			if ui.Button(c, "返回").Padding(4, 10).Clicked() {
 				a.mode = ModeBar
+				a.syncWindow()
 			}
 		})
 
@@ -778,7 +846,9 @@ func (a *App) SetLocked(locked bool, message string) {
 	}
 	if w != nil {
 		w.Update(func() {
+			a.mu.Lock()
 			a.syncWindowForModeLocked(w)
+			a.mu.Unlock()
 			w.Show()
 			if locked {
 				w.Focus()
@@ -868,7 +938,16 @@ func (a *App) sendControl(msgType protocol.MsgType, payload any) {
 }
 
 // Accessors for testing.
-func (a *App) Mode() int         { return a.mode }
+func (a *App) Mode() int {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.mode
+}
+func (a *App) HasVideoFrame() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.videoBitmap != nil
+}
 func (a *App) SetMode(m int)     { a.mode = m }
 func (a *App) HandRaised() bool  { return a.handRaised }
 func (a *App) ScreenLocked() bool { return a.screenLocked }
