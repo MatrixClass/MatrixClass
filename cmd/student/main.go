@@ -641,7 +641,7 @@ func main() {
 
 	mygo.App.WhenReady(func() {
 		wa := mygo.Screen.PrimaryDisplay().WorkArea
-		barW := 640
+		barW := 680
 		barX := wa.X + (wa.Width-barW)/2
 		if barX < wa.X {
 			barX = wa.X
@@ -649,7 +649,7 @@ func main() {
 		win := mygo.NewWindow(mygo.WindowOptions{
 			Title:       "矩联电子教室 MatrixClass 学生端",
 			Width:       barW,
-			Height:      88,
+			Height:      92,
 			X:           barX,
 			Y:           wa.Y,
 			MinWidth:    520,
