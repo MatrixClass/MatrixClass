@@ -17,7 +17,9 @@ func TestSQLiteStoreRoundTrip(t *testing.T) {
 	defer s.Close()
 
 	cfg := TeacherSettings{
-		Channel:        "Lab-502",
+		Channel:          "5",
+		AuthUsername:     "teacher01",
+		AuthPasswordHash: "abcd1234",
 		UseMulticast:   true,
 		Dark:           true,
 		CollectSaveDir: `D:\Homeworks`,
@@ -43,7 +45,7 @@ func TestSQLiteStoreRoundTrip(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("LoadSettings: ok=%v err=%v", ok, err)
 	}
-	if gotCfg.Channel != "Lab-502" || !gotCfg.Dark || !gotCfg.MicMuted || gotCfg.SpeakerVolume != 65 {
+	if gotCfg.Channel != "5" || gotCfg.AuthUsername != "teacher01" || gotCfg.AuthPasswordHash != "abcd1234" || !gotCfg.Dark || !gotCfg.MicMuted || gotCfg.SpeakerVolume != 65 {
 		t.Fatalf("unexpected loaded settings: %+v", gotCfg)
 	}
 	recent, err := s.ListRecentChannels(5)

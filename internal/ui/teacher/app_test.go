@@ -467,16 +467,24 @@ func TestTeacherSQLitePersistenceAndChannelPrompt(t *testing.T) {
 	})
 	tester := ui.NewTester(app.View, 1280, 820)
 	tester.Frame()
-	if !app.channelModal || !tester.HasText("选择课堂频道 ID") {
-		t.Fatalf("expected startup channel selection modal")
+	if !app.channelModal || !tester.HasText("教师端登录与频道选择") {
+		t.Fatalf("expected startup login & channel selection modal")
+	}
+	if app.loginUserInput != "admin" || app.authPasswordHash != "" {
+		t.Fatalf("expected default admin with empty password, got user=%q hash=%q", app.loginUserInput, app.authPasswordHash)
 	}
 
-	app.ConfirmChannel("5")
+	// First launch: set channel 5 and set a password
+	app.channelInput = "5"
+	app.loginPassInput = "secret123"
+	if !app.SubmitStartupLogin() {
+		t.Fatalf("expected first-launch SubmitStartupLogin to succeed")
+	}
 	if selectedCh != "5" || app.channel != "5" || app.channelModal {
 		t.Fatalf("unexpected channel confirmation state: selected=%q app.channel=%q modal=%v", selectedCh, app.channel, app.channelModal)
 	}
 
-	// Re-open App with the same SQLite store and verify persisted channel + recent history
+	// Re-open App with the same SQLite store and verify persisted channel + password verification
 	app2 := New(Options{
 		TeacherID:     "teacher-db",
 		TeacherName:   "教师端",
@@ -494,5 +502,13 @@ func TestTeacherSQLitePersistenceAndChannelPrompt(t *testing.T) {
 	})
 	if app2.channel != "5" || len(app2.recentChannels) == 0 || app2.recentChannels[0] != "5" {
 		t.Fatalf("expected persisted channel 5, got channel=%q recent=%v", app2.channel, app2.recentChannels)
+	}
+	app2.loginPassInput = "wrong"
+	if app2.SubmitStartupLogin() || !app2.channelModal || app2.loginError == "" {
+		t.Fatalf("expected wrong password to be rejected")
+	}
+	app2.loginPassInput = "secret123"
+	if !app2.SubmitStartupLogin() || app2.channelModal || app2.loginError != "" {
+		t.Fatalf("expected correct password to succeed")
 	}
 }

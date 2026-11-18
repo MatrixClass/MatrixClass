@@ -2,6 +2,8 @@ package teacher
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"image"
 	"image/color"
@@ -158,6 +160,11 @@ type App struct {
 	channelModal      bool
 	channelInput      string
 	channelNum        float64
+	authUsername      string
+	authPasswordHash  string
+	loginUserInput    string
+	loginPassInput    string
+	loginError        string
 	recentChannels    []string
 	store             *store.Store
 	onChannelSelected func(string)
@@ -207,6 +214,8 @@ func New(opts Options) *App {
 		channelModal:      opts.PromptChannel,
 		channelInput:      opts.Channel,
 		channelNum:        parseChannelNum(opts.Channel),
+		authUsername:      "admin",
+		loginUserInput:    "admin",
 		broadcastWindowed: true,
 		mainTab:           TabSeatMap,
 		sideTab:           SideTabChatQueue,
@@ -262,6 +271,11 @@ func (a *App) loadPersistedState() {
 			a.channelInput = norm
 			a.channelNum = parseChannelNum(norm)
 		}
+		if strings.TrimSpace(cfg.AuthUsername) != "" {
+			a.authUsername = strings.TrimSpace(cfg.AuthUsername)
+			a.loginUserInput = a.authUsername
+		}
+		a.authPasswordHash = strings.TrimSpace(cfg.AuthPasswordHash)
 		a.useMulticast = cfg.UseMulticast
 		a.dark = cfg.Dark
 		if strings.TrimSpace(cfg.CollectSaveDir) != "" {
@@ -333,7 +347,9 @@ func (a *App) savePersistedSettings() {
 		return
 	}
 	_ = a.store.SaveSettings(store.TeacherSettings{
-		Channel:        a.channel,
+		Channel:          a.channel,
+		AuthUsername:     a.authUsername,
+		AuthPasswordHash: a.authPasswordHash,
 		UseMulticast:   a.useMulticast,
 		Dark:           a.dark,
 		CollectSaveDir: a.collectSaveDir,
@@ -349,6 +365,48 @@ func (a *App) savePersistedSettings() {
 		BlockedSites:   a.blockedSitesInput,
 		LockMessage:    a.lockMessage,
 	})
+}
+
+func hashPassword(raw string) string {
+	if raw == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte("nexlab:" + raw))
+	return hex.EncodeToString(sum[:])
+}
+
+func numericChannelOptions() []string {
+	opts := make([]string, 32)
+	for i := range opts {
+		opts[i] = strconv.Itoa(i + 1)
+	}
+	return opts
+}
+
+func (a *App) SubmitStartupLogin() bool {
+	user := strings.TrimSpace(a.loginUserInput)
+	if user == "" {
+		user = "admin"
+		a.loginUserInput = user
+	}
+	if a.authPasswordHash == "" {
+		a.authUsername = user
+		if a.loginPassInput != "" {
+			a.authPasswordHash = hashPassword(a.loginPassInput)
+		}
+		a.loginPassInput = ""
+		a.loginError = ""
+		a.ConfirmChannel(a.channelInput)
+		return true
+	}
+	if user != a.authUsername || hashPassword(a.loginPassInput) != a.authPasswordHash {
+		a.loginError = "账号或密码错误"
+		return false
+	}
+	a.loginPassInput = ""
+	a.loginError = ""
+	a.ConfirmChannel(a.channelInput)
+	return true
 }
 
 func (a *App) ConfirmChannel(ch string) {
@@ -707,30 +765,35 @@ func (a *App) View(c *ui.Context) {
 
 func (a *App) buildChannelSelectModal(c *ui.Context, pal theme.Palette) {
 	ui.Column(c).Width(420).Background(pal.Canvas).Border(1, pal.CardBorder).Radius(4).Padding(18).Gap(12).Children(func() {
-		ui.Text(c, "选择课堂频道 ID").FontSize(16).Bold()
-		ui.Text(c, "请选择数字频道 ID（1 - 999），学生端将按此频道 ID 自动连接").FontSize(12).TextColor(pal.TextMuted)
+		ui.Text(c, "教师端登录与频道选择").FontSize(16).Bold()
+		ui.Text(c, "请选择数字频道 ID，学生端将按此频道 ID 自动连接").FontSize(12).TextColor(pal.TextMuted)
 		ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(8).Children(func() {
-			ui.Text(c, "频道 ID").FontSize(12).Bold()
-			ui.NumberInput(c, &a.channelNum, 1, 999, 1).Grow(1)
-		})
-		ui.Text(c, "常用频道").FontSize(11).TextColor(pal.TextMuted)
-		ui.Row(c).Wrap().Gap(6).Children(func() {
-			for i := 1; i <= 10; i++ {
-				num := float64(i)
-				lbl := strconv.Itoa(i)
-				btn := ui.Button(c, lbl).Key("qch-" + lbl).Padding(4, 12).Radius(3)
-				if int(a.channelNum) == i {
-					btn.Background(pal.Selection).Border(1, pal.Accent)
-				}
-				if btn.Clicked() {
-					a.channelNum = num
-					a.channelInput = lbl
-				}
+			ui.Text(c, "频道 ID").FontSize(12).Bold().Width(70)
+			if ui.Select(c, &a.channelInput, numericChannelOptions()).Grow(1).Changed() {
+				a.channelNum = parseChannelNum(a.channelInput)
 			}
 		})
+		ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(8).Children(func() {
+			ui.Text(c, "教师账号").FontSize(12).Bold().Width(70)
+			ui.TextInput(c, &a.loginUserInput).Placeholder("默认: admin").Grow(1)
+		})
+		ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(8).Children(func() {
+			ui.Text(c, "登录密码").FontSize(12).Bold().Width(70)
+			ph := "首次可设置密码（留空则无密码直接登录）"
+			if a.authPasswordHash != "" {
+				ph = "请输入登录密码"
+			}
+			pw := ui.TextInput(c, &a.loginPassInput).Password().Placeholder(ph).Grow(1)
+			if pw.Submitted() {
+				a.SubmitStartupLogin()
+			}
+		})
+		if a.loginError != "" {
+			ui.Text(c, a.loginError).FontSize(12).TextColor(pal.Danger)
+		}
 		ui.Row(c).FillWidth().Justify(ui.End).Gap(8).Children(func() {
 			if ui.PrimaryButton(c, "进入课堂").Padding(5, 16).Clicked() {
-				a.ConfirmChannel(strconv.Itoa(int(a.channelNum)))
+				a.SubmitStartupLogin()
 			}
 		})
 	})
@@ -1535,8 +1598,9 @@ func (a *App) buildSettingsModal(c *ui.Context, pal theme.Palette) {
 	ui.Column(c).Width(460).Background(pal.Canvas).Border(1, pal.CardBorder).Radius(4).Padding(16).Gap(10).Children(func() {
 		ui.Text(c, "教师端课堂设置").FontSize(16).Bold()
 		ui.Text(c, "频道 ID (数字)").FontSize(12).TextColor(pal.TextMuted)
-		if ui.NumberInput(c, &a.channelNum, 1, 999, 1).Changed() {
-			a.channel = strconv.Itoa(int(a.channelNum))
+		if ui.Select(c, &a.channel, numericChannelOptions()).Changed() {
+			a.channelInput = a.channel
+			a.channelNum = parseChannelNum(a.channel)
 		}
 		ui.Text(c, "默认作业存放目录").FontSize(12).TextColor(pal.TextMuted)
 		ui.Row(c).FillWidth().Gap(8).AlignItems(ui.Center).Children(func() {

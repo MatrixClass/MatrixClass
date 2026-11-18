@@ -16,21 +16,23 @@ import (
 
 // TeacherSettings holds persisted Teacher Console preferences and classroom policy.
 type TeacherSettings struct {
-	Channel        string
-	UseMulticast   bool
-	Dark           bool
-	CollectSaveDir string
-	MonitorFPS     float64
-	MonitorQual    float64
-	SpeakerVolume  float64
-	MicVolume      float64
-	SpeakerMuted   bool
-	MicMuted       bool
-	PolicyMode     string
-	BlockedApps    string
-	AllowedApps    string
-	BlockedSites   string
-	LockMessage    string
+	Channel          string
+	AuthUsername     string
+	AuthPasswordHash string
+	UseMulticast     bool
+	Dark             bool
+	CollectSaveDir   string
+	MonitorFPS       float64
+	MonitorQual      float64
+	SpeakerVolume    float64
+	MicVolume        float64
+	SpeakerMuted     bool
+	MicMuted         bool
+	PolicyMode       string
+	BlockedApps      string
+	AllowedApps      string
+	BlockedSites     string
+	LockMessage      string
 }
 
 // Store provides SQLite-backed persistence for the Teacher Console.
@@ -80,6 +82,8 @@ func (s *Store) initSchema() error {
 CREATE TABLE IF NOT EXISTS teacher_settings (
 	id INTEGER PRIMARY KEY CHECK (id = 1),
 	channel TEXT NOT NULL DEFAULT '',
+	auth_username TEXT NOT NULL DEFAULT 'admin',
+	auth_password_hash TEXT NOT NULL DEFAULT '',
 	use_multicast INTEGER NOT NULL DEFAULT 1,
 	dark INTEGER NOT NULL DEFAULT 0,
 	collect_save_dir TEXT NOT NULL DEFAULT '',
@@ -141,8 +145,13 @@ CREATE TABLE IF NOT EXISTS exam_submissions (
 	submitted_at INTEGER NOT NULL,
 	PRIMARY KEY (paper_id, student_id)
 );`
-	_, err := s.db.Exec(ddl)
-	return err
+	if _, err := s.db.Exec(ddl); err != nil {
+		return err
+	}
+	// Safe migrations for existing databases created prior to auth columns.
+	_, _ = s.db.Exec(`ALTER TABLE teacher_settings ADD COLUMN auth_username TEXT NOT NULL DEFAULT 'admin'`)
+	_, _ = s.db.Exec(`ALTER TABLE teacher_settings ADD COLUMN auth_password_hash TEXT NOT NULL DEFAULT ''`)
+	return nil
 }
 
 func boolToInt(b bool) int {
@@ -157,11 +166,11 @@ func (s *Store) LoadSettings() (TeacherSettings, bool, error) {
 	defer s.mu.Unlock()
 	var out TeacherSettings
 	var useMcast, dark, spkMuted, micMuted int
-	row := s.db.QueryRow(`SELECT channel, use_multicast, dark, collect_save_dir, monitor_fps, monitor_qual,
+	row := s.db.QueryRow(`SELECT channel, auth_username, auth_password_hash, use_multicast, dark, collect_save_dir, monitor_fps, monitor_qual,
 		speaker_volume, mic_volume, speaker_muted, mic_muted, policy_mode, blocked_apps, allowed_apps, blocked_sites, lock_message
 		FROM teacher_settings WHERE id = 1`)
 	err := row.Scan(
-		&out.Channel, &useMcast, &dark, &out.CollectSaveDir, &out.MonitorFPS, &out.MonitorQual,
+		&out.Channel, &out.AuthUsername, &out.AuthPasswordHash, &useMcast, &dark, &out.CollectSaveDir, &out.MonitorFPS, &out.MonitorQual,
 		&out.SpeakerVolume, &out.MicVolume, &spkMuted, &micMuted,
 		&out.PolicyMode, &out.BlockedApps, &out.AllowedApps, &out.BlockedSites, &out.LockMessage,
 	)
@@ -181,13 +190,18 @@ func (s *Store) LoadSettings() (TeacherSettings, bool, error) {
 func (s *Store) SaveSettings(cfg TeacherSettings) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if strings.TrimSpace(cfg.AuthUsername) == "" {
+		cfg.AuthUsername = "admin"
+	}
 	_, err := s.db.Exec(`INSERT INTO teacher_settings (
-		id, channel, use_multicast, dark, collect_save_dir, monitor_fps, monitor_qual,
+		id, channel, auth_username, auth_password_hash, use_multicast, dark, collect_save_dir, monitor_fps, monitor_qual,
 		speaker_volume, mic_volume, speaker_muted, mic_muted,
 		policy_mode, blocked_apps, allowed_apps, blocked_sites, lock_message, updated_at
-	) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	ON CONFLICT(id) DO UPDATE SET
 		channel=excluded.channel,
+		auth_username=excluded.auth_username,
+		auth_password_hash=excluded.auth_password_hash,
 		use_multicast=excluded.use_multicast,
 		dark=excluded.dark,
 		collect_save_dir=excluded.collect_save_dir,
@@ -203,7 +217,7 @@ func (s *Store) SaveSettings(cfg TeacherSettings) error {
 		blocked_sites=excluded.blocked_sites,
 		lock_message=excluded.lock_message,
 		updated_at=excluded.updated_at`,
-		cfg.Channel, boolToInt(cfg.UseMulticast), boolToInt(cfg.Dark), cfg.CollectSaveDir,
+		cfg.Channel, cfg.AuthUsername, cfg.AuthPasswordHash, boolToInt(cfg.UseMulticast), boolToInt(cfg.Dark), cfg.CollectSaveDir,
 		cfg.MonitorFPS, cfg.MonitorQual, cfg.SpeakerVolume, cfg.MicVolume,
 		boolToInt(cfg.SpeakerMuted), boolToInt(cfg.MicMuted),
 		cfg.PolicyMode, cfg.BlockedApps, cfg.AllowedApps, cfg.BlockedSites, cfg.LockMessage,
