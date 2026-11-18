@@ -2,6 +2,7 @@ package teacher
 
 import (
 	"testing"
+	"time"
 
 	"github.com/egoist/mygo/ui"
 
@@ -77,13 +78,20 @@ func TestTeacherConsoleViewsAndTabs(t *testing.T) {
 		t.Fatalf("expected TabExamStats (%d), got %d", TabExamStats, app.MainTab())
 	}
 
-	// Switch to Files tab
+	// Click "文件分发" opens standalone file distribution modal/window
 	if err := tester.Click("文件分发"); err != nil {
 		t.Fatalf("click 文件分发 failed: %v", err)
 	}
 	tester.Frame()
-	if app.MainTab() != TabFiles {
-		t.Fatalf("expected TabFiles (%d), got %d", TabFiles, app.MainTab())
+	if !app.fileDistModal || !tester.HasText("文件分发队列") {
+		t.Fatalf("expected file distribution popup to open")
+	}
+	if err := tester.Click("关闭"); err != nil {
+		t.Fatalf("click 关闭 failed: %v", err)
+	}
+	tester.Frame()
+	if app.fileDistModal {
+		t.Fatalf("expected file distribution popup to close")
 	}
 
 	// Toggle screen lock
@@ -268,5 +276,65 @@ func TestTeacherSelectAllAndBatchOperations(t *testing.T) {
 	tester.Frame()
 	if got := len(app.targetStudentIDs()); got != 0 {
 		t.Fatalf("expected 0 selected students after clicking blank area, got %d", got)
+	}
+}
+
+func TestTeacherFileDistributeQueueWindow(t *testing.T) {
+	app, _, _, _ := newTestTeacherApp()
+	tester := ui.NewTester(app.View, 1280, 820)
+	tester.Frame()
+
+	if app.remoteDir != "" {
+		t.Fatalf("expected empty default remoteDir (student Desktop), got %q", app.remoteDir)
+	}
+
+	app.OpenFileDistributeWindow()
+	tester.Frame()
+	if !app.fileDistModal {
+		t.Fatalf("expected fileDistModal=true after OpenFileDistributeWindow")
+	}
+	if !tester.HasText("学生机接收路径（留空则默认发送到学生机桌面）") {
+		t.Fatalf("expected default desktop path hint in file distribution view")
+	}
+
+	app.AddQueuedFiles([]string{`C:\tmp\lesson1.pdf`, `C:\tmp\slides.pptx`, `C:\tmp\lesson1.pdf`})
+	tester.Frame()
+	if len(app.fileQueue) != 2 {
+		t.Fatalf("expected 2 deduplicated queued files, got %d", len(app.fileQueue))
+	}
+	if !tester.HasText("lesson1.pdf") || !tester.HasText("slides.pptx") {
+		t.Fatalf("expected queued filenames rendered in popup")
+	}
+
+	beforeCount := len(app.opts.Files.ListTasks())
+	app.DistributeQueue()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if len(app.opts.Files.ListTasks()) >= beforeCount+2 {
+			break
+		}
+		time.Sleep(15 * time.Millisecond)
+	}
+
+	tasks := app.opts.Files.ListTasks()
+	if len(tasks) < beforeCount+2 {
+		t.Fatalf("expected 2 new transfer tasks, got %d (before=%d)", len(tasks), beforeCount)
+	}
+	seen := map[string]string{}
+	for _, tk := range tasks[:2] {
+		seen[tk.FileName] = tk.RemotePath
+	}
+	if seen["lesson1.pdf"] != "lesson1.pdf" || seen["slides.pptx"] != "slides.pptx" {
+		t.Fatalf("expected empty remoteDir to yield relative desktop filenames, got %+v", seen)
+	}
+
+	// Removing a queued file should update queue length
+	app.removeQueuedFile(0)
+	if len(app.fileQueue) != 1 {
+		t.Fatalf("expected 1 queued file after remove, got %d", len(app.fileQueue))
+	}
+	app.closeFileDistributeWindow()
+	if app.fileDistModal {
+		t.Fatalf("expected fileDistModal=false after close")
 	}
 }

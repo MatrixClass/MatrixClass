@@ -8,6 +8,7 @@ import (
 	"log"
 	"net"
 	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -505,8 +506,20 @@ func main() {
 	teacherAddr := flag.String("teacher", "", "optional explicit teacher KCP address (host:port)")
 	studentID := flag.String("id", "stu-01", "student ID")
 	studentNo := flag.String("no", "202601", "student number")
-	recvDir := flag.String("recv", "received_files", "received files directory")
+	recvDir := flag.String("recv", "", "received files directory (defaults to Desktop)")
 	flag.Parse()
+
+	if *recvDir == "" {
+		if home, err := os.UserHomeDir(); err == nil && home != "" {
+			desktop := filepath.Join(home, "Desktop")
+			if info, statErr := os.Stat(desktop); statErr == nil && info.IsDir() {
+				*recvDir = desktop
+			}
+		}
+		if *recvDir == "" {
+			*recvDir = "received_files"
+		}
+	}
 
 	if !mygo.App.RequestSingleInstanceLock() {
 		return

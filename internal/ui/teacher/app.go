@@ -6,6 +6,7 @@ import (
 	"image"
 	"image/color"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -58,8 +59,9 @@ const (
 type App struct {
 	mu sync.Mutex
 
-	opts Services
-	win  *mygo.Window
+	opts        Services
+	win         *mygo.Window
+	fileDistWin *mygo.Window
 
 	teacherID   string
 	teacherName string
@@ -124,6 +126,8 @@ type App struct {
 
 	// File distribution & collection state
 	distributePath string
+	fileQueue      []string
+	fileDistModal  bool
 	remoteDir      string
 	collectSaveDir string
 	autoOpenFile   bool
@@ -237,6 +241,15 @@ func (a *App) AttachWindow(w *mygo.Window) {
 	if w != nil {
 		w.SetMenu(a.BuildMenu())
 		_ = w.SetIcon(theme.AppIconPNG(true))
+		w.OnClosed(func() {
+			a.mu.Lock()
+			fw := a.fileDistWin
+			a.fileDistWin = nil
+			a.mu.Unlock()
+			if fw != nil {
+				fw.Destroy()
+			}
+		})
 	}
 }
 
@@ -510,6 +523,12 @@ func (a *App) View(c *ui.Context) {
 		a.buildRemoteControlModal(c, pal)
 	})
 
+	ui.Modal(c, &a.fileDistModal, func() {
+		ui.Column(c).Width(560).Height(440).Background(pal.Canvas).Border(1, pal.CardBorder).Radius(4).Children(func() {
+			a.buildFileDistributeContent(c, pal)
+		})
+	})
+
 	a.syncRuntimeFlags()
 }
 
@@ -566,9 +585,8 @@ func (a *App) buildToolbar(c *ui.Context, pal theme.Palette) {
 			a.toolbarToggle(c, pal, "黑屏锁屏", theme.IconLockScreen, &a.screenLocked, func() {
 				a.applyScreenLock()
 			})
-			a.toolbarButton(c, pal, "文件分发", theme.IconFileDistribute, a.mainTab == TabFiles, func() {
-				a.mainTab = TabFiles
-				a.statusNote = "文件分发面板已打开"
+			a.toolbarButton(c, pal, "文件分发", theme.IconFileDistribute, a.fileDistModal, func() {
+				a.OpenFileDistributeWindow()
 			})
 			a.toolbarButton(c, pal, "收取作业", theme.IconCollectHomework, false, func() {
 				a.CollectHomework()
@@ -1715,6 +1733,224 @@ func (a *App) DistributeFile() {
 	}()
 }
 
+// OpenFileDistributeWindow opens the standalone File Distribution popup window.
+func (a *App) OpenFileDistributeWindow() {
+	a.mu.Lock()
+	w := a.win
+	fw := a.fileDistWin
+	a.mu.Unlock()
+
+	if w == nil {
+		a.fileDistModal = true
+		a.statusNote = "已打开文件分发窗口"
+		return
+	}
+	if fw != nil {
+		fw.Show()
+		fw.Focus()
+		return
+	}
+	fw = mygo.NewWindow(mygo.WindowOptions{
+		Title:     "文件分发 - 上传队列",
+		Width:     560,
+		Height:    440,
+		MinWidth:  460,
+		MinHeight: 360,
+		Content:   ui.View(a.FileDistributeView),
+	})
+	fw.OnClosed(func() {
+		a.mu.Lock()
+		if a.fileDistWin == fw {
+			a.fileDistWin = nil
+		}
+		a.mu.Unlock()
+	})
+	a.mu.Lock()
+	a.fileDistWin = fw
+	a.mu.Unlock()
+	a.statusNote = "已打开文件分发窗口"
+}
+
+func (a *App) FileDistributeView(c *ui.Context) {
+	a.mu.Lock()
+	dark := a.dark
+	a.mu.Unlock()
+	pal := theme.GetPalette(dark)
+	c.SetTheme(theme.Theme(dark))
+	ui.Column(c).Fill().Background(pal.Canvas).Children(func() {
+		a.buildFileDistributeContent(c, pal)
+	})
+}
+
+func (a *App) buildFileDistributeContent(c *ui.Context, pal theme.Palette) {
+	targets := a.resolveFileTargets()
+	ui.Column(c).Fill().Padding(14).Gap(10).Children(func() {
+		ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(8).Children(func() {
+			ui.Text(c, "文件分发队列").FontSize(15).Bold()
+			ui.Badge(c, fmt.Sprintf("目标: %d 台", len(targets))).Background(pal.Selection).TextColor(pal.Accent)
+			ui.Spacer(c)
+			ui.Checkbox(c, &a.fileTargetAll, "全部在线学生")
+		})
+
+		ui.Column(c).FillWidth().Padding(10).Radius(3).Background(pal.Card).Border(1, pal.CardBorder).Gap(6).Children(func() {
+			ui.Text(c, "学生机接收路径（留空则默认发送到学生机桌面）").FontSize(11).TextColor(pal.TextMuted)
+			ui.Row(c).FillWidth().Gap(8).AlignItems(ui.Center).Children(func() {
+				ui.TextInput(c, &a.remoteDir).Placeholder("默认: 学生机桌面 (Desktop)").Grow(1)
+				ui.Checkbox(c, &a.autoOpenFile, "到达后自动打开")
+			})
+		})
+
+		ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(8).Children(func() {
+			ui.Text(c, fmt.Sprintf("待发送队列 (%d)", len(a.fileQueue))).FontSize(12).Bold()
+			ui.Spacer(c)
+			if ui.Button(c, "添加文件...").Padding(4, 12).Clicked() {
+				a.openQueueFilePicker()
+			}
+			if len(a.fileQueue) > 0 {
+				if ui.Button(c, "清空队列").Padding(4, 10).Clicked() {
+					a.fileQueue = nil
+				}
+			}
+		})
+
+		ui.Scroll(c.Key("file-dist-queue")).Grow(1).FillWidth().Background(pal.Card).Border(1, pal.CardBorder).Radius(3).Padding(8).Gap(6).Children(func() {
+			if len(a.fileQueue) == 0 {
+				ui.Box(c).Fill().Center().Padding(20).Children(func() {
+					ui.Text(c, "请点击“添加文件...”将需要分发的文件加入上传队列").FontSize(12).TextColor(pal.TextMuted)
+				})
+				return
+			}
+			for idx, p := range a.fileQueue {
+				idx, p := idx, p
+				ui.Row(c).Key("fq-"+p).FillWidth().Padding(6, 8).Radius(2).Background(pal.Canvas).Border(1, pal.CardBorder).AlignItems(ui.Center).Gap(8).Children(func() {
+					ui.Text(c, filepath.Base(p)).FontSize(12).Bold()
+					ui.Text(c, p).FontSize(11).TextColor(pal.TextMuted).Grow(1).SingleLine()
+					if ui.Button(c, "移除").Padding(2, 8).Clicked() {
+						a.removeQueuedFile(idx)
+					}
+				})
+			}
+		})
+
+		ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(8).Children(func() {
+			ui.Text(c, a.statusNote).FontSize(11).TextColor(pal.TextMuted).Grow(1).SingleLine()
+			if ui.Button(c, "关闭").Padding(5, 14).Clicked() {
+				a.closeFileDistributeWindow()
+			}
+			sendLbl := fmt.Sprintf("发送 (%d)", len(a.fileQueue))
+			if ui.PrimaryButton(c, sendLbl).Padding(5, 16).Clicked() {
+				a.DistributeQueue()
+			}
+		})
+	})
+}
+
+func (a *App) closeFileDistributeWindow() {
+	a.fileDistModal = false
+	a.mu.Lock()
+	fw := a.fileDistWin
+	a.mu.Unlock()
+	if fw != nil {
+		fw.Close()
+	}
+}
+
+func (a *App) AddQueuedFiles(paths []string) {
+	if len(paths) == 0 {
+		return
+	}
+	existing := make(map[string]bool, len(a.fileQueue))
+	for _, p := range a.fileQueue {
+		existing[p] = true
+	}
+	for _, p := range paths {
+		p = strings.TrimSpace(p)
+		if p != "" && !existing[p] {
+			existing[p] = true
+			a.fileQueue = append(a.fileQueue, p)
+		}
+	}
+}
+
+func (a *App) removeQueuedFile(idx int) {
+	if idx < 0 || idx >= len(a.fileQueue) {
+		return
+	}
+	a.fileQueue = append(a.fileQueue[:idx], a.fileQueue[idx+1:]...)
+}
+
+func (a *App) openQueueFilePicker() {
+	go func() {
+		paths, err := mygo.Dialog.Open(mygo.OpenDialogOptions{
+			Title:    "选择要添加到分发队列的文件",
+			Multiple: true,
+		})
+		if err != nil || len(paths) == 0 {
+			return
+		}
+		a.mu.Lock()
+		fw := a.fileDistWin
+		w := a.win
+		a.mu.Unlock()
+		apply := func() {
+			a.AddQueuedFiles(paths)
+			a.statusNote = fmt.Sprintf("已添加 %d 个文件到分发队列", len(paths))
+		}
+		if fw != nil {
+			fw.Update(apply)
+		} else if w != nil {
+			w.Update(apply)
+		} else {
+			apply()
+		}
+	}()
+}
+
+func (a *App) DistributeQueue() {
+	if a.opts.Files == nil {
+		return
+	}
+	targets := a.resolveFileTargets()
+	if len(targets) == 0 {
+		a.statusNote = "没有可分发的在线学生目标"
+		return
+	}
+	queue := append([]string(nil), a.fileQueue...)
+	if len(queue) == 0 && strings.TrimSpace(a.distributePath) != "" {
+		queue = []string{strings.TrimSpace(a.distributePath)}
+	}
+	if len(queue) == 0 {
+		a.statusNote = "请先添加文件到上传队列"
+		return
+	}
+	remoteDir := strings.TrimSpace(a.remoteDir)
+	autoOpen := a.autoOpenFile
+	a.statusNote = fmt.Sprintf("正在向 %d 台学生分发 %d 个文件...", len(targets), len(queue))
+	go func() {
+		sent := 0
+		var lastErr error
+		for _, p := range queue {
+			if _, err := a.opts.Files.DistributeFile(context.Background(), p, remoteDir, targets, autoOpen); err != nil {
+				lastErr = err
+			} else {
+				sent++
+			}
+		}
+		a.mu.Lock()
+		if lastErr != nil {
+			a.statusNote = fmt.Sprintf("分发完成 %d/%d（部分失败: %v）", sent, len(queue), lastErr)
+		} else {
+			a.statusNote = fmt.Sprintf("已成功发送 %d 个文件至 %d 台学生", sent, len(targets))
+		}
+		fw := a.fileDistWin
+		a.mu.Unlock()
+		if fw != nil {
+			fw.Invalidate()
+		}
+		a.Invalidate()
+	}()
+}
+
 func (a *App) CollectHomework() {
 	if a.opts.Files == nil {
 		return
@@ -2020,7 +2256,7 @@ func (a *App) attachStudentContextMenu(elem ui.Element, st core.StudentInfo) {
 		}
 		if m.Item(prefix + "发送文件...").Chosen() {
 			a.fileTargetAll = false
-			a.mainTab = TabFiles
+			a.OpenFileDistributeWindow()
 			a.statusNote = fmt.Sprintf("已选定 %d 台学生作为文件分发目标", len(targets))
 		}
 		if groups := a.listGroups(); len(groups) > 0 {
