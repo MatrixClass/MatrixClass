@@ -708,7 +708,9 @@ func (a *App) View(c *ui.Context) {
 
 	pal := theme.GetPalette(dark)
 	c.SetTheme(theme.Theme(dark))
-	if mode != ModeBar {
+	if mode == ModeBar {
+		c.Root().Background(ui.Transparent)
+	} else {
 		c.Root().Background(pal.Canvas)
 	}
 	switch mode {

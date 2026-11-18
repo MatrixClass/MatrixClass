@@ -656,7 +656,7 @@ func main() {
 			MinHeight:   8,
 			Frameless:   true,
 			Transparent: true,
-			CornerRadius: 12,
+			DisableShadow: true,
 			AlwaysOnTop: true,
 			Content:     ui.View(app.View),
 		})
