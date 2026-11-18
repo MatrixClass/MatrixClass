@@ -184,7 +184,7 @@ func (a *App) positionBarTopCenter(w *mygo.Window) {
 		return
 	}
 	wa := mygo.Screen.PrimaryDisplay().WorkArea
-	const barW = 680
+	const barW = 740
 	x := wa.X + (wa.Width-barW)/2
 	if x < wa.X {
 		x = wa.X
@@ -280,7 +280,8 @@ func (a *App) InstallTray() {
 	menu := mygo.NewMenu([]*mygo.MenuItem{
 		{Label: "显示/隐藏悬浮条", Click: func(_ *mygo.MenuItem, _ *mygo.Window) { a.ShowFloatingBar() }},
 		{Label: "举手提问", Click: func(_ *mygo.MenuItem, _ *mygo.Window) { a.ToggleHandRaise() }},
-		{Label: "提交作业 / 消息", Click: func(_ *mygo.MenuItem, _ *mygo.Window) { a.OpenMode(ModeChat) }},
+		{Label: "作业提交", Click: func(_ *mygo.MenuItem, _ *mygo.Window) { a.OpenMode(ModeHomeworkSubmit) }},
+		{Label: "课堂消息", Click: func(_ *mygo.MenuItem, _ *mygo.Window) { a.OpenMode(ModeChat) }},
 		{Label: "文件接收队列", Click: func(_ *mygo.MenuItem, _ *mygo.Window) { a.OpenFileReceiveWindow() }},
 		mygo.Separator(),
 		{Role: mygo.RoleQuit, Label: "退出学生端"},
@@ -651,7 +652,7 @@ func (a *App) syncWindowOnMain(w *mygo.Window, show, focus bool) {
 			w.SetMinimumSize(520, 380)
 			w.SetSize(640, 460)
 			w.Center()
-		case ModeChat:
+		case ModeChat, ModeHomeworkSubmit:
 			w.SetFullScreen(false)
 			w.SetAlwaysOnTop(false)
 			w.SetClosable(true)
@@ -664,19 +665,19 @@ func (a *App) syncWindowOnMain(w *mygo.Window, show, focus bool) {
 			w.SetAlwaysOnTop(true)
 			w.SetClosable(true)
 			w.SetResizable(true)
-			w.SetMinimumSize(520, 8)
+			w.SetMinimumSize(560, 8)
 			wa := mygo.Screen.PrimaryDisplay().WorkArea
 			if docked {
-				w.SetSize(680, 10)
+				w.SetSize(740, 10)
 				curX, _ := w.Position()
 				if firstSync || prevMode != ModeBar {
-					curX = wa.X + (wa.Width-680)/2
+					curX = wa.X + (wa.Width-740)/2
 				}
 				if curX < wa.X {
 					curX = wa.X
 				}
-				if wa.Width > 680 && curX > wa.X+wa.Width-680 {
-					curX = wa.X + wa.Width - 680
+				if wa.Width > 740 && curX > wa.X+wa.Width-740 {
+					curX = wa.X + wa.Width - 740
 				}
 				w.SetPosition(curX, wa.Y)
 			} else {
@@ -684,7 +685,7 @@ func (a *App) syncWindowOnMain(w *mygo.Window, show, focus bool) {
 				if collapsed {
 					h = 52
 				}
-				w.SetSize(680, h)
+				w.SetSize(740, h)
 				if firstSync || prevMode != ModeBar {
 					a.positionBarTopCenter(w)
 				}
@@ -723,7 +724,9 @@ func (a *App) View(c *ui.Context) {
 	case ModeCheckIn:
 		a.buildCheckInView(c, pal)
 	case ModeChat:
-		a.buildChatHomeworkView(c, pal)
+		a.buildChatView(c, pal)
+	case ModeHomeworkSubmit:
+		a.buildHomeworkView(c, pal)
 	default:
 		a.buildFloatingBarView(c, pal)
 	}
@@ -771,11 +774,11 @@ func (a *App) buildFloatingBarView(c *ui.Context, pal theme.Palette) {
 			a.barIconButton(c, pal, handLabel, theme.IconHandRaise, a.handRaised, func() {
 				a.ToggleHandRaise()
 			})
+			a.barIconButton(c, pal, "作业", theme.IconCollectHomework, false, func() {
+				a.OpenMode(ModeHomeworkSubmit)
+			})
 			a.barIconButton(c, pal, "消息", theme.IconChat, false, func() {
-				a.mu.Lock()
-				a.mode = ModeChat
-				a.mu.Unlock()
-				a.syncWindow()
+				a.OpenMode(ModeChat)
 			})
 			a.barIconButton(c, pal, "广播", theme.IconBroadcast, false, func() {
 				a.mu.Lock()
@@ -996,58 +999,15 @@ func (a *App) buildExamView(c *ui.Context, pal theme.Palette) {
 	})
 }
 
-func (a *App) buildChatHomeworkView(c *ui.Context, pal theme.Palette) {
-	var fileTasks []*core.TransferTask
-	if a.opts.Files != nil {
-		fileTasks = a.opts.Files.ListTasks()
-	}
+func (a *App) buildChatView(c *ui.Context, pal theme.Palette) {
 	ui.Column(c).Fill().Padding(16).Gap(10).Background(pal.Canvas).Children(func() {
 		ui.Row(c).FillWidth().AlignItems(ui.Center).Children(func() {
-			ui.Text(c, "作业提交与课堂消息").FontSize(16).Bold().TextColor(pal.Accent)
+			ui.Text(c, "课堂消息").FontSize(16).Bold().TextColor(pal.Accent)
 			ui.Spacer(c)
 			if ui.Button(c, "返回").Padding(4, 10).Clicked() {
-				a.mu.Lock()
-				a.mode = ModeBar
-				a.mu.Unlock()
-				a.syncWindow()
+				a.OpenMode(ModeBar)
 			}
 		})
-
-		ui.Column(c).FillWidth().Padding(10).Radius(3).Background(pal.Card).Border(1, pal.CardBorder).Gap(6).Children(func() {
-			ui.Text(c, "提交作业文件至教师端").FontSize(12).Bold()
-			ui.Row(c).FillWidth().Gap(8).Children(func() {
-				ui.TextInput(c, &a.homeworkPath).Grow(1).Placeholder("作业文件路径...")
-				if ui.Button(c, "浏览").Padding(4, 10).Clicked() {
-					a.openHomeworkPicker()
-				}
-				if ui.PrimaryButton(c, "上传作业").Padding(4, 14).Clicked() {
-					a.SubmitHomework()
-				}
-			})
-		})
-
-		if len(fileTasks) > 0 {
-			ui.Column(c).FillWidth().Padding(8).Radius(3).Background(pal.Card).Border(1, pal.CardBorder).Gap(4).Children(func() {
-				ui.Text(c, fmt.Sprintf("文件记录 (%d)", len(fileTasks))).FontSize(11).Bold().TextColor(pal.TextMuted)
-				limit := len(fileTasks)
-				if limit > 4 {
-					limit = 4
-				}
-				for i := len(fileTasks) - 1; i >= len(fileTasks)-limit; i-- {
-					tk := fileTasks[i]
-					ui.Row(c).Key("st-file-" + tk.ID).FillWidth().AlignItems(ui.Center).Gap(6).Children(func() {
-						ui.Badge(c, string(tk.Direction))
-						ui.Text(c, tk.FileName).FontSize(11).Grow(1).SingleLine()
-						ui.Text(c, tk.Status).FontSize(10).TextColor(pal.TextMuted)
-						if tk.Status == "completed" && tk.LocalPath != "" {
-							if ui.Button(c, "打开").Padding(2, 8).Clicked() {
-								_ = mygo.Shell.OpenPath(tk.LocalPath)
-							}
-						}
-					})
-				}
-			})
-		}
 
 		ui.Scroll(c.Key("student-chat-scroll")).Grow(1).FillWidth().Children(func() {
 			ui.Column(c).FillWidth().Gap(4).Children(func() {
@@ -1068,6 +1028,60 @@ func (a *App) buildChatHomeworkView(c *ui.Context, pal theme.Palette) {
 				a.SendChat()
 			}
 		})
+	})
+}
+
+func (a *App) buildHomeworkView(c *ui.Context, pal theme.Palette) {
+	var fileTasks []*core.TransferTask
+	if a.opts.Files != nil {
+		fileTasks = a.opts.Files.ListTasks()
+	}
+	ui.Column(c).Fill().Padding(16).Gap(10).Background(pal.Canvas).Children(func() {
+		ui.Row(c).FillWidth().AlignItems(ui.Center).Children(func() {
+			ui.Text(c, "作业提交").FontSize(16).Bold().TextColor(pal.Accent)
+			ui.Spacer(c)
+			if ui.Button(c, "返回").Padding(4, 10).Clicked() {
+				a.OpenMode(ModeBar)
+			}
+		})
+
+		ui.Column(c).FillWidth().Padding(10).Radius(3).Background(pal.Card).Border(1, pal.CardBorder).Gap(6).Children(func() {
+			ui.Text(c, "提交作业文件至教师端").FontSize(12).Bold()
+			ui.Row(c).FillWidth().Gap(8).Children(func() {
+				ui.TextInput(c, &a.homeworkPath).Grow(1).Placeholder("作业文件路径...")
+				if ui.Button(c, "浏览").Padding(4, 10).Clicked() {
+					a.openHomeworkPicker()
+				}
+				if ui.PrimaryButton(c, "上传作业").Padding(4, 14).Clicked() {
+					a.SubmitHomework()
+				}
+			})
+		})
+
+		if len(fileTasks) > 0 {
+			ui.Scroll(c.Key("student-hw-history")).Grow(1).FillWidth().Children(func() {
+				ui.Column(c).FillWidth().Padding(8).Radius(3).Background(pal.Card).Border(1, pal.CardBorder).Gap(4).Children(func() {
+					ui.Text(c, fmt.Sprintf("提交记录 (%d)", len(fileTasks))).FontSize(11).Bold().TextColor(pal.TextMuted)
+					for i := len(fileTasks) - 1; i >= 0; i-- {
+						tk := fileTasks[i]
+						ui.Row(c).Key("st-file-" + tk.ID).FillWidth().AlignItems(ui.Center).Gap(6).Children(func() {
+							ui.Badge(c, string(tk.Direction))
+							ui.Text(c, tk.FileName).FontSize(11).Grow(1).SingleLine()
+							ui.Text(c, tk.Status).FontSize(10).TextColor(pal.TextMuted)
+							if tk.Status == "completed" && tk.LocalPath != "" {
+								if ui.Button(c, "打开").Padding(2, 8).Clicked() {
+									_ = mygo.Shell.OpenPath(tk.LocalPath)
+								}
+							}
+						})
+					}
+				})
+			})
+		} else {
+			ui.Box(c).Grow(1).FillWidth().Center().Background(pal.Card).Border(1, pal.CardBorder).Radius(3).Children(func() {
+				ui.Text(c, "选择作业文件后点击「上传作业」提交给教师").FontSize(12).TextColor(pal.TextMuted)
+			})
+		}
 	})
 }
 

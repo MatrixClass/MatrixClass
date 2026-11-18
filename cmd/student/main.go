@@ -641,7 +641,7 @@ func main() {
 
 	mygo.App.WhenReady(func() {
 		wa := mygo.Screen.PrimaryDisplay().WorkArea
-		barW := 680
+		barW := 740
 		barX := wa.X + (wa.Width-barW)/2
 		if barX < wa.X {
 			barX = wa.X
@@ -652,7 +652,7 @@ func main() {
 			Height:      92,
 			X:           barX,
 			Y:           wa.Y,
-			MinWidth:    520,
+			MinWidth:    560,
 			MinHeight:   8,
 			Frameless:   true,
 			Transparent: true,

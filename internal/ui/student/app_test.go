@@ -294,3 +294,34 @@ func TestStudentFloatingBarHoverFocusAndDock(t *testing.T) {
 		t.Fatalf("expected expanded floating bar after focus")
 	}
 }
+
+func TestStudentSeparateHomeworkAndChatPages(t *testing.T) {
+	app := newTestStudentApp()
+	tester := ui.NewTester(app.View, 740, 480)
+	tester.Frame()
+
+	if !tester.HasText("作业") || !tester.HasText("消息") {
+		t.Fatalf("expected separate 作业 and 消息 buttons on floating bar")
+	}
+
+	if err := tester.Click("作业"); err != nil {
+		t.Fatalf("failed to click 作业: %v", err)
+	}
+	tester.Frame()
+	if !tester.HasText("作业提交") || !tester.HasText("上传作业") || tester.HasText("发送消息") {
+		t.Fatalf("expected standalone homework page without chat controls")
+	}
+
+	if err := tester.Click("返回"); err != nil {
+		t.Fatalf("failed to click 返回 from homework: %v", err)
+	}
+	tester.Frame()
+
+	if err := tester.Click("消息"); err != nil {
+		t.Fatalf("failed to click 消息: %v", err)
+	}
+	tester.Frame()
+	if !tester.HasText("课堂消息") || !tester.HasText("发送消息") || tester.HasText("上传作业") {
+		t.Fatalf("expected standalone chat page without homework controls")
+	}
+}
