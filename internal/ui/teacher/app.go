@@ -249,8 +249,8 @@ func New(opts Options) *App {
 		useMulticast:      true,
 		monitorTiles:      make(map[string]*ui.Bitmap),
 		pendingMonitor:    make(map[string]*core.VideoFrame),
-		theatreMedia:      []string{"01_计算机网络拓扑演示.mp4", "02_TCP三次握手动画.mkv", "03_局域网交换实验讲解.mp4"},
-		theatre:           core.TheatreState{Media: "01_计算机网络拓扑演示.mp4", Duration: 360, Volume: 0.75},
+		theatreMedia:      nil,
+		theatre:           core.TheatreState{Volume: 0.75},
 		examTitleInput:    "随堂小测：计算机网络基础",
 		examDurInput:      10,
 		examKindInput:     "single",
@@ -1193,7 +1193,11 @@ func (a *App) buildMyTheatreTab(c *ui.Context, pal theme.Palette) {
 	ui.Column(c).Grow(1).Padding(12).Gap(10).Children(func() {
 		ui.Row(c).AlignItems(ui.Center).Gap(8).Children(func() {
 			ui.Text(c, "网络影院 (MyTheatre)").FontSize(15).Bold()
-			ui.Select(c, &a.theatre.Media, a.theatreMedia).Width(260)
+			if len(a.theatreMedia) > 0 {
+				ui.Select(c, &a.theatre.Media, a.theatreMedia).Width(260)
+			} else {
+				ui.Text(c, "尚未添加本地视频").FontSize(12).TextColor(pal.TextMuted)
+			}
 			ui.Spacer(c)
 			if a.theatre.Playing {
 				ui.Badge(c, "正在同步播放").Background(pal.Selection).TextColor(pal.Text)
@@ -1216,7 +1220,11 @@ func (a *App) buildMyTheatreTab(c *ui.Context, pal theme.Palette) {
 			if a.theatrePlayer == nil && (!a.theatre.Playing || a.theatreFrame == nil) {
 				ui.Column(c).Center().Gap(6).Children(func() {
 					ui.Text(c, "mytheatre").FontSize(34).Bold().TextColor(ui.RGBA(255, 255, 255, 0.14))
-					ui.Text(c, fmt.Sprintf("当前影片：%s", a.theatre.Media)).FontSize(12).TextColor(ui.RGBA(212, 212, 212, 0.7))
+					if a.theatre.Media == "" {
+						ui.Text(c, "请点击下方「选择本地视频」添加媒体文件").FontSize(12).TextColor(ui.RGBA(212, 212, 212, 0.7))
+					} else {
+						ui.Text(c, fmt.Sprintf("当前影片：%s", a.theatre.Media)).FontSize(12).TextColor(ui.RGBA(212, 212, 212, 0.7))
+					}
 				})
 			}
 		})
