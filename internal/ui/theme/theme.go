@@ -9,8 +9,8 @@ import (
 	"github.com/egoist/mygo/ui"
 )
 
-// Palette defines the semantic colors used across Teacher and Student consoles,
-// modeled after a classic blue-gray desktop chrome.
+// Palette defines the restrained monochrome (black/white/gray) desktop palette
+// used across Teacher and Student consoles.
 type Palette struct {
 	Dark          bool
 	ChromeBar     ui.Color
@@ -35,57 +35,57 @@ type Palette struct {
 	TextMuted     ui.Color
 }
 
-// LightPalette returns the light blue-gray desktop palette.
+// LightPalette returns a crisp neutral monochrome light desktop palette.
 func LightPalette() Palette {
 	return Palette{
 		Dark:          false,
-		ChromeBar:     ui.Hex("#EAF1FB"),
-		ChromeRail:    ui.Hex("#F3F7FD"),
-		ChromeHover:   ui.Hex("#DCE8F8"),
-		ChromeActive:  ui.Hex("#D5E3F6"),
+		ChromeBar:     ui.Hex("#F2F2F2"),
+		ChromeRail:    ui.Hex("#F7F7F7"),
+		ChromeHover:   ui.Hex("#E6E6E6"),
+		ChromeActive:  ui.Hex("#DCDCDC"),
 		Canvas:        ui.Hex("#FFFFFF"),
-		Card:          ui.Hex("#F8FAFD"),
-		CardBorder:    ui.Hex("#C7D6EA"),
-		Selection:     ui.Hex("#D5E3F6"),
-		Accent:        ui.Hex("#2B579A"),
+		Card:          ui.Hex("#FAFAFA"),
+		CardBorder:    ui.Hex("#D4D4D4"),
+		Selection:     ui.Hex("#E4E4E4"),
+		Accent:        ui.Hex("#1F1F1F"),
 		AccentText:    ui.Hex("#FFFFFF"),
-		Success:       ui.Hex("#1E8E3E"),
-		Warning:       ui.Hex("#D97706"),
-		Danger:        ui.Hex("#C62828"),
-		Info:          ui.Hex("#0284C7"),
-		StatusBarBg:   ui.Hex("#DCE7F7"),
-		StatusBarText: ui.Hex("#1E3A5F"),
-		TheatreBg:     ui.Hex("#111827"),
-		LockBg:        ui.Hex("#0B1120"),
-		Text:          ui.Hex("#1E293B"),
-		TextMuted:     ui.Hex("#5B6B82"),
+		Success:       ui.Hex("#262626"),
+		Warning:       ui.Hex("#525252"),
+		Danger:        ui.Hex("#141414"),
+		Info:          ui.Hex("#404040"),
+		StatusBarBg:   ui.Hex("#ECECEC"),
+		StatusBarText: ui.Hex("#262626"),
+		TheatreBg:     ui.Hex("#111111"),
+		LockBg:        ui.Hex("#0A0A0A"),
+		Text:          ui.Hex("#171717"),
+		TextMuted:     ui.Hex("#6B6B6B"),
 	}
 }
 
-// DarkPalette returns the high-contrast dark variant for low-light classrooms.
+// DarkPalette returns a neutral monochrome dark palette.
 func DarkPalette() Palette {
 	return Palette{
 		Dark:          true,
-		ChromeBar:     ui.Hex("#182232"),
-		ChromeRail:    ui.Hex("#141C29"),
-		ChromeHover:   ui.Hex("#243247"),
-		ChromeActive:  ui.Hex("#2B3D57"),
-		Canvas:        ui.Hex("#0F172A"),
-		Card:          ui.Hex("#1E293B"),
-		CardBorder:    ui.Hex("#334155"),
-		Selection:     ui.Hex("#263B59"),
-		Accent:        ui.Hex("#3B82F6"),
-		AccentText:    ui.Hex("#FFFFFF"),
-		Success:       ui.Hex("#22C55E"),
-		Warning:       ui.Hex("#F59E0B"),
-		Danger:        ui.Hex("#EF4444"),
-		Info:          ui.Hex("#38BDF8"),
-		StatusBarBg:   ui.Hex("#151E2E"),
-		StatusBarText: ui.Hex("#CBD5E1"),
-		TheatreBg:     ui.Hex("#05080F"),
-		LockBg:        ui.Hex("#030712"),
-		Text:          ui.Hex("#E2E8F0"),
-		TextMuted:     ui.Hex("#94A3B8"),
+		ChromeBar:     ui.Hex("#1D1D1D"),
+		ChromeRail:    ui.Hex("#181818"),
+		ChromeHover:   ui.Hex("#2A2A2A"),
+		ChromeActive:  ui.Hex("#333333"),
+		Canvas:        ui.Hex("#121212"),
+		Card:          ui.Hex("#1B1B1B"),
+		CardBorder:    ui.Hex("#323232"),
+		Selection:     ui.Hex("#2D2D2D"),
+		Accent:        ui.Hex("#EAEAEA"),
+		AccentText:    ui.Hex("#111111"),
+		Success:       ui.Hex("#D4D4D4"),
+		Warning:       ui.Hex("#A3A3A3"),
+		Danger:        ui.Hex("#F5F5F5"),
+		Info:          ui.Hex("#BDBDBD"),
+		StatusBarBg:   ui.Hex("#181818"),
+		StatusBarText: ui.Hex("#D4D4D4"),
+		TheatreBg:     ui.Hex("#0A0A0A"),
+		LockBg:        ui.Hex("#050505"),
+		Text:          ui.Hex("#ECECEC"),
+		TextMuted:     ui.Hex("#8E8E8E"),
 	}
 }
 
@@ -97,7 +97,7 @@ func GetPalette(dark bool) Palette {
 	return LightPalette()
 }
 
-// Light returns a MyGo UI Theme configured with light desktop colors.
+// Light returns a MyGo UI Theme configured with neutral light monochrome desktop colors.
 func Light() *ui.Theme {
 	p := LightPalette()
 	t := ui.LightTheme()
@@ -110,16 +110,16 @@ func Light() *ui.Theme {
 	t.Text = p.Text
 	t.TextMuted = p.TextMuted
 	t.Accent = p.Accent
-	t.AccentHover = ui.Hex("#234982")
-	t.AccentPressed = ui.Hex("#1B3966")
+	t.AccentHover = ui.Hex("#333333")
+	t.AccentPressed = ui.Hex("#0D0D0D")
 	t.AccentText = p.AccentText
-	t.InactiveAccent = ui.Hex("#6482AD")
+	t.InactiveAccent = ui.Hex("#7A7A7A")
 	t.Danger = p.Danger
 	t.Warning = p.Warning
 	t.Success = p.Success
 	t.Selection = p.Selection
 	t.Focus = p.Accent
-	t.Radius = 6
+	t.Radius = 3
 	t.Spacing = 4
 	t.FontSize = 13
 	return t
@@ -138,16 +138,16 @@ func Dark() *ui.Theme {
 	t.Text = p.Text
 	t.TextMuted = p.TextMuted
 	t.Accent = p.Accent
-	t.AccentHover = ui.Hex("#2563EB")
-	t.AccentPressed = ui.Hex("#1D4ED8")
+	t.AccentHover = ui.Hex("#D4D4D4")
+	t.AccentPressed = ui.Hex("#BDBDBD")
 	t.AccentText = p.AccentText
-	t.InactiveAccent = ui.Hex("#475569")
+	t.InactiveAccent = ui.Hex("#666666")
 	t.Danger = p.Danger
 	t.Warning = p.Warning
 	t.Success = p.Success
 	t.Selection = p.Selection
 	t.Focus = p.Accent
-	t.Radius = 6
+	t.Radius = 3
 	t.Spacing = 4
 	t.FontSize = 13
 	return t
@@ -166,125 +166,119 @@ func MustSVG(markup string) *ui.SVG {
 	return ui.MustParseSVG([]byte(markup))
 }
 
-// Colorful SVG icons rendered via ui.Image(c, icon).
+// Restrainted monochrome line/surface SVG icons rendered via ui.Image(c, icon).
 var (
 	IconBroadcast = MustSVG(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24">
-  <rect x="2" y="3" width="20" height="14" rx="2.5" fill="#2B579A"/>
-  <rect x="4" y="5" width="16" height="10" rx="1" fill="#60A5FA"/>
-  <path d="M9 17l-1.5 3.5h9L15 17z" fill="#64748B"/>
-  <circle cx="12" cy="10" r="2.2" fill="#FFFFFF"/>
-  <path d="M7.5 10a4.5 4.5 0 0 1 9 0" fill="none" stroke="#FBBF24" stroke-width="1.6" stroke-linecap="round"/>
+  <rect x="2.5" y="4" width="19" height="13" rx="1.5" fill="#FFFFFF" stroke="#262626" stroke-width="1.7"/>
+  <rect x="4.5" y="6" width="15" height="9" fill="#E5E5E5"/>
+  <path d="M9 17l-1 3h8l-1-3" fill="none" stroke="#262626" stroke-width="1.7" stroke-linejoin="round"/>
+  <circle cx="12" cy="10.5" r="1.6" fill="#262626"/>
+  <path d="M8.5 10.5a3.5 3.5 0 0 1 7 0" fill="none" stroke="#525252" stroke-width="1.5" stroke-linecap="round"/>
 </svg>`)
 
 	IconVoice = MustSVG(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24">
-  <rect x="9" y="2.5" width="6" height="11" rx="3" fill="#0EA5E9"/>
-  <path d="M5.5 10.5a6.5 6.5 0 0 0 13 0" fill="none" stroke="#2B579A" stroke-width="2" stroke-linecap="round"/>
-  <path d="M12 17v4M8.5 21h7" stroke="#475569" stroke-width="2" stroke-linecap="round"/>
-  <circle cx="12" cy="6" r="1.5" fill="#BAE6FD"/>
+  <rect x="9" y="3" width="6" height="10" rx="3" fill="#E5E5E5" stroke="#262626" stroke-width="1.7"/>
+  <path d="M6 10.5a6 6 0 0 0 12 0" fill="none" stroke="#262626" stroke-width="1.7" stroke-linecap="round"/>
+  <path d="M12 16.5v4M8.5 20.5h7" stroke="#262626" stroke-width="1.7" stroke-linecap="round"/>
 </svg>`)
 
 	IconStudentDemo = MustSVG(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24">
-  <rect x="2" y="4" width="14" height="11" rx="2" fill="#10B981"/>
-  <rect x="4" y="6" width="10" height="7" rx="1" fill="#D1FAE5"/>
-  <circle cx="18.5" cy="8.5" r="3" fill="#F59E0B"/>
-  <path d="M14 19c0-2.5 2-4 4.5-4s3.5 1.5 3.5 4" fill="#D97706"/>
-  <path d="M9 15v4M6 19h6" stroke="#475569" stroke-width="1.8" stroke-linecap="round"/>
+  <rect x="2.5" y="4.5" width="13.5" height="10" rx="1.5" fill="#FFFFFF" stroke="#262626" stroke-width="1.7"/>
+  <rect x="4.5" y="6.5" width="9.5" height="6" fill="#E5E5E5"/>
+  <circle cx="19" cy="8.5" r="2.2" fill="#D4D4D4" stroke="#262626" stroke-width="1.6"/>
+  <path d="M15.5 19c0-2.2 1.6-3.5 3.5-3.5s3 1.3 3 3.5" fill="none" stroke="#262626" stroke-width="1.6" stroke-linecap="round"/>
+  <path d="M9.2 14.5v4M6.5 18.5h5.5" stroke="#262626" stroke-width="1.7" stroke-linecap="round"/>
 </svg>`)
 
 	IconMyTheatre = MustSVG(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24">
-  <rect x="2" y="4" width="20" height="16" rx="2.5" fill="#7C3AED"/>
-  <rect x="4" y="6" width="16" height="12" rx="1.5" fill="#1E1B4B"/>
-  <polygon points="10,8.5 16.5,12 10,15.5" fill="#F43F5E"/>
+  <rect x="2.5" y="4.5" width="19" height="15" rx="1.5" fill="#FFFFFF" stroke="#262626" stroke-width="1.7"/>
+  <rect x="4.5" y="6.5" width="15" height="11" fill="#E5E5E5"/>
+  <polygon points="10,9 16,12 10,15" fill="#262626"/>
 </svg>`)
 
 	IconMonitor = MustSVG(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24">
-  <rect x="2" y="3" width="9" height="8" rx="1.5" fill="#2563EB"/>
-  <rect x="13" y="3" width="9" height="8" rx="1.5" fill="#0EA5E9"/>
-  <rect x="2" y="13" width="9" height="8" rx="1.5" fill="#10B981"/>
-  <rect x="13" y="13" width="9" height="8" rx="1.5" fill="#6366F1"/>
-  <rect x="3.5" y="4.5" width="6" height="5" fill="#DBEAFE"/>
-  <rect x="14.5" y="4.5" width="6" height="5" fill="#E0F2FE"/>
+  <rect x="3" y="3.5" width="8" height="7.5" rx="1" fill="#E5E5E5" stroke="#262626" stroke-width="1.6"/>
+  <rect x="13" y="3.5" width="8" height="7.5" rx="1" fill="#FFFFFF" stroke="#262626" stroke-width="1.6"/>
+  <rect x="3" y="13" width="8" height="7.5" rx="1" fill="#FFFFFF" stroke="#262626" stroke-width="1.6"/>
+  <rect x="13" y="13" width="8" height="7.5" rx="1" fill="#E5E5E5" stroke="#262626" stroke-width="1.6"/>
 </svg>`)
 
 	IconRemoteControl = MustSVG(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24">
-  <rect x="2" y="3" width="18" height="13" rx="2" fill="#334155"/>
-  <rect x="4" y="5" width="14" height="9" rx="1" fill="#38BDF8"/>
-  <polygon points="13,10 21,15 16.5,16.5 15,21" fill="#F59E0B" stroke="#FFFFFF" stroke-width="1"/>
+  <rect x="2.5" y="3.5" width="17" height="12" rx="1.5" fill="#FFFFFF" stroke="#262626" stroke-width="1.7"/>
+  <rect x="4.5" y="5.5" width="13" height="8" fill="#E5E5E5"/>
+  <polygon points="13,10.5 21,15 16.8,16.4 15.2,20.5" fill="#262626" stroke="#FFFFFF" stroke-width="1"/>
 </svg>`)
 
 	IconLockScreen = MustSVG(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24">
-  <path d="M7 10V7a5 5 0 0 1 10 0v3" fill="none" stroke="#64748B" stroke-width="2.2" stroke-linecap="round"/>
-  <rect x="4" y="10" width="16" height="11" rx="2.5" fill="#EF4444"/>
-  <circle cx="12" cy="15" r="1.8" fill="#FFFFFF"/>
-  <rect x="11.2" y="16" width="1.6" height="3" rx="0.8" fill="#FFFFFF"/>
+  <path d="M7.5 10V7a4.5 4.5 0 0 1 9 0v3" fill="none" stroke="#262626" stroke-width="1.8" stroke-linecap="round"/>
+  <rect x="4.5" y="10" width="15" height="10.5" rx="1.5" fill="#262626"/>
+  <circle cx="12" cy="14.5" r="1.5" fill="#FFFFFF"/>
+  <rect x="11.3" y="15.5" width="1.4" height="2.8" fill="#FFFFFF"/>
 </svg>`)
 
 	IconFileDistribute = MustSVG(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24">
-  <path d="M3 6a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" fill="#F59E0B"/>
-  <path d="M3 9h18v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" fill="#FBBF24"/>
-  <path d="M12 11v6M9.5 14.5L12 17l2.5-2.5" fill="none" stroke="#1E293B" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M3 6.5A1.5 1.5 0 0 1 4.5 5h4.8l1.8 2h8.4A1.5 1.5 0 0 1 21 8.5v9a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 17.5z" fill="#E5E5E5" stroke="#262626" stroke-width="1.7" stroke-linejoin="round"/>
+  <path d="M12 10.5v5.5M9.5 13.8L12 16.3l2.5-2.5" fill="none" stroke="#262626" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>
 </svg>`)
 
 	IconCollectHomework = MustSVG(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24">
-  <rect x="3" y="4" width="18" height="16" rx="2.5" fill="#14B8A6"/>
-  <rect x="6" y="7" width="12" height="10" rx="1" fill="#CCFBF1"/>
-  <path d="M12 15V9M9.5 11.5L12 9l2.5 2.5" fill="none" stroke="#0F766E" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="3.5" y="4.5" width="17" height="15" rx="1.5" fill="#FFFFFF" stroke="#262626" stroke-width="1.7"/>
+  <rect x="5.5" y="6.5" width="13" height="11" fill="#F0F0F0"/>
+  <path d="M12 15.5V9.5M9.5 11.8L12 9.3l2.5 2.5" fill="none" stroke="#262626" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>
 </svg>`)
 
 	IconExam = MustSVG(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24">
-  <rect x="4" y="2.5" width="16" height="19" rx="2" fill="#3B82F6"/>
-  <rect x="6.5" y="5" width="11" height="14" rx="1" fill="#FFFFFF"/>
-  <path d="M8.5 9h7M8.5 12.5h5M8.5 16l1.5 1.5 3-3" fill="none" stroke="#1D4ED8" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="4.5" y="3" width="15" height="18" rx="1.5" fill="#FFFFFF" stroke="#262626" stroke-width="1.7"/>
+  <path d="M8 8h8M8 12h6M8 16l1.6 1.6 3.2-3.2" fill="none" stroke="#262626" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
 </svg>`)
 
 	IconCheckIn = MustSVG(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24">
-  <circle cx="12" cy="12" r="9.5" fill="#10B981"/>
-  <path d="M7.5 12.5l3 3 6-6.5" fill="none" stroke="#FFFFFF" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="12" cy="12" r="9" fill="#E5E5E5" stroke="#262626" stroke-width="1.7"/>
+  <path d="M8 12.5l2.8 2.8 5.4-5.8" fill="none" stroke="#262626" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/>
 </svg>`)
 
 	IconHandRaise = MustSVG(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24">
-  <path d="M7 13V6.5a1.2 1.2 0 0 1 2.4 0V11V4.5a1.2 1.2 0 0 1 2.4 0V11V5.5a1.2 1.2 0 0 1 2.4 0V11V7.5a1.2 1.2 0 0 1 2.4 0V15a5 5 0 0 1-5 5h-1a4.5 4.5 0 0 1-4.5-4.5V13z" fill="#F59E0B" stroke="#B45309" stroke-width="1.2"/>
+  <path d="M7 13V6.8a1.1 1.1 0 0 1 2.2 0V11V4.8a1.1 1.1 0 0 1 2.2 0V11V5.8a1.1 1.1 0 0 1 2.2 0V11V7.8a1.1 1.1 0 0 1 2.2 0V15a4.8 4.8 0 0 1-4.8 4.8h-.8A4.2 4.2 0 0 1 7 15.6V13z" fill="#E5E5E5" stroke="#262626" stroke-width="1.5"/>
 </svg>`)
 
 	IconChat = MustSVG(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24">
-  <path d="M4 4h16a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H8l-4 3.5V6a2 2 0 0 1 2-2z" fill="#0284C7"/>
-  <circle cx="8.5" cy="11" r="1.2" fill="#FFFFFF"/>
-  <circle cx="12" cy="11" r="1.2" fill="#FFFFFF"/>
-  <circle cx="15.5" cy="11" r="1.2" fill="#FFFFFF"/>
+  <path d="M4 4.5h16a1.5 1.5 0 0 1 1.5 1.5v9.5A1.5 1.5 0 0 1 20 17H8l-4 3.5V6A1.5 1.5 0 0 1 5.5 4.5z" fill="#FFFFFF" stroke="#262626" stroke-width="1.7" stroke-linejoin="round"/>
+  <circle cx="8.5" cy="10.8" r="1.1" fill="#262626"/>
+  <circle cx="12" cy="10.8" r="1.1" fill="#262626"/>
+  <circle cx="15.5" cy="10.8" r="1.1" fill="#262626"/>
 </svg>`)
 
 	IconSettings = MustSVG(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24">
-  <circle cx="12" cy="12" r="8.5" fill="#64748B"/>
-  <circle cx="12" cy="12" r="5" fill="#E2E8F0"/>
-  <circle cx="12" cy="12" r="2.2" fill="#2B579A"/>
+  <circle cx="12" cy="12" r="7.5" fill="#E5E5E5" stroke="#262626" stroke-width="1.7"/>
+  <circle cx="12" cy="12" r="3" fill="#FFFFFF" stroke="#262626" stroke-width="1.6"/>
 </svg>`)
 
 	IconSeat = MustSVG(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24">
-  <rect x="3" y="4" width="18" height="12" rx="2" fill="#2B579A"/>
-  <rect x="5" y="6" width="14" height="8" rx="1" fill="#93C5FD"/>
-  <rect x="9" y="17" width="6" height="2.5" rx="1" fill="#64748B"/>
+  <rect x="3" y="4.5" width="18" height="11.5" rx="1.2" fill="#FFFFFF" stroke="#262626" stroke-width="1.7"/>
+  <rect x="5" y="6.5" width="14" height="7.5" fill="#E5E5E5"/>
+  <path d="M9 16v3h6v-3M7.5 19.5h9" fill="none" stroke="#262626" stroke-width="1.6" stroke-linecap="round"/>
 </svg>`)
 
 	IconPower = MustSVG(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24">
-  <circle cx="12" cy="12" r="9.5" fill="#DC2626"/>
-  <path d="M12 6.5v5.5M8.5 8.8a5 5 0 1 0 7 0" fill="none" stroke="#FFFFFF" stroke-width="2" stroke-linecap="round"/>
+  <circle cx="12" cy="12" r="9" fill="#FFFFFF" stroke="#262626" stroke-width="1.7"/>
+  <path d="M12 6.5v5.5M8.6 8.8a4.8 4.8 0 1 0 6.8 0" fill="none" stroke="#262626" stroke-width="1.8" stroke-linecap="round"/>
 </svg>`)
 
 	IconThemeToggle = MustSVG(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24">
-  <circle cx="12" cy="12" r="9" fill="#1E293B"/>
-  <path d="M12 3a9 9 0 0 0 0 18z" fill="#FBBF24"/>
+  <circle cx="12" cy="12" r="8.5" fill="#FFFFFF" stroke="#262626" stroke-width="1.7"/>
+  <path d="M12 3.5a8.5 8.5 0 0 0 0 17z" fill="#262626"/>
 </svg>`)
 )
 
 // AppIconPNG generates an in-memory 32x32 PNG icon for windows and tray icons.
 func AppIconPNG(teacher bool) []byte {
 	img := image.NewNRGBA(image.Rect(0, 0, 32, 32))
-	bg := color.NRGBA{R: 0x2B, G: 0x57, B: 0x9A, A: 0xFF}
+	bg := color.NRGBA{R: 0x1F, G: 0x1F, B: 0x1F, A: 0xFF}
 	if !teacher {
-		bg = color.NRGBA{R: 0x02, G: 0x84, B: 0xC7, A: 0xFF}
+		bg = color.NRGBA{R: 0x45, G: 0x45, B: 0x45, A: 0xFF}
 	}
 	inner := color.NRGBA{R: 0xFF, G: 0xFF, B: 0xFF, A: 0xFF}
-	accent := color.NRGBA{R: 0x60, G: 0xA5, B: 0xFA, A: 0xFF}
+	accent := color.NRGBA{R: 0xD4, G: 0xD4, B: 0xD4, A: 0xFF}
 
 	for y := range 32 {
 		for x := range 32 {

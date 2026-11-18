@@ -247,10 +247,10 @@ func (a *App) buildFloatingBarView(c *ui.Context, pal theme.Palette) {
 	ui.Column(c).Fill().Background(pal.ChromeBar).Padding(6, 10).Gap(6).Children(func() {
 		// Top draggable floating bar
 		ui.Row(c).FillWidth().Gap(8).AlignItems(ui.Center).DragWindow().Children(func() {
-			ui.Badge(c, a.channel).Background(pal.Selection).TextColor(pal.Accent)
+			ui.Badge(c, a.channel).Background(pal.Selection).TextColor(pal.Text)
 			ui.Text(c, fmt.Sprintf("%s (%s)", a.machineName, a.studentNo)).FontSize(12).Bold().TextColor(pal.Text)
 			if a.handRaised {
-				ui.Badge(c, "已举手").Background(pal.Warning.Alpha(0.18)).TextColor(pal.Warning)
+				ui.Badge(c, "已举手").Background(pal.Accent).TextColor(pal.AccentText)
 			}
 			ui.Spacer(c)
 
@@ -258,33 +258,33 @@ func (a *App) buildFloatingBarView(c *ui.Context, pal theme.Palette) {
 			if a.handRaised {
 				handLabel = "取消举手"
 			}
-			if ui.Button(c, handLabel).Padding(4, 10).Radius(6).Clicked() {
+			if ui.Button(c, handLabel).Padding(4, 10).Radius(3).Clicked() {
 				a.ToggleHandRaise()
 			}
-			if ui.Button(c, "点名签到").Padding(4, 10).Radius(6).Clicked() {
+			if ui.Button(c, "点名签到").Padding(4, 10).Radius(3).Clicked() {
 				a.mode = ModeCheckIn
 			}
-			if ui.Button(c, "随堂测验").Padding(4, 10).Radius(6).Clicked() {
+			if ui.Button(c, "随堂测验").Padding(4, 10).Radius(3).Clicked() {
 				a.loadActivePaper()
 				a.mode = ModeExam
 			}
-			if ui.Button(c, "作业与消息").Padding(4, 10).Radius(6).Clicked() {
+			if ui.Button(c, "作业与消息").Padding(4, 10).Radius(3).Clicked() {
 				a.mode = ModeChat
 			}
-			if ui.Button(c, "广播窗口").Padding(4, 10).Radius(6).Clicked() {
+			if ui.Button(c, "广播窗口").Padding(4, 10).Radius(3).Clicked() {
 				a.mode = ModeBroadcast
 			}
 			collapseLabel := "收起"
 			if a.barCollapsed {
 				collapseLabel = "展开"
 			}
-			if ui.Button(c, collapseLabel).Padding(4, 8).Radius(6).Clicked() {
+			if ui.Button(c, collapseLabel).Padding(4, 8).Radius(3).Clicked() {
 				a.barCollapsed = !a.barCollapsed
 			}
 		})
 
 		if !a.barCollapsed {
-			ui.Row(c).FillWidth().Padding(4, 8).Radius(6).Background(pal.Canvas).Border(1, pal.CardBorder).AlignItems(ui.Center).Gap(10).Children(func() {
+			ui.Row(c).FillWidth().Padding(4, 8).Radius(3).Background(pal.Canvas).Border(1, pal.CardBorder).AlignItems(ui.Center).Gap(10).Children(func() {
 				ui.Text(c, a.statusNote).FontSize(11).TextColor(pal.TextMuted)
 				ui.Spacer(c)
 				ui.Text(c, fmt.Sprintf("音量 %.0f%%", a.volume)).FontSize(11).TextColor(pal.TextMuted)
@@ -302,11 +302,11 @@ func (a *App) buildFloatingBarView(c *ui.Context, pal theme.Palette) {
 func (a *App) buildBroadcastView(c *ui.Context, pal theme.Palette) {
 	ui.Column(c).Fill().Background(pal.TheatreBg).Children(func() {
 		ui.Row(c).FillWidth().Padding(6, 12).Background(pal.ChromeBar).AlignItems(ui.Center).Gap(8).DragWindow().Children(func() {
-			ui.Text(c, "屏幕广播 / 网络影院接收").FontSize(12).Bold().TextColor(pal.Accent)
+			ui.Text(c, "屏幕广播 / 网络影院接收").FontSize(12).Bold().TextColor(pal.Text)
 			if a.broadcastWindow {
-				ui.Badge(c, "窗口模式").Background(pal.Info.Alpha(0.18)).TextColor(pal.Info)
+				ui.Badge(c, "窗口模式").Background(pal.Selection).TextColor(pal.Text)
 			} else {
-				ui.Badge(c, "全屏演示").Background(pal.Selection).TextColor(pal.Accent)
+				ui.Badge(c, "全屏演示").Background(pal.Selection).TextColor(pal.Text)
 			}
 			ui.Spacer(c)
 			if ui.Button(c, "切换窗口/全屏").Padding(3, 8).Clicked() {
@@ -322,10 +322,10 @@ func (a *App) buildBroadcastView(c *ui.Context, pal theme.Palette) {
 
 		ui.Column(c).Grow(1).FillWidth().Center().Padding(12).Children(func() {
 			if a.videoBitmap != nil {
-				ui.Image(c, a.videoBitmap).Fit(ui.Contain).Radius(4)
+				ui.Image(c, a.videoBitmap).Fit(ui.Contain).Radius(2)
 			} else {
-				ui.Text(c, "等待教师端推送屏幕或网络影院视频流...").FontSize(15).TextColor(ui.Hex("#CBD5E1"))
-				ui.Text(c, "支持 NV12 GPU 直渲染与 KCP NACK 丢包重传").FontSize(12).TextColor(ui.Hex("#94A3B8"))
+				ui.Text(c, "等待教师端屏幕或网络影院画面...").FontSize(14).TextColor(ui.Hex("#D4D4D4"))
+				ui.Text(c, "当前无视频信号").FontSize(12).TextColor(ui.Hex("#8E8E8E"))
 			}
 		})
 	})
@@ -333,9 +333,9 @@ func (a *App) buildBroadcastView(c *ui.Context, pal theme.Palette) {
 
 func (a *App) buildLockView(c *ui.Context, pal theme.Palette) {
 	ui.Column(c).Fill().Background(pal.LockBg).Center().Gap(14).Padding(24).Children(func() {
-		ui.Badge(c, "黑屏锁屏中").Background(pal.Danger.Alpha(0.2)).TextColor(pal.Danger)
-		ui.Text(c, a.lockMessage).FontSize(22).Bold().TextColor(ui.Hex("#F8FAFC"))
-		ui.Text(c, "键盘与鼠标已被教师端锁定，断网超时或教师解锁后自动恢复").FontSize(12).TextColor(ui.Hex("#94A3B8"))
+		ui.Badge(c, "黑屏锁屏中").Background(ui.Hex("#262626")).TextColor(ui.Hex("#FFFFFF"))
+		ui.Text(c, a.lockMessage).FontSize(20).Bold().TextColor(ui.Hex("#F5F5F5"))
+		ui.Text(c, "键盘与鼠标已被教师端锁定，断网超时或教师解锁后自动恢复").FontSize(12).TextColor(ui.Hex("#8E8E8E"))
 
 		ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
 			ui.TextInput(c, &a.unlockPassInput).Placeholder("紧急本地解锁口令...").Width(220)
@@ -344,7 +344,7 @@ func (a *App) buildLockView(c *ui.Context, pal theme.Palette) {
 			}
 		})
 		if a.unlockStatus != "" {
-			ui.Text(c, a.unlockStatus).FontSize(12).TextColor(pal.Warning)
+			ui.Text(c, a.unlockStatus).FontSize(12).TextColor(ui.Hex("#D4D4D4"))
 		}
 	})
 }
@@ -368,7 +368,7 @@ func (a *App) buildCheckInView(c *ui.Context, pal theme.Palette) {
 				a.SubmitCheckIn()
 			}
 			if a.checkInSubmitted {
-				ui.Badge(c, "已完成签到").Background(pal.Success.Alpha(0.18)).TextColor(pal.Success)
+				ui.Badge(c, "已完成签到").Background(pal.Selection).TextColor(pal.Text)
 			}
 		})
 	})
@@ -398,7 +398,7 @@ func (a *App) buildExamView(c *ui.Context, pal theme.Palette) {
 			ui.Column(c).FillWidth().Gap(10).Children(func() {
 				for idx, q := range a.activePaper.Questions {
 					q := q
-					ui.Column(c).Key(q.ID).FillWidth().Padding(10).Radius(6).Background(pal.Card).Border(1, pal.CardBorder).Gap(6).Children(func() {
+					ui.Column(c).Key(q.ID).FillWidth().Padding(10).Radius(3).Background(pal.Card).Border(1, pal.CardBorder).Gap(6).Children(func() {
 						ui.Text(c, fmt.Sprintf("%d. %s (%d分)", idx+1, q.Prompt, q.Points)).FontSize(13).Bold()
 						cur := a.examAnswers[q.ID]
 						if len(q.Options) > 0 {
@@ -410,7 +410,7 @@ func (a *App) buildExamView(c *ui.Context, pal theme.Palette) {
 									if selected {
 										lbl = "✓ " + opt
 									}
-									btn := ui.Button(c, lbl).Padding(4, 10).Radius(4)
+									btn := ui.Button(c, lbl).Padding(4, 10).Radius(2)
 									if selected {
 										btn.Background(pal.Selection)
 									}
@@ -436,7 +436,7 @@ func (a *App) buildExamView(c *ui.Context, pal theme.Palette) {
 				a.SubmitExam()
 			}
 			if a.examResult != nil {
-				ui.Badge(c, fmt.Sprintf("得分 %d / %d", a.examResult.Score, a.examResult.MaxScore)).Background(pal.Success.Alpha(0.18)).TextColor(pal.Success)
+				ui.Badge(c, fmt.Sprintf("得分 %d / %d", a.examResult.Score, a.examResult.MaxScore)).Background(pal.Selection).TextColor(pal.Text)
 			}
 		})
 	})
@@ -452,7 +452,7 @@ func (a *App) buildChatHomeworkView(c *ui.Context, pal theme.Palette) {
 			}
 		})
 
-		ui.Column(c).FillWidth().Padding(10).Radius(6).Background(pal.Card).Border(1, pal.CardBorder).Gap(6).Children(func() {
+		ui.Column(c).FillWidth().Padding(10).Radius(3).Background(pal.Card).Border(1, pal.CardBorder).Gap(6).Children(func() {
 			ui.Text(c, "提交作业文件至教师端").FontSize(12).Bold()
 			ui.Row(c).FillWidth().Gap(8).Children(func() {
 				ui.TextInput(c, &a.homeworkPath).Grow(1).Placeholder("作业文件路径...")
@@ -469,7 +469,7 @@ func (a *App) buildChatHomeworkView(c *ui.Context, pal theme.Palette) {
 			ui.Column(c).FillWidth().Gap(4).Children(func() {
 				if a.opts.Classroom != nil {
 					for _, msg := range a.opts.Classroom.ListChats() {
-						ui.Row(c).FillWidth().Padding(6, 8).Radius(4).Background(pal.Card).Gap(6).Children(func() {
+						ui.Row(c).FillWidth().Padding(6, 8).Radius(2).Background(pal.Card).Gap(6).Children(func() {
 							ui.Text(c, msg.Sender+":").FontSize(11).Bold().TextColor(pal.Accent)
 							ui.Text(c, msg.Text).FontSize(11).TextColor(pal.Text)
 						})

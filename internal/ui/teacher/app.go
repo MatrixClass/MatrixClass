@@ -458,7 +458,7 @@ func (a *App) buildToolbar(c *ui.Context, pal theme.Palette) {
 }
 
 func (a *App) toolbarButton(c *ui.Context, pal theme.Palette, label string, icon *ui.SVG, active bool, onClick func()) {
-	btn := ui.Button(c, "").Label(label).Tooltip(label).Padding(4, 8).Radius(6)
+	btn := ui.Button(c, "").Label(label).Tooltip(label).Padding(4, 8).Radius(3)
 	if active {
 		btn.Background(pal.Selection).Border(1, pal.Accent)
 	}
@@ -474,7 +474,7 @@ func (a *App) toolbarButton(c *ui.Context, pal theme.Palette, label string, icon
 }
 
 func (a *App) toolbarToggle(c *ui.Context, pal theme.Palette, label string, icon *ui.SVG, state *bool, onChanged func()) {
-	tg := ui.Toggle(c, state, "").Label(label).Tooltip(label).Padding(4, 8).Radius(6)
+	tg := ui.Toggle(c, state, "").Label(label).Tooltip(label).Padding(4, 8).Radius(3)
 	if *state {
 		tg.Background(pal.Selection).Border(1, pal.Accent)
 	}
@@ -518,7 +518,7 @@ func (a *App) buildLeftSidebar(c *ui.Context, pal theme.Palette) {
 				{TabFiles, "文件与作业", theme.IconFileDistribute},
 			}
 			for _, item := range navItems {
-				btn := ui.Button(c, "").Label(item.label).FillWidth().Padding(5, 8).Radius(6).Justify(ui.Start)
+				btn := ui.Button(c, "").Label(item.label).FillWidth().Padding(5, 8).Radius(3).Justify(ui.Start)
 				if a.mainTab == item.tab {
 					btn.Background(pal.Selection).Border(1, pal.Accent)
 				}
@@ -629,7 +629,7 @@ func (a *App) buildSeatCard(c *ui.Context, pal theme.Palette, st core.StudentInf
 
 	statusText, statusColor := statusBadge(pal, st)
 
-	card := ui.Column(c).Key("seat-" + st.ID).Width(178).Padding(10).Gap(6).Radius(8).
+	card := ui.Column(c).Key("seat-" + st.ID).Width(178).Padding(9).Gap(5).Radius(3).
 		Background(bg).Border(1.5, border).Focusable().
 		Drag(st.ID).
 		Label(fmt.Sprintf("%s %s", st.MachineName, st.StudentNo))
@@ -682,7 +682,7 @@ func (a *App) buildSeatCard(c *ui.Context, pal theme.Palette, st core.StudentInf
 		})
 
 		ui.Row(c).AlignItems(ui.Center).Gap(4).Children(func() {
-			ui.Badge(c, statusText).Background(statusColor.Alpha(0.16)).TextColor(statusColor)
+			ui.Text(c, statusText).FontSize(11).Bold().TextColor(statusColor)
 			ui.Spacer(c)
 			if st.CheckedIn {
 				ui.Text(c, "已签到").FontSize(10).TextColor(pal.Success)
@@ -732,10 +732,10 @@ func (a *App) buildMonitorWallTab(c *ui.Context, pal theme.Palette, students []c
 					if a.selectedID == st.ID {
 						border = pal.Accent
 					}
-					tile := ui.Column(c).Key("mon-" + st.ID).Width(256).Padding(8).Gap(6).Radius(8).
+					tile := ui.Column(c).Key("mon-" + st.ID).Width(256).Padding(8).Gap(6).Radius(3).
 						Background(pal.Card).Border(1.5, border)
 					tile.Children(func() {
-						ui.Image(c, bmp).Size(240, 135).Fit(ui.Contain).Radius(4)
+						ui.Image(c, bmp).Size(240, 135).Fit(ui.Contain).Radius(2)
 						ui.Row(c).AlignItems(ui.Center).Gap(6).Children(func() {
 							ui.Text(c, st.MachineName).FontSize(12).Bold().Grow(1).SingleLine()
 							if ui.Button(c, "远控").Padding(2, 6).Clicked() {
@@ -759,27 +759,27 @@ func (a *App) buildMyTheatreTab(c *ui.Context, pal theme.Palette) {
 			ui.Select(c, &a.theatre.Media, a.theatreMedia).Width(260)
 			ui.Spacer(c)
 			if a.theatre.Playing {
-				ui.Badge(c, "正在全班同步播放").Background(pal.Success.Alpha(0.18)).TextColor(pal.Success)
+				ui.Badge(c, "正在同步播放").Background(pal.Selection).TextColor(pal.Text)
 			} else {
 				ui.Badge(c, "就绪")
 			}
 		})
 
 		// Video stage with subtle "mytheatre" watermark when idle
-		ui.Box(c).Grow(1).MinHeight(280).Background(pal.TheatreBg).Radius(10).Center().Clip().Children(func() {
+		ui.Box(c).Grow(1).MinHeight(280).Background(pal.TheatreBg).Radius(3).Center().Clip().Children(func() {
 			if a.theatreFrame != nil {
 				ui.Image(c, a.theatreFrame).Fill().Fit(ui.Contain)
 			}
 			if !a.theatre.Playing || a.theatreFrame == nil {
 				ui.Column(c).Center().Gap(6).Children(func() {
 					ui.Text(c, "mytheatre").FontSize(34).Bold().TextColor(ui.RGBA(255, 255, 255, 0.14))
-					ui.Text(c, fmt.Sprintf("当前影片：%s", a.theatre.Media)).FontSize(12).TextColor(ui.RGBA(226, 232, 240, 0.65))
+					ui.Text(c, fmt.Sprintf("当前影片：%s", a.theatre.Media)).FontSize(12).TextColor(ui.RGBA(212, 212, 212, 0.7))
 				})
 			}
 		})
 
 		// Playback transport bar
-		ui.Column(c).Background(pal.Card).Border(1, pal.CardBorder).Radius(8).Padding(10).Gap(8).Children(func() {
+		ui.Column(c).Background(pal.Card).Border(1, pal.CardBorder).Radius(3).Padding(10).Gap(8).Children(func() {
 			ui.Row(c).AlignItems(ui.Center).Gap(8).Children(func() {
 				playLabel := "播放并分发"
 				if a.theatre.Playing {
@@ -834,7 +834,7 @@ func (a *App) buildExamStatsTab(c *ui.Context, pal theme.Palette) {
 	ui.Scroll(c).Grow(1).Padding(12).Gap(12).Children(func() {
 		ui.Row(c).Gap(12).AlignItems(ui.Stretch).Children(func() {
 			// Left: Quick paper builder & publisher
-			ui.Column(c).Grow(1).Background(pal.Card).Border(1, pal.CardBorder).Radius(8).Padding(12).Gap(8).Children(func() {
+			ui.Column(c).Grow(1).Background(pal.Card).Border(1, pal.CardBorder).Radius(3).Padding(12).Gap(8).Children(func() {
 				ui.Text(c, "发布随堂测验").FontSize(14).Bold()
 				ui.Text(c, "测验标题").FontSize(12).TextColor(pal.TextMuted)
 				ui.TextInput(c, &a.examTitleInput).Placeholder("输入试卷标题")
@@ -863,7 +863,7 @@ func (a *App) buildExamStatsTab(c *ui.Context, pal theme.Palette) {
 			})
 
 			// Right: Live score & accuracy chart using mygo/ui/chart
-			ui.Column(c).Grow(1).Background(pal.Card).Border(1, pal.CardBorder).Radius(8).Padding(12).Gap(8).Children(func() {
+			ui.Column(c).Grow(1).Background(pal.Card).Border(1, pal.CardBorder).Radius(3).Padding(12).Gap(8).Children(func() {
 				title := "暂无已发布试卷"
 				if paper != nil {
 					title = paper.Title
@@ -888,15 +888,13 @@ func (a *App) buildExamStatsTab(c *ui.Context, pal theme.Palette) {
 						Left:   yScale.Ticks(5),
 						Bottom: xScale.Ticks(),
 					}, func(area ui.Element) {
-						area.Background(pal.Canvas).Border(1, pal.CardBorder).Radius(4)
+						area.Background(pal.Canvas).Border(1, pal.CardBorder).Radius(2)
 						for i, v := range values {
 							barColor := pal.Accent
 							if v < 60 {
-								barColor = pal.Warning
-							} else if v >= 85 {
-								barColor = pal.Success
+								barColor = pal.TextMuted
 							}
-							chart.Rect(c, xScale.Band(i), yScale.Span(0, v)).Background(barColor).Radius(4)
+							chart.Rect(c, xScale.Band(i), yScale.Span(0, v)).Background(barColor).Radius(2)
 						}
 					}).Height(190).Gap(8).Label("随堂测验正确率图表")
 				}
@@ -912,7 +910,7 @@ func (a *App) buildFilesTab(c *ui.Context, pal theme.Palette) {
 	}
 
 	ui.Column(c).Grow(1).Padding(12).Gap(10).Children(func() {
-		ui.Column(c).Background(pal.Card).Border(1, pal.CardBorder).Radius(8).Padding(12).Gap(8).Children(func() {
+		ui.Column(c).Background(pal.Card).Border(1, pal.CardBorder).Radius(3).Padding(12).Gap(8).Children(func() {
 			ui.Text(c, "文件分发与作业收集").FontSize(14).Bold()
 			ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
 				ui.TextInput(c, &a.distributePath).Placeholder("本地分发文件路径").Grow(1)
@@ -937,7 +935,7 @@ func (a *App) buildFilesTab(c *ui.Context, pal theme.Palette) {
 				if tk.TotalBytes > 0 {
 					ratio = float64(tk.DoneBytes) / float64(tk.TotalBytes)
 				}
-				ui.Column(c).Key("task-" + tk.ID).Background(pal.Card).Border(1, pal.CardBorder).Radius(6).Padding(10).Gap(6).Children(func() {
+				ui.Column(c).Key("task-" + tk.ID).Background(pal.Card).Border(1, pal.CardBorder).Radius(3).Padding(10).Gap(6).Children(func() {
 					ui.Row(c).AlignItems(ui.Center).Gap(8).Children(func() {
 						ui.Badge(c, string(tk.Direction))
 						ui.Text(c, tk.FileName).FontSize(13).Bold().Grow(1).SingleLine()
@@ -1032,7 +1030,7 @@ func (a *App) buildSideChatQueue(c *ui.Context, pal theme.Palette, students []co
 		}
 	}
 
-	ui.Column(c).Background(pal.Card).Border(1, pal.CardBorder).Radius(6).Padding(8).Gap(6).Children(func() {
+	ui.Column(c).Background(pal.Card).Border(1, pal.CardBorder).Radius(3).Padding(8).Gap(6).Children(func() {
 		ui.Row(c).AlignItems(ui.Center).Children(func() {
 			ui.Text(c, "举手队列").FontSize(12).Bold()
 			ui.Spacer(c)
@@ -1060,7 +1058,7 @@ func (a *App) buildSideChatQueue(c *ui.Context, pal theme.Palette, students []co
 
 	ui.Scroll(c).Grow(1).Gap(6).Children(func() {
 		for _, msg := range chats {
-			ui.Column(c).Key("chat-" + msg.ID).Background(pal.Card).Border(1, pal.CardBorder).Radius(6).Padding(8).Gap(2).Children(func() {
+			ui.Column(c).Key("chat-" + msg.ID).Background(pal.Card).Border(1, pal.CardBorder).Radius(3).Padding(8).Gap(2).Children(func() {
 				ui.Row(c).AlignItems(ui.Center).Children(func() {
 					ui.Text(c, msg.Sender).FontSize(11).Bold().TextColor(pal.Accent)
 					ui.Spacer(c)
@@ -1126,7 +1124,7 @@ func (a *App) buildStatusBar(c *ui.Context, pal theme.Palette) {
 }
 
 func (a *App) buildSettingsModal(c *ui.Context, pal theme.Palette) {
-	ui.Column(c).Width(420).Background(pal.Canvas).Border(1, pal.CardBorder).Radius(10).Padding(16).Gap(10).Children(func() {
+	ui.Column(c).Width(420).Background(pal.Canvas).Border(1, pal.CardBorder).Radius(4).Padding(16).Gap(10).Children(func() {
 		ui.Text(c, "教师端课堂设置").FontSize(16).Bold()
 		ui.Text(c, "教室频道名").FontSize(12).TextColor(pal.TextMuted)
 		ui.TextInput(c, &a.channel)
