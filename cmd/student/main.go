@@ -307,7 +307,7 @@ func (rt *Runtime) wireHandlers() {
 			var msg core.ChatMessage
 			if err := json.Unmarshal(env.Payload, &msg); err == nil {
 				rt.Classroom.AddChat(msg)
-				rt.App.SetStatusNote("新消息: " + msg.Text)
+				rt.App.ShowTeacherNotice(msg.Sender, msg.Text)
 				rt.App.Invalidate()
 			}
 		}

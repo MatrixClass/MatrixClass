@@ -748,6 +748,7 @@ func (s *SmuxSession) mediaWriteLoop() {
 		if _, err := s.mediaStream.Write(pkt); err != nil {
 			_ = s.mediaStream.Close()
 			s.mediaStream = nil
+			return
 		}
 		_ = s.mediaStream.SetWriteDeadline(time.Time{})
 	}

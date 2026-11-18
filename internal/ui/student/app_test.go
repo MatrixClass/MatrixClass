@@ -117,6 +117,16 @@ func TestStudentEmergencyUnlockWithRealControlManager(t *testing.T) {
 	}
 }
 
+func TestStudentToastNoticeView(t *testing.T) {
+	app := newTestStudentApp()
+	app.ShowTeacherNotice("教师端", "请打开实验三文档")
+	tester := ui.NewTester(app.ToastView, 320, 116)
+	tester.Frame()
+	if !tester.HasText("课堂通知") || !tester.HasText("请打开实验三文档") {
+		t.Fatalf("expected toast notification to render teacher notice")
+	}
+}
+
 func TestStudentConcurrentStateTransitionsAndView(t *testing.T) {
 	app := newTestStudentApp()
 	tester := ui.NewTester(app.View, 920, 560)
