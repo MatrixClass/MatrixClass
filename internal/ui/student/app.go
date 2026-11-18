@@ -65,6 +65,8 @@ type App struct {
 	connected        bool
 	broadcasting     bool
 	broadcastWindow  bool
+	remoteControlled bool
+	monitoringActive bool
 	screenLocked     bool
 	lockMessage      string
 	unlockPassInput  string
@@ -75,6 +77,11 @@ type App struct {
 	chatInput        string
 	statusNote       string
 	volume           float64
+
+	lastWinMode      int
+	lastWinCollapsed bool
+	lastWinBcastWin  bool
+	winSyncedOnce    bool
 
 	videoBitmap *ui.Bitmap
 	lastFrameAt time.Time
@@ -114,6 +121,7 @@ func New(opts Options) *App {
 		volume:        80,
 		examAnswers:   make(map[string]string),
 		recentNotices: []string{"欢迎加入 NexLab 电子教室"},
+		lastWinMode:   -1,
 	}
 }
 
@@ -156,7 +164,9 @@ func (a *App) Invalidate() {
 	w := a.win
 	a.mu.Unlock()
 	if w != nil {
-		w.Invalidate()
+		mygo.RunOnMain(func() {
+			w.Invalidate()
+		})
 	}
 }
 
@@ -193,7 +203,10 @@ func (a *App) UpdateVideoFrame(frame *core.VideoFrame) {
 	}
 	a.lastFrameAt = time.Now()
 	if a.win != nil {
-		a.win.Invalidate()
+		w := a.win
+		mygo.RunOnMain(func() {
+			w.Invalidate()
+		})
 	}
 }
 
@@ -204,26 +217,157 @@ func (a *App) ShowFloatingBar() {
 	w := a.win
 	a.mu.Unlock()
 	if w != nil {
-		w.Show()
-		w.Focus()
-		w.Invalidate()
+		w.Update(func() {
+			a.syncWindowForModeLocked(w)
+			w.Show()
+			w.Focus()
+		})
 	}
 }
 
 func (a *App) OpenMode(m int) {
 	a.mu.Lock()
 	a.mode = m
+	if m == ModeExam {
+		a.loadActivePaper()
+	}
 	w := a.win
 	a.mu.Unlock()
 	if w != nil {
-		w.Show()
+		w.Update(func() {
+			a.syncWindowForModeLocked(w)
+			w.Show()
+			w.Focus()
+		})
+	}
+}
+
+func (a *App) SetBroadcastWindowed(windowed bool) {
+	a.mu.Lock()
+	a.broadcastWindow = windowed
+	w := a.win
+	a.mu.Unlock()
+	if w != nil {
+		w.Update(func() {
+			a.syncWindowForModeLocked(w)
+		})
+	}
+}
+
+func (a *App) SetRemoteControlled(active bool) {
+	a.mu.Lock()
+	a.remoteControlled = active
+	if active {
+		a.statusNote = "教师正在远程控制本机"
+	} else {
+		a.statusNote = "教师已结束远程控制"
+	}
+	w := a.win
+	a.mu.Unlock()
+	if w != nil {
+		mygo.RunOnMain(func() { w.Invalidate() })
+	}
+}
+
+func (a *App) SetMonitoring(active bool) {
+	a.mu.Lock()
+	a.monitoringActive = active
+	w := a.win
+	a.mu.Unlock()
+	if w != nil {
+		mygo.RunOnMain(func() { w.Invalidate() })
+	}
+}
+
+func (a *App) SetHandRaised(raised bool) {
+	a.mu.Lock()
+	a.handRaised = raised
+	w := a.win
+	a.mu.Unlock()
+	if w != nil {
+		mygo.RunOnMain(func() { w.Invalidate() })
+	}
+}
+
+func (a *App) SetStatusNote(note string) {
+	a.mu.Lock()
+	a.statusNote = note
+	w := a.win
+	a.mu.Unlock()
+	if w != nil {
+		mygo.RunOnMain(func() { w.Invalidate() })
+	}
+}
+
+func (a *App) syncWindowForModeLocked(w *mygo.Window) {
+	if w == nil {
+		return
+	}
+	if a.winSyncedOnce && a.lastWinMode == a.mode && a.lastWinCollapsed == a.barCollapsed && a.lastWinBcastWin == a.broadcastWindow {
+		return
+	}
+	a.winSyncedOnce = true
+	a.lastWinMode = a.mode
+	a.lastWinCollapsed = a.barCollapsed
+	a.lastWinBcastWin = a.broadcastWindow
+
+	switch a.mode {
+	case ModeLock:
+		w.SetAlwaysOnTop(true)
+		w.SetClosable(false)
+		w.SetFullScreen(true)
 		w.Focus()
-		w.Invalidate()
+	case ModeBroadcast:
+		w.SetClosable(true)
+		if a.broadcastWindow {
+			w.SetFullScreen(false)
+			w.SetAlwaysOnTop(false)
+			w.SetResizable(true)
+			w.SetSize(960, 600)
+			w.Center()
+		} else {
+			w.SetAlwaysOnTop(true)
+			w.SetFullScreen(true)
+		}
+	case ModeCheckIn:
+		w.SetFullScreen(false)
+		w.SetAlwaysOnTop(true)
+		w.SetClosable(true)
+		w.SetResizable(false)
+		w.SetSize(460, 270)
+		w.Center()
+	case ModeExam:
+		w.SetFullScreen(false)
+		w.SetAlwaysOnTop(false)
+		w.SetClosable(true)
+		w.SetResizable(true)
+		w.SetSize(760, 560)
+		w.Center()
+	case ModeChat:
+		w.SetFullScreen(false)
+		w.SetAlwaysOnTop(false)
+		w.SetClosable(true)
+		w.SetResizable(true)
+		w.SetSize(640, 480)
+		w.Center()
+	default: // ModeBar
+		w.SetFullScreen(false)
+		w.SetAlwaysOnTop(true)
+		w.SetClosable(true)
+		w.SetResizable(false)
+		h := 104
+		if a.barCollapsed {
+			h = 54
+		}
+		w.SetSize(780, h)
 	}
 }
 
 // View builds the active student interface (floating bar, broadcast viewer, blackout lock, check-in, exam, or chat/homework).
 func (a *App) View(c *ui.Context) {
+	if a.win != nil {
+		a.syncWindowForModeLocked(a.win)
+	}
 	pal := theme.GetPalette(a.dark)
 	c.SetTheme(theme.Theme(a.dark))
 	c.Root().Background(pal.Canvas)
@@ -251,6 +395,12 @@ func (a *App) buildFloatingBarView(c *ui.Context, pal theme.Palette) {
 			ui.Text(c, fmt.Sprintf("%s (%s)", a.machineName, a.studentNo)).FontSize(12).Bold().TextColor(pal.Text)
 			if a.handRaised {
 				ui.Badge(c, "已举手").Background(pal.Accent).TextColor(pal.AccentText)
+			}
+			if a.remoteControlled {
+				ui.Badge(c, "远控中").Background(pal.Selection).TextColor(pal.Text)
+			}
+			if a.monitoringActive {
+				ui.Badge(c, "监控中").Background(pal.Selection).TextColor(pal.Text)
 			}
 			ui.Spacer(c)
 
@@ -322,7 +472,7 @@ func (a *App) buildBroadcastView(c *ui.Context, pal theme.Palette) {
 
 		ui.Column(c).Grow(1).FillWidth().Center().Padding(12).Children(func() {
 			if a.videoBitmap != nil {
-				ui.Image(c, a.videoBitmap).Fit(ui.Contain).Radius(2)
+				ui.Image(c, a.videoBitmap).Fill().Fit(ui.Contain).Radius(2)
 			} else {
 				ui.Text(c, "等待教师端屏幕或网络影院画面...").FontSize(14).TextColor(ui.Hex("#D4D4D4"))
 				ui.Text(c, "当前无视频信号").FontSize(12).TextColor(ui.Hex("#8E8E8E"))
@@ -443,6 +593,10 @@ func (a *App) buildExamView(c *ui.Context, pal theme.Palette) {
 }
 
 func (a *App) buildChatHomeworkView(c *ui.Context, pal theme.Palette) {
+	var fileTasks []*core.TransferTask
+	if a.opts.Files != nil {
+		fileTasks = a.opts.Files.ListTasks()
+	}
 	ui.Column(c).Fill().Padding(16).Gap(10).Background(pal.Canvas).Children(func() {
 		ui.Row(c).FillWidth().AlignItems(ui.Center).Children(func() {
 			ui.Text(c, "作业提交与课堂消息").FontSize(16).Bold().TextColor(pal.Accent)
@@ -465,6 +619,29 @@ func (a *App) buildChatHomeworkView(c *ui.Context, pal theme.Palette) {
 			})
 		})
 
+		if len(fileTasks) > 0 {
+			ui.Column(c).FillWidth().Padding(8).Radius(3).Background(pal.Card).Border(1, pal.CardBorder).Gap(4).Children(func() {
+				ui.Text(c, fmt.Sprintf("文件记录 (%d)", len(fileTasks))).FontSize(11).Bold().TextColor(pal.TextMuted)
+				limit := len(fileTasks)
+				if limit > 4 {
+					limit = 4
+				}
+				for i := len(fileTasks) - 1; i >= len(fileTasks)-limit; i-- {
+					tk := fileTasks[i]
+					ui.Row(c).Key("st-file-" + tk.ID).FillWidth().AlignItems(ui.Center).Gap(6).Children(func() {
+						ui.Badge(c, string(tk.Direction))
+						ui.Text(c, tk.FileName).FontSize(11).Grow(1).SingleLine()
+						ui.Text(c, tk.Status).FontSize(10).TextColor(pal.TextMuted)
+						if tk.Status == "completed" && tk.LocalPath != "" {
+							if ui.Button(c, "打开").Padding(2, 8).Clicked() {
+								_ = mygo.Shell.OpenPath(tk.LocalPath)
+							}
+						}
+					})
+				}
+			})
+		}
+
 		ui.Scroll(c.Key("student-chat-scroll")).Grow(1).FillWidth().Children(func() {
 			ui.Column(c).FillWidth().Gap(4).Children(func() {
 				if a.opts.Classroom != nil {
@@ -479,8 +656,8 @@ func (a *App) buildChatHomeworkView(c *ui.Context, pal theme.Palette) {
 		})
 
 		ui.Row(c).FillWidth().Gap(8).Children(func() {
-			ui.TextInput(c, &a.chatInput).Grow(1).Placeholder("向教师端发送消息...")
-			if ui.PrimaryButton(c, "发送消息").Padding(4, 14).Clicked() {
+			inp := ui.TextInput(c, &a.chatInput).Grow(1).Placeholder("向教师端发送消息...")
+			if inp.Submitted() || ui.PrimaryButton(c, "发送消息").Padding(4, 14).Clicked() {
 				a.SendChat()
 			}
 		})
@@ -546,12 +723,22 @@ func (a *App) SubmitHomework() {
 	if a.opts.Files == nil {
 		return
 	}
-	task, err := a.opts.Files.SubmitHomework(context.Background(), a.studentID, a.homeworkPath)
-	if err != nil {
-		a.statusNote = "作业上传失败: " + err.Error()
+	path := strings.TrimSpace(a.homeworkPath)
+	if path == "" {
+		a.statusNote = "请先选择作业文件"
 		return
 	}
-	a.statusNote = "作业已提交: " + task.FileName
+	a.statusNote = "正在上传作业..."
+	go func() {
+		task, err := a.opts.Files.SubmitHomework(context.Background(), a.studentID, path)
+		note := ""
+		if err != nil {
+			note = "作业上传失败: " + err.Error()
+		} else {
+			note = "作业已提交: " + task.FileName
+		}
+		a.SetStatusNote(note)
+	}()
 }
 
 func (a *App) SendChat() {
@@ -584,11 +771,20 @@ func (a *App) SetLocked(locked bool, message string) {
 	} else if a.mode == ModeLock {
 		a.mode = ModeBar
 	}
+	w := a.win
 	a.mu.Unlock()
 	if a.opts.Control != nil {
 		_ = a.opts.Control.SetScreenLock(locked, message)
 	}
-	a.Invalidate()
+	if w != nil {
+		w.Update(func() {
+			a.syncWindowForModeLocked(w)
+			w.Show()
+			if locked {
+				w.Focus()
+			}
+		})
+	}
 }
 
 func (a *App) tryEmergencyUnlock() {
@@ -596,15 +792,35 @@ func (a *App) tryEmergencyUnlock() {
 		a.unlockStatus = "请输入解锁口令"
 		return
 	}
-	type emergencyUnlocker interface {
+	type boolUnlocker interface {
+		EmergencyUnlock(pass string) (bool, error)
+	}
+	type errUnlocker interface {
 		EmergencyUnlock(pass string) error
 	}
-	if u, ok := a.opts.Control.(emergencyUnlocker); ok {
+	switch u := a.opts.Control.(type) {
+	case boolUnlocker:
+		ok, err := u.EmergencyUnlock(a.unlockPassInput)
+		if err != nil {
+			a.unlockStatus = "口令错误: " + err.Error()
+			return
+		}
+		if !ok {
+			a.unlockStatus = "口令错误"
+			return
+		}
+	case errUnlocker:
 		if err := u.EmergencyUnlock(a.unlockPassInput); err != nil {
 			a.unlockStatus = "口令错误: " + err.Error()
 			return
 		}
-	} else if a.unlockPassInput != "nexlab-unlock" {
+	default:
+		if a.unlockPassInput != "nexlab-unlock" {
+			a.unlockStatus = "口令错误"
+			return
+		}
+	}
+	if a.opts.Control == nil && a.unlockPassInput != "nexlab-unlock" {
 		a.unlockStatus = "口令错误"
 		return
 	}

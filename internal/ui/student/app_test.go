@@ -6,6 +6,7 @@ import (
 	"github.com/egoist/mygo/ui"
 
 	"nexlab/internal/ui/demo"
+	"nexlab/internal/control"
 )
 
 func newTestStudentApp() *App {
@@ -83,5 +84,33 @@ func TestStudentBarCheckInExamAndLockViews(t *testing.T) {
 	tester.Frame()
 	if app.ScreenLocked() {
 		t.Fatalf("expected emergency unlock to clear screen lock")
+	}
+}
+
+type testLockBackend struct{}
+
+func (testLockBackend) EnableLock(string) error    { return nil }
+func (testLockBackend) DisableLock() error         { return nil }
+func (testLockBackend) UpdateMessage(string) error { return nil }
+
+func TestStudentEmergencyUnlockWithRealControlManager(t *testing.T) {
+	ctrl := control.NewManager(control.ManagerOptions{
+		Lock: control.LockOptions{
+			Backend:           testLockBackend{},
+			EmergencyPassword: "secret-pass",
+		},
+	})
+	defer ctrl.Close()
+	app := New(Options{
+		StudentID: "stu-real",
+		Services: Services{
+			Control: ctrl,
+		},
+	})
+	app.SetLocked(true, "locked")
+	app.unlockPassInput = "secret-pass"
+	app.tryEmergencyUnlock()
+	if app.ScreenLocked() {
+		t.Fatalf("expected real control.Manager EmergencyUnlock(bool, error) to unlock")
 	}
 }
