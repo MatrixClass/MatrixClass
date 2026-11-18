@@ -54,7 +54,6 @@ type App struct {
 	tray *mygo.Tray
 
 	studentID   string
-	studentName string
 	studentNo   string
 	machineName string
 	channel     string
@@ -70,7 +69,6 @@ type App struct {
 	lockMessage      string
 	unlockPassInput  string
 	unlockStatus     string
-	checkInName      string
 	checkInNo        string
 	checkInSubmitted bool
 	homeworkPath     string
@@ -91,9 +89,6 @@ func New(opts Options) *App {
 	if opts.StudentID == "" {
 		opts.StudentID = "stu-01"
 	}
-	if opts.StudentName == "" {
-		opts.StudentName = "学生01"
-	}
 	if opts.StudentNo == "" {
 		opts.StudentNo = "202601"
 	}
@@ -106,7 +101,6 @@ func New(opts Options) *App {
 	return &App{
 		opts:          opts.Services,
 		studentID:     opts.StudentID,
-		studentName:   opts.StudentName,
 		studentNo:     opts.StudentNo,
 		machineName:   opts.MachineName,
 		channel:       opts.Channel,
@@ -114,7 +108,6 @@ func New(opts Options) *App {
 		mode:          ModeBar,
 		connected:     true,
 		lockMessage:   "课堂黑屏安静模式：请注意前方黑板或教师讲解。",
-		checkInName:   opts.StudentName,
 		checkInNo:     opts.StudentNo,
 		homeworkPath:  "D:\\Homework\\Lab03_Report.docx",
 		statusNote:    "已连接频道: " + opts.Channel,
@@ -255,7 +248,7 @@ func (a *App) buildFloatingBarView(c *ui.Context, pal theme.Palette) {
 		// Top draggable floating bar
 		ui.Row(c).FillWidth().Gap(8).AlignItems(ui.Center).DragWindow().Children(func() {
 			ui.Badge(c, a.channel).Background(pal.Selection).TextColor(pal.Accent)
-			ui.Text(c, fmt.Sprintf("%s (%s)", a.studentName, a.studentNo)).FontSize(12).Bold().TextColor(pal.Text)
+			ui.Text(c, fmt.Sprintf("%s (%s)", a.machineName, a.studentNo)).FontSize(12).Bold().TextColor(pal.Text)
 			if a.handRaised {
 				ui.Badge(c, "已举手").Background(pal.Warning.Alpha(0.18)).TextColor(pal.Warning)
 			}
@@ -365,11 +358,7 @@ func (a *App) buildCheckInView(c *ui.Context, pal theme.Palette) {
 				a.mode = ModeBar
 			}
 		})
-		ui.Text(c, "请核对姓名与学号后点击签到提交至教师端：").FontSize(12).TextColor(pal.TextMuted)
-		ui.Row(c).Gap(10).AlignItems(ui.Center).Children(func() {
-			ui.Text(c, "姓名").Width(48).FontSize(12)
-			ui.TextInput(c, &a.checkInName).Width(200)
-		})
+		ui.Text(c, fmt.Sprintf("当前机位：%s，请核对学号后点击签到提交至教师端：", a.machineName)).FontSize(12).TextColor(pal.TextMuted)
 		ui.Row(c).Gap(10).AlignItems(ui.Center).Children(func() {
 			ui.Text(c, "学号").Width(48).FontSize(12)
 			ui.TextInput(c, &a.checkInNo).Width(200)
@@ -516,15 +505,14 @@ func (a *App) ToggleHandRaise() {
 
 func (a *App) SubmitCheckIn() {
 	if a.opts.Classroom != nil {
-		a.opts.Classroom.SubmitCheckIn(a.studentID, a.checkInName, a.checkInNo)
+		a.opts.Classroom.SubmitCheckIn(a.studentID, "", a.checkInNo)
 	}
 	a.sendControl(protocol.MsgCheckInSubmit, map[string]string{
 		"student_id": a.studentID,
-		"name":       a.checkInName,
 		"student_no": a.checkInNo,
 	})
 	a.checkInSubmitted = true
-	a.statusNote = fmt.Sprintf("签到成功: %s (%s)", a.checkInName, a.checkInNo)
+	a.statusNote = fmt.Sprintf("签到成功: %s (%s)", a.machineName, a.checkInNo)
 }
 
 func (a *App) SubmitExam() {
@@ -573,7 +561,7 @@ func (a *App) SendChat() {
 	}
 	msg := core.ChatMessage{
 		SenderID:  a.studentID,
-		Sender:    a.studentName,
+		Sender:    a.machineName,
 		Text:      txt,
 		CreatedAt: time.Now(),
 	}

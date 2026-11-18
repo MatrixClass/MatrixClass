@@ -11,7 +11,6 @@ import (
 func newTestStudentApp() *App {
 	return New(Options{
 		StudentID:   "stu-01",
-		StudentName: "王小明",
 		StudentNo:   "202601",
 		MachineName: "LAB-PC01",
 		Channel:     "301机房",

@@ -34,13 +34,12 @@ type Runtime struct {
 	Exam      *exam.Service
 
 	studentID   string
-	studentName string
 	studentNo   string
 	machineName string
 	channel     string
 }
 
-func NewRuntime(channel, studentID, studentName, studentNo, teacherAddr, recvDir string) (*Runtime, error) {
+func NewRuntime(channel, studentID, studentNo, teacherAddr, recvDir string) (*Runtime, error) {
 	host, _ := os.Hostname()
 	if host == "" {
 		host = "LAB-PC"
@@ -75,7 +74,6 @@ func NewRuntime(channel, studentID, studentName, studentNo, teacherAddr, recvDir
 
 	app := student.New(student.Options{
 		StudentID:   studentID,
-		StudentName: studentName,
 		StudentNo:   studentNo,
 		MachineName: host,
 		Channel:     channel,
@@ -98,7 +96,6 @@ func NewRuntime(channel, studentID, studentName, studentNo, teacherAddr, recvDir
 		Files:       ft,
 		Exam:        ex,
 		studentID:   studentID,
-		studentName: studentName,
 		studentNo:   studentNo,
 		machineName: host,
 		channel:     channel,
@@ -113,7 +110,6 @@ func (rt *Runtime) wireHandlers() {
 		go rt.acceptFileStreams(sess)
 		env, err := protocol.NewEnvelope(protocol.MsgStudentRegister, rt.studentID, core.StudentInfo{
 			ID:          rt.studentID,
-			Name:        rt.studentName,
 			StudentNo:   rt.studentNo,
 			MachineName: rt.machineName,
 			Channel:     rt.channel,
@@ -224,7 +220,6 @@ func main() {
 	channel := flag.String("channel", "301机房", "classroom channel name")
 	teacherAddr := flag.String("teacher", "", "optional explicit teacher KCP address (host:port)")
 	studentID := flag.String("id", "stu-01", "student ID")
-	studentName := flag.String("name", "王小明", "student display name")
 	studentNo := flag.String("no", "202601", "student number")
 	recvDir := flag.String("recv", "received_files", "received files directory")
 	flag.Parse()
@@ -243,7 +238,6 @@ func main() {
 	if *demoMode {
 		app = student.New(student.Options{
 			StudentID:   *studentID,
-			StudentName: *studentName,
 			StudentNo:   *studentNo,
 			Channel:     *channel,
 			Services: student.Services{
@@ -256,7 +250,7 @@ func main() {
 			},
 		})
 	} else {
-		rt, err := NewRuntime(*channel, *studentID, *studentName, *studentNo, *teacherAddr, *recvDir)
+		rt, err := NewRuntime(*channel, *studentID, *studentNo, *teacherAddr, *recvDir)
 		if err != nil {
 			log.Fatalf("init student runtime: %v", err)
 		}

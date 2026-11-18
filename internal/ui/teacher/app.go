@@ -134,7 +134,7 @@ func New(opts Options) *App {
 		opts.TeacherID = "teacher-01"
 	}
 	if opts.TeacherName == "" {
-		opts.TeacherName = "张老师"
+		opts.TeacherName = "教师端"
 	}
 	if opts.Channel == "" {
 		opts.Channel = "301机房"
@@ -375,7 +375,7 @@ func (a *App) buildToolbar(c *ui.Context, pal theme.Palette) {
 			ui.Text(c, "矩联电子教室 MatrixClass 教师端").FontSize(14).Bold().TextColor(pal.Accent)
 			ui.Badge(c, a.channel).Background(pal.Selection).TextColor(pal.Accent)
 			ui.Spacer(c)
-			ui.SearchField(c, &a.searchQuery).Placeholder("筛选姓名 / 学号 / 机位...").Width(220)
+			ui.SearchField(c, &a.searchQuery).Placeholder("筛选机位 / 学号 / IP...").Width(220)
 			if ui.Button(c, "").Label("切换主题").Tooltip("切换深色/浅色主题").Children(func() {
 				ui.Row(c).Gap(4).AlignItems(ui.Center).Children(func() {
 					ui.Image(c, theme.IconThemeToggle).Size(16, 16)
@@ -632,7 +632,7 @@ func (a *App) buildSeatCard(c *ui.Context, pal theme.Palette, st core.StudentInf
 	card := ui.Column(c).Key("seat-" + st.ID).Width(178).Padding(10).Gap(6).Radius(8).
 		Background(bg).Border(1.5, border).Focusable().
 		Drag(st.ID).
-		Label(fmt.Sprintf("%s %s", st.MachineName, st.Name))
+		Label(fmt.Sprintf("%s %s", st.MachineName, st.StudentNo))
 
 	if draggedID, over := ui.DragOver[string](card); over && draggedID != st.ID {
 		card.Border(2, pal.Warning)
@@ -672,7 +672,9 @@ func (a *App) buildSeatCard(c *ui.Context, pal theme.Palette, st core.StudentInf
 			ui.Image(c, theme.IconSeat).Size(24, 24)
 			ui.Column(c).Grow(1).Gap(1).Children(func() {
 				ui.Text(c, st.MachineName).FontSize(13).Bold().SingleLine()
-				ui.Text(c, st.Name).FontSize(12).SingleLine()
+				if st.StudentNo != "" {
+					ui.Text(c, "编号 "+st.StudentNo).FontSize(11).TextColor(pal.TextMuted).SingleLine()
+				}
 			})
 			if st.HandRaised {
 				ui.Image(c, theme.IconHandRaise).Size(18, 18)
@@ -699,7 +701,7 @@ func (a *App) buildSeatCard(c *ui.Context, pal theme.Palette, st core.StudentInf
 		a.selectedID = st.ID
 		a.monitoring = true
 		a.mainTab = TabMonitorWall
-		a.statusNote = fmt.Sprintf("正在重点监控 %s (%s)", st.Name, st.MachineName)
+		a.statusNote = fmt.Sprintf("正在重点监控 %s", st.MachineName)
 	}
 }
 
@@ -735,7 +737,7 @@ func (a *App) buildMonitorWallTab(c *ui.Context, pal theme.Palette, students []c
 					tile.Children(func() {
 						ui.Image(c, bmp).Size(240, 135).Fit(ui.Contain).Radius(4)
 						ui.Row(c).AlignItems(ui.Center).Gap(6).Children(func() {
-							ui.Text(c, fmt.Sprintf("%s · %s", st.MachineName, st.Name)).FontSize(12).Bold().Grow(1).SingleLine()
+							ui.Text(c, st.MachineName).FontSize(12).Bold().Grow(1).SingleLine()
 							if ui.Button(c, "远控").Padding(2, 6).Clicked() {
 								a.StartRemoteControl(st.ID)
 							}
@@ -995,7 +997,7 @@ func (a *App) buildRightSidebar(c *ui.Context, pal theme.Palette, students []cor
 func (a *App) buildSideStudents(c *ui.Context, pal theme.Palette, students []core.StudentInfo) {
 	cols := []ui.TableColumn{
 		{Title: "机位", ID: "machine", Width: 64},
-		{Title: "姓名", ID: "name", Width: 76},
+		{Title: "学号", ID: "student_no", Width: 76},
 		{Title: "状态", ID: "status", Width: 70},
 		{Title: "延迟", ID: "rtt", Align: ui.End},
 	}
@@ -1005,7 +1007,7 @@ func (a *App) buildSideStudents(c *ui.Context, pal theme.Palette, students []cor
 		case 0:
 			ui.Text(c, st.MachineName).FontSize(12).SingleLine()
 		case 1:
-			ui.Text(c, st.Name).FontSize(12).SingleLine()
+			ui.Text(c, st.StudentNo).FontSize(12).SingleLine()
 		case 2:
 			txt, colr := statusBadge(pal, st)
 			ui.Text(c, txt).FontSize(11).TextColor(colr).SingleLine()
@@ -1042,7 +1044,7 @@ func (a *App) buildSideChatQueue(c *ui.Context, pal theme.Palette, students []co
 			for _, st := range raised {
 				ui.Row(c).Key("hand-" + st.ID).AlignItems(ui.Center).Gap(6).Children(func() {
 					ui.Image(c, theme.IconHandRaise).Size(16, 16)
-					ui.Text(c, fmt.Sprintf("%s (%s)", st.Name, st.MachineName)).FontSize(12).Grow(1).SingleLine()
+					ui.Text(c, fmt.Sprintf("%s (%s)", st.MachineName, st.StudentNo)).FontSize(12).Grow(1).SingleLine()
 					if ui.PrimaryButton(c, "批准演示").Padding(2, 8).Clicked() {
 						a.ApproveHandRaise(st.ID)
 					}
@@ -1126,8 +1128,6 @@ func (a *App) buildStatusBar(c *ui.Context, pal theme.Palette) {
 func (a *App) buildSettingsModal(c *ui.Context, pal theme.Palette) {
 	ui.Column(c).Width(420).Background(pal.Canvas).Border(1, pal.CardBorder).Radius(10).Padding(16).Gap(10).Children(func() {
 		ui.Text(c, "教师端课堂设置").FontSize(16).Bold()
-		ui.Text(c, "教师姓名").FontSize(12).TextColor(pal.TextMuted)
-		ui.TextInput(c, &a.teacherName)
 		ui.Text(c, "教室频道名").FontSize(12).TextColor(pal.TextMuted)
 		ui.TextInput(c, &a.channel)
 		ui.Checkbox(c, &a.useMulticast, "优先使用 UDP 组播 + FEC 广播画面")
@@ -1384,7 +1384,7 @@ func (a *App) swapStudentSeats(idA, idB string) {
 	}
 	a.opts.Classroom.UpdateSeat(stuA.ID, stuB.Seat)
 	a.opts.Classroom.UpdateSeat(stuB.ID, stuA.Seat)
-	a.statusNote = fmt.Sprintf("已调换座位: %s ↔ %s", stuA.Name, stuB.Name)
+	a.statusNote = fmt.Sprintf("已调换座位: %s ↔ %s", stuA.MachineName, stuB.MachineName)
 }
 
 func (a *App) publishExam() {
@@ -1476,7 +1476,7 @@ func (a *App) filteredStudents() []core.StudentInfo {
 			continue
 		}
 		if q != "" {
-			hay := strings.ToLower(st.Name + " " + st.StudentNo + " " + st.MachineName + " " + st.IP)
+			hay := strings.ToLower(st.StudentNo + " " + st.MachineName + " " + st.IP)
 			if !strings.Contains(hay, q) {
 				continue
 			}

@@ -240,7 +240,7 @@ func main() {
 	demoMode := flag.Bool("demo", false, "run teacher console with built-in demo classroom data")
 	channel := flag.String("channel", "301机房", "classroom channel name")
 	listenAddr := flag.String("listen", ":39100", "KCP listen address")
-	teacherName := flag.String("name", "张老师", "teacher display name")
+	teacherLabel := "教师端"
 	archiveDir := flag.String("archive", "submissions", "homework archive directory")
 	flag.Parse()
 
@@ -258,7 +258,7 @@ func main() {
 	if *demoMode {
 		app = teacher.New(teacher.Options{
 			TeacherID:   "teacher-01",
-			TeacherName: *teacherName,
+			TeacherName: teacherLabel,
 			Channel:     *channel,
 			Services: teacher.Services{
 				Transport: demo.NewTransport(*channel, 12),
@@ -270,11 +270,11 @@ func main() {
 			},
 		})
 	} else {
-		rt, err := NewRuntime(*channel, "teacher-01", *teacherName, *archiveDir)
+		rt, err := NewRuntime(*channel, "teacher-01", teacherLabel, *archiveDir)
 		if err != nil {
 			log.Fatalf("init teacher runtime: %v", err)
 		}
-		if err := rt.Start(ctx, *listenAddr, *teacherName); err != nil {
+		if err := rt.Start(ctx, *listenAddr, teacherLabel); err != nil {
 			log.Fatalf("start teacher transport: %v", err)
 		}
 		app = rt.App

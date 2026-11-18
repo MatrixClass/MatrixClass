@@ -15,7 +15,7 @@ func newTestTeacherApp() (*App, *demo.Transport, *demo.Classroom, *demo.Control)
 	ctrl := demo.NewControl()
 	app := New(Options{
 		TeacherID:   "teacher-test",
-		TeacherName: "李老师",
+		TeacherName: "教师端",
 		Channel:     "301机房",
 		Services: Services{
 			Transport: tr,

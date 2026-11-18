@@ -197,18 +197,18 @@ func NewClassroom() *Classroom {
 			{ID: "g2", Name: "第2小组 (后排)", LeaderID: "stu-05", Members: []string{"stu-05", "stu-06", "stu-07", "stu-08"}},
 		},
 		students: []core.StudentInfo{
-			{ID: "stu-01", Name: "张伟", StudentNo: "20260101", MachineName: "PC-01", IP: "192.168.10.101", MAC: "00:11:22:33:44:01", Channel: "301机房", GroupID: "g1", Seat: core.SeatPos{Row: 0, Col: 0}, Status: core.StatusOnline, CheckedIn: true, LastSeen: now, RTTMs: 2, LossRate: 0.0},
-			{ID: "stu-02", Name: "李娜", StudentNo: "20260102", MachineName: "PC-02", IP: "192.168.10.102", MAC: "00:11:22:33:44:02", Channel: "301机房", GroupID: "g1", Seat: core.SeatPos{Row: 0, Col: 1}, Status: core.StatusHandRaised, HandRaised: true, CheckedIn: true, LastSeen: now, RTTMs: 3, LossRate: 0.001},
-			{ID: "stu-03", Name: "王磊", StudentNo: "20260103", MachineName: "PC-03", IP: "192.168.10.103", MAC: "00:11:22:33:44:03", Channel: "301机房", GroupID: "g1", Seat: core.SeatPos{Row: 0, Col: 2}, Status: core.StatusOnline, CheckedIn: true, LastSeen: now, RTTMs: 2, LossRate: 0.0},
-			{ID: "stu-04", Name: "刘洋", StudentNo: "20260104", MachineName: "PC-04", IP: "192.168.10.104", MAC: "00:11:22:33:44:04", Channel: "301机房", GroupID: "g1", Seat: core.SeatPos{Row: 0, Col: 3}, Status: core.StatusOnline, CheckedIn: false, LastSeen: now, RTTMs: 4, LossRate: 0.002},
-			{ID: "stu-05", Name: "陈敏", StudentNo: "20260105", MachineName: "PC-05", IP: "192.168.10.105", MAC: "00:11:22:33:44:05", Channel: "301机房", GroupID: "g2", Seat: core.SeatPos{Row: 1, Col: 0}, Status: core.StatusLocked, CheckedIn: true, LastSeen: now, RTTMs: 3, LossRate: 0.0},
-			{ID: "stu-06", Name: "赵强", StudentNo: "20260106", MachineName: "PC-06", IP: "192.168.10.106", MAC: "00:11:22:33:44:06", Channel: "301机房", GroupID: "g2", Seat: core.SeatPos{Row: 1, Col: 1}, Status: core.StatusOnline, CheckedIn: true, LastSeen: now, RTTMs: 2, LossRate: 0.0},
-			{ID: "stu-07", Name: "周静", StudentNo: "20260107", MachineName: "PC-07", IP: "192.168.10.107", MAC: "00:11:22:33:44:07", Channel: "301机房", GroupID: "g2", Seat: core.SeatPos{Row: 1, Col: 2}, Status: core.StatusOffline, CheckedIn: false, LastSeen: now.Add(-2 * time.Minute), RTTMs: 0, LossRate: 1.0},
-			{ID: "stu-08", Name: "吴涛", StudentNo: "20260108", MachineName: "PC-08", IP: "192.168.10.108", MAC: "00:11:22:33:44:08", Channel: "301机房", GroupID: "g2", Seat: core.SeatPos{Row: 1, Col: 3}, Status: core.StatusOnline, CheckedIn: true, LastSeen: now, RTTMs: 5, LossRate: 0.004},
+			{ID: "stu-01", StudentNo: "20260101", MachineName: "PC-01", IP: "192.168.10.101", MAC: "00:11:22:33:44:01", Channel: "301机房", GroupID: "g1", Seat: core.SeatPos{Row: 0, Col: 0}, Status: core.StatusOnline, CheckedIn: true, LastSeen: now, RTTMs: 2, LossRate: 0.0},
+			{ID: "stu-02", StudentNo: "20260102", MachineName: "PC-02", IP: "192.168.10.102", MAC: "00:11:22:33:44:02", Channel: "301机房", GroupID: "g1", Seat: core.SeatPos{Row: 0, Col: 1}, Status: core.StatusHandRaised, HandRaised: true, CheckedIn: true, LastSeen: now, RTTMs: 3, LossRate: 0.001},
+			{ID: "stu-03", StudentNo: "20260103", MachineName: "PC-03", IP: "192.168.10.103", MAC: "00:11:22:33:44:03", Channel: "301机房", GroupID: "g1", Seat: core.SeatPos{Row: 0, Col: 2}, Status: core.StatusOnline, CheckedIn: true, LastSeen: now, RTTMs: 2, LossRate: 0.0},
+			{ID: "stu-04", StudentNo: "20260104", MachineName: "PC-04", IP: "192.168.10.104", MAC: "00:11:22:33:44:04", Channel: "301机房", GroupID: "g1", Seat: core.SeatPos{Row: 0, Col: 3}, Status: core.StatusOnline, CheckedIn: false, LastSeen: now, RTTMs: 4, LossRate: 0.002},
+			{ID: "stu-05", StudentNo: "20260105", MachineName: "PC-05", IP: "192.168.10.105", MAC: "00:11:22:33:44:05", Channel: "301机房", GroupID: "g2", Seat: core.SeatPos{Row: 1, Col: 0}, Status: core.StatusLocked, CheckedIn: true, LastSeen: now, RTTMs: 3, LossRate: 0.0},
+			{ID: "stu-06", StudentNo: "20260106", MachineName: "PC-06", IP: "192.168.10.106", MAC: "00:11:22:33:44:06", Channel: "301机房", GroupID: "g2", Seat: core.SeatPos{Row: 1, Col: 1}, Status: core.StatusOnline, CheckedIn: true, LastSeen: now, RTTMs: 2, LossRate: 0.0},
+			{ID: "stu-07", StudentNo: "20260107", MachineName: "PC-07", IP: "192.168.10.107", MAC: "00:11:22:33:44:07", Channel: "301机房", GroupID: "g2", Seat: core.SeatPos{Row: 1, Col: 2}, Status: core.StatusOffline, CheckedIn: false, LastSeen: now.Add(-2 * time.Minute), RTTMs: 0, LossRate: 1.0},
+			{ID: "stu-08", StudentNo: "20260108", MachineName: "PC-08", IP: "192.168.10.108", MAC: "00:11:22:33:44:08", Channel: "301机房", GroupID: "g2", Seat: core.SeatPos{Row: 1, Col: 3}, Status: core.StatusOnline, CheckedIn: true, LastSeen: now, RTTMs: 5, LossRate: 0.004},
 		},
 		chats: []core.ChatMessage{
-			{ID: "msg-1", SenderID: "teacher", Sender: "张老师", Text: "欢迎来到《计算机网络基础》实验课，请先完成点名签到。", CreatedAt: now.Add(-3 * time.Minute)},
-			{ID: "msg-2", SenderID: "stu-02", Sender: "李娜", Text: "老师，我这边准备好了，想演示第2题配置。", CreatedAt: now.Add(-1 * time.Minute)},
+			{ID: "msg-1", SenderID: "teacher", Sender: "教师端", Text: "欢迎来到《计算机网络基础》实验课，请先完成点名签到。", CreatedAt: now.Add(-3 * time.Minute)},
+			{ID: "msg-2", SenderID: "stu-02", Sender: "PC-02", Text: "老师，我这边准备好了，想演示第2题配置。", CreatedAt: now.Add(-1 * time.Minute)},
 		},
 	}
 }

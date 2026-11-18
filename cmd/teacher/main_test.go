@@ -34,13 +34,13 @@ func TestEndToEndTeacherStudentKCPIntegration(t *testing.T) {
 	teacherAddr := freeUDPAddr(t)
 	mcastAddr := freeUDPAddr(t)
 
-	trRuntime, err := NewRuntime("Lab-E2E", "teacher-e2e", "张老师", t.TempDir())
+	trRuntime, err := NewRuntime("Lab-E2E", "teacher-e2e", "教师端", t.TempDir())
 	if err != nil {
 		t.Fatalf("NewRuntime teacher failed: %v", err)
 	}
 	defer trRuntime.Close()
 
-	if err := trRuntime.Start(ctx, teacherAddr, "张老师"); err != nil {
+	if err := trRuntime.Start(ctx, teacherAddr, "教师端"); err != nil {
 		t.Fatalf("teacher Start failed: %v", err)
 	}
 
@@ -60,7 +60,6 @@ func TestEndToEndTeacherStudentKCPIntegration(t *testing.T) {
 	stExam := exam.NewService()
 	stApp := student.New(student.Options{
 		StudentID:   "stu-e2e-1",
-		StudentName: "李同学",
 		StudentNo:   "202688",
 		Channel:     "Lab-E2E",
 		Services: student.Services{
@@ -74,7 +73,6 @@ func TestEndToEndTeacherStudentKCPIntegration(t *testing.T) {
 	stTransport.OnSession(func(sess core.Session) {
 		env, _ := protocol.NewEnvelope(protocol.MsgStudentRegister, "stu-e2e-1", core.StudentInfo{
 			ID:          "stu-e2e-1",
-			Name:        "李同学",
 			StudentNo:   "202688",
 			MachineName: "PC-88",
 			Channel:     "Lab-E2E",
