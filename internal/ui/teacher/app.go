@@ -181,7 +181,7 @@ func New(opts Options) *App {
 		examAnswerInput:   "否",
 		examPointsInput:   100,
 		distributePath:    "D:\\Teaching\\Lab03_PacketGuide.pdf",
-		remoteDir:         "C:\\NexLab\\Recv",
+		remoteDir:         "",
 		collectSaveDir:    "D:\\Submissions\\Class301",
 		autoOpenFile:      true,
 		fileTargetAll:     true,
