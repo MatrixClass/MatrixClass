@@ -168,15 +168,31 @@ func EnsureNV12(frame *core.VideoFrame) error {
 
 // ScaleRGBA downscales or resamples an RGBA buffer using fast nearest/box sampling.
 func ScaleRGBA(src []byte, srcW, srcH, dstW, dstH int) []byte {
+	return ScaleRGBABuf(nil, src, srcW, srcH, dstW, dstH)
+}
+
+// ScaleRGBABuf downscales or resamples an RGBA buffer into dst (reusing its capacity when sufficient).
+func ScaleRGBABuf(dst, src []byte, srcW, srcH, dstW, dstH int) []byte {
 	if srcW <= 0 || srcH <= 0 || dstW <= 0 || dstH <= 0 || len(src) < srcW*srcH*4 {
 		return nil
 	}
-	if srcW == dstW && srcH == dstH {
-		out := make([]byte, srcW*srcH*4)
-		copy(out, src[:srcW*srcH*4])
-		return out
+	need := dstW * dstH * 4
+	if cap(dst) < need {
+		dst = make([]byte, need)
 	}
-	dst := make([]byte, dstW*dstH*4)
+	dst = dst[:need]
+	if srcW == dstW && srcH == dstH {
+		copy(dst, src[:need])
+		return dst
+	}
+	xMap := make([]int, dstW)
+	for x := 0; x < dstW; x++ {
+		sx := (x * srcW) / dstW
+		if sx >= srcW {
+			sx = srcW - 1
+		}
+		xMap[x] = sx * 4
+	}
 	for y := 0; y < dstH; y++ {
 		sy := (y * srcH) / dstH
 		if sy >= srcH {
@@ -185,16 +201,9 @@ func ScaleRGBA(src []byte, srcW, srcH, dstW, dstH int) []byte {
 		srcRow := sy * srcW * 4
 		dstRow := y * dstW * 4
 		for x := 0; x < dstW; x++ {
-			sx := (x * srcW) / dstW
-			if sx >= srcW {
-				sx = srcW - 1
-			}
-			sOff := srcRow + sx*4
+			sOff := srcRow + xMap[x]
 			dOff := dstRow + x*4
-			dst[dOff] = src[sOff]
-			dst[dOff+1] = src[sOff+1]
-			dst[dOff+2] = src[sOff+2]
-			dst[dOff+3] = src[sOff+3]
+			copy(dst[dOff:dOff+4], src[sOff:sOff+4])
 		}
 	}
 	return dst
@@ -257,10 +266,13 @@ func bgraToRGBA(bgra, dst []byte, width, height, stride int) []byte {
 		dst = make([]byte, need)
 	}
 	dst = dst[:need]
+	rowBytes := width * 4
 	for y := 0; y < height; y++ {
-		srcRow := bgra[y*stride : y*stride+width*4]
-		dstRow := dst[y*width*4 : (y+1)*width*4]
-		for x := 0; x < width*4; x += 4 {
+		srcRow := bgra[y*stride : y*stride+rowBytes]
+		dstRow := dst[y*rowBytes : (y+1)*rowBytes]
+		for x := 0; x < rowBytes; x += 4 {
+			_ = srcRow[x+3]
+			_ = dstRow[x+3]
 			dstRow[x] = srcRow[x+2]
 			dstRow[x+1] = srcRow[x+1]
 			dstRow[x+2] = srcRow[x]
@@ -282,17 +294,19 @@ func clampByte(v int32) byte {
 
 // ZstdVideoCodec implements fast tile-delta + Zstd encoding and decoding.
 type ZstdVideoCodec struct {
-	mu        sync.Mutex
-	encFast   *zstd.Encoder
-	encDef    *zstd.Encoder
-	dec       *zstd.Decoder
-	prevRGBA  []byte
-	prevW     int
-	prevH     int
-	decRGBA   []byte
-	decW      int
-	decH      int
-	scratch   []byte
+	mu         sync.Mutex
+	encFast    *zstd.Encoder
+	encDef     *zstd.Encoder
+	dec        *zstd.Decoder
+	prevRGBA   []byte
+	prevW      int
+	prevH      int
+	decRGBA    []byte
+	decW       int
+	decH       int
+	scratch    []byte
+	compBuf    []byte
+	nv12RawBuf []byte
 }
 
 func NewZstdVideoCodec() (*ZstdVideoCodec, error) {
@@ -353,8 +367,13 @@ func (c *ZstdVideoCodec) Encode(frame *core.VideoFrame, quality int) ([]byte, er
 	w, h := frame.Width, frame.Height
 	expectedRGBA := w * h * 4
 
-	// Low-quality path or NV12-only source uses compact NV12 payload.
-	if len(frame.Data) < expectedRGBA || (quality < 65 && !frame.KeyFrame) {
+	// Use tile-delta first when we have RGBA data and a matching reference frame,
+	// even at lower quality settings, because tile-delta is much faster and smaller
+	// than full-frame RGBA->NV12 conversion on screen content.
+	canDelta := len(frame.Data) >= expectedRGBA && !frame.KeyFrame && c.prevW == w && c.prevH == h && len(c.prevRGBA) == expectedRGBA
+
+	// NV12-only source or low-quality non-delta fallback uses compact NV12 payload.
+	if len(frame.Data) < expectedRGBA || (!canDelta && quality < 65 && !frame.KeyFrame) {
 		var yPlane, uvPlane []byte
 		var strideY, strideUV int
 		if len(frame.NV12Y) >= w*h && len(frame.NV12UV) >= ((w+1)/2)*2*((h+1)/2) {
@@ -375,7 +394,11 @@ func (c *ZstdVideoCodec) Encode(frame *core.VideoFrame, quality int) ([]byte, er
 		}
 		ch := (h + 1) / 2
 		cwBytes := ((w + 1) / 2) * 2
-		raw := make([]byte, w*h+cwBytes*ch)
+		rawNeed := w*h + cwBytes*ch
+		if cap(c.nv12RawBuf) < rawNeed {
+			c.nv12RawBuf = make([]byte, rawNeed)
+		}
+		raw := c.nv12RawBuf[:rawNeed]
 		for row := 0; row < h; row++ {
 			copy(raw[row*w:(row+1)*w], yPlane[row*strideY:row*strideY+w])
 		}
@@ -383,23 +406,22 @@ func (c *ZstdVideoCodec) Encode(frame *core.VideoFrame, quality int) ([]byte, er
 		for row := 0; row < ch; row++ {
 			copy(raw[uvBase+row*cwBytes:uvBase+(row+1)*cwBytes], uvPlane[row*strideUV:row*strideUV+cwBytes])
 		}
-		compressed := c.selectEncoder(quality).EncodeAll(raw, nil)
+		c.compBuf = c.selectEncoder(quality).EncodeAll(raw, c.compBuf[:0])
 		flags := videoFlagNV12
 		if frame.KeyFrame {
 			flags |= videoFlagKeyFrame
 		}
-		return packVideoHeader(codecIDFrameZstd, flags, uint8(quality), w, h, frame.Seq, frame.Timestamp, compressed), nil
+		return packVideoHeader(codecIDFrameZstd, flags, uint8(quality), w, h, frame.Seq, frame.Timestamp, c.compBuf), nil
 	}
 
 	rgba := frame.Data[:expectedRGBA]
-	canDelta := !frame.KeyFrame && c.prevW == w && c.prevH == h && len(c.prevRGBA) == expectedRGBA
 
 	if canDelta {
 		deltaBuf, changedTiles, totalTiles := c.buildTileDelta(rgba, c.prevRGBA, w, h)
 		if changedTiles == 0 || changedTiles*100 <= totalTiles*65 {
-			compressed := c.selectEncoder(quality).EncodeAll(deltaBuf, nil)
+			c.compBuf = c.selectEncoder(quality).EncodeAll(deltaBuf, c.compBuf[:0])
 			copy(c.prevRGBA, rgba)
-			return packVideoHeader(codecIDFrameZstd, videoFlagDelta, uint8(quality), w, h, frame.Seq, frame.Timestamp, compressed), nil
+			return packVideoHeader(codecIDFrameZstd, videoFlagDelta, uint8(quality), w, h, frame.Seq, frame.Timestamp, c.compBuf), nil
 		}
 	}
 
@@ -411,8 +433,8 @@ func (c *ZstdVideoCodec) Encode(frame *core.VideoFrame, quality int) ([]byte, er
 	c.prevW = w
 	c.prevH = h
 
-	compressed := c.selectEncoder(quality).EncodeAll(rgba, nil)
-	return packVideoHeader(codecIDFrameZstd, videoFlagKeyFrame, uint8(quality), w, h, frame.Seq, frame.Timestamp, compressed), nil
+	c.compBuf = c.selectEncoder(quality).EncodeAll(rgba, c.compBuf[:0])
+	return packVideoHeader(codecIDFrameZstd, videoFlagKeyFrame, uint8(quality), w, h, frame.Seq, frame.Timestamp, c.compBuf), nil
 }
 
 func (c *ZstdVideoCodec) selectEncoder(quality int) *zstd.Encoder {
@@ -457,17 +479,22 @@ func (c *ZstdVideoCodec) buildTileDelta(curr, prev []byte, width, height int) ([
 			buf = append(buf, hdr[:]...)
 
 			span := tw * 4
+			tileBytes := span * th
 			prevLen := len(buf)
-			buf = append(buf, make([]byte, span*th)...)
+			if cap(buf) < prevLen+tileBytes {
+				grown := make([]byte, prevLen+tileBytes, (prevLen+tileBytes)*2)
+				copy(grown, buf)
+				buf = grown
+			} else {
+				buf = buf[:prevLen+tileBytes]
+			}
 			dstPos := prevLen
 			for dy := 0; dy < th; dy++ {
 				off := (y0+dy)*rowBytes + x0*4
 				ca := curr[off : off+span]
 				pa := prev[off : off+span]
 				da := buf[dstPos : dstPos+span]
-				for i := 0; i < span; i++ {
-					da[i] = ca[i] ^ pa[i]
-				}
+				xorBytes(da, ca, pa)
 				dstPos += span
 			}
 		}
@@ -475,6 +502,19 @@ func (c *ZstdVideoCodec) buildTileDelta(curr, prev []byte, width, height int) ([
 	binary.LittleEndian.PutUint32(buf[0:4], uint32(changed))
 	c.scratch = buf
 	return buf, changed, totalTiles
+}
+
+func xorBytes(dst, a, b []byte) {
+	n := len(dst)
+	i := 0
+	for ; i+8 <= n; i += 8 {
+		va := binary.LittleEndian.Uint64(a[i : i+8])
+		vb := binary.LittleEndian.Uint64(b[i : i+8])
+		binary.LittleEndian.PutUint64(dst[i:i+8], va^vb)
+	}
+	for ; i < n; i++ {
+		dst[i] = a[i] ^ b[i]
+	}
 }
 
 func tileEqual(a, b []byte, rowBytes, x0, y0, tw, th int) bool {

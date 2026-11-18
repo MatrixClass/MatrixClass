@@ -368,9 +368,52 @@ func (rt *Runtime) heartbeatLoop(ctx context.Context) {
 func (rt *Runtime) broadcastLoop(ctx context.Context) {
 	ticker := time.NewTicker(66 * time.Millisecond)
 	defer ticker.Stop()
-	wasActive := false
-	var bcastSeq uint64
-	var lastSentAt time.Time
+
+	frameTrigger := make(chan struct{}, 1)
+	var broadcastActive atomic.Bool
+	go func() {
+		var bcastSeq uint64
+		var lastSentAt time.Time
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-frameTrigger:
+				active := rt.App.Broadcasting() || rt.App.TheatrePlaying()
+				if !active {
+					broadcastActive.Store(false)
+					continue
+				}
+				useMulticast := rt.App.UseMulticast()
+				if !useMulticast && len(rt.Transport.Sessions()) == 0 {
+					broadcastActive.Store(false)
+					continue
+				}
+				frame, err := rt.Media.CaptureScreenMax(1280, 720)
+				if err != nil {
+					continue
+				}
+				changed := rt.Media.LastFrameChanged()
+				explicitKF := !broadcastActive.Swap(true) || rt.forceKeyFrame.Swap(false)
+				periodicKF := changed && bcastSeq > 0 && bcastSeq%150 == 0
+				forceKF := explicitKF || periodicKF
+				if !forceKF && !changed && time.Since(lastSentAt) < 2500*time.Millisecond {
+					continue
+				}
+				bcastSeq++
+				if forceKF {
+					frame.KeyFrame = true
+				}
+				lastSentAt = time.Now()
+				encoded, err := rt.Media.EncodeFrame(frame, int(rt.App.MonitorQual()))
+				if err != nil {
+					continue
+				}
+				_ = rt.Transport.BroadcastMulticast(encoded)
+			}
+		}
+	}()
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -378,30 +421,14 @@ func (rt *Runtime) broadcastLoop(ctx context.Context) {
 		case <-ticker.C:
 			rt.syncAudioCapture()
 			rt.Transport.SetMulticastEnabled(rt.App.UseMulticast())
-			active := rt.App.Broadcasting() || rt.App.TheatrePlaying()
-			if !active {
-				wasActive = false
-				continue
+			if rt.App.Broadcasting() || rt.App.TheatrePlaying() {
+				select {
+				case frameTrigger <- struct{}{}:
+				default:
+				}
+			} else {
+				broadcastActive.Store(false)
 			}
-			frame, err := rt.Media.CaptureScreenMax(1280, 720)
-			if err != nil {
-				continue
-			}
-			forceKF := !wasActive || rt.forceKeyFrame.Swap(false) || (bcastSeq > 0 && bcastSeq%150 == 0)
-			if !forceKF && !rt.Media.LastFrameChanged() && time.Since(lastSentAt) < 1000*time.Millisecond {
-				continue
-			}
-			bcastSeq++
-			if forceKF {
-				frame.KeyFrame = true
-			}
-			wasActive = true
-			lastSentAt = time.Now()
-			encoded, err := rt.Media.EncodeFrame(frame, int(rt.App.MonitorQual()))
-			if err != nil {
-				continue
-			}
-			_ = rt.Transport.BroadcastMulticast(encoded)
 		}
 	}
 }

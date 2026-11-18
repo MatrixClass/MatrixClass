@@ -365,3 +365,117 @@ func TestEndToEndScreenBroadcastOverKCPFallback(t *testing.T) {
 		t.Fatalf("expected student ModeBar (%d) after broadcast stop, got %d", student.ModeBar, stApp.Mode())
 	}
 }
+
+func TestEndToEndBroadcastBurstLatestFrameOverKCP(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	teacherAddr := freeUDPAddr(t)
+	trRuntime, err := NewRuntime("Lab-Burst", "teacher-burst", "教师端", t.TempDir())
+	if err != nil {
+		t.Fatalf("NewRuntime teacher failed: %v", err)
+	}
+	defer trRuntime.Close()
+
+	if err := trRuntime.Start(ctx, teacherAddr, "教师端"); err != nil {
+		t.Fatalf("teacher Start failed: %v", err)
+	}
+
+	stTransport := transport.NewManager(
+		transport.WithDiscoveryConfig(transport.DiscoveryConfig{Port: 0}),
+		transport.WithTeacherAddr(teacherAddr),
+	)
+	defer stTransport.Close()
+
+	stMedia, err := media.NewManager(media.ManagerOptions{PreferH264MFT: false})
+	if err != nil {
+		t.Fatalf("student media init: %v", err)
+	}
+	defer stMedia.Close()
+
+	receivedPayloads := make(chan []byte, 64)
+	stTransport.OnSession(func(sess core.Session) {
+		env, _ := protocol.NewEnvelope(protocol.MsgStudentRegister, "stu-burst-1", core.StudentInfo{
+			ID:          "stu-burst-1",
+			StudentNo:   "202699",
+			MachineName: "PC-BURST",
+			Channel:     "Lab-Burst",
+		})
+		_ = sess.SendEnvelope(env)
+	})
+	stTransport.OnMulticastData(func(data []byte) {
+		cp := make([]byte, len(data))
+		copy(cp, data)
+		select {
+		case receivedPayloads <- cp:
+		default:
+		}
+	})
+
+	if err := stTransport.StartStudent(ctx, "Lab-Burst"); err != nil {
+		t.Fatalf("student StartStudent failed: %v", err)
+	}
+
+	deadline := time.Now().Add(4 * time.Second)
+	for time.Now().Before(deadline) && len(trRuntime.Classroom.ListStudents()) == 0 {
+		time.Sleep(25 * time.Millisecond)
+	}
+	if len(trRuntime.Classroom.ListStudents()) == 0 {
+		t.Fatalf("student failed to register on teacher")
+	}
+
+	// Prepare a valid encoded video frame and send a rapid burst with unique markers.
+	baseFrame, err := trRuntime.Media.CaptureScreenMax(320, 180)
+	if err != nil {
+		t.Fatalf("CaptureScreenMax failed: %v", err)
+	}
+	encoded, err := trRuntime.Media.EncodeFrame(baseFrame, 70)
+	if err != nil {
+		t.Fatalf("EncodeFrame failed: %v", err)
+	}
+
+	const burstCount = 24
+	const markerPrefix = "BURST-SEQ-"
+	start := time.Now()
+	for i := 1; i <= burstCount; i++ {
+		pkt := make([]byte, len(encoded)+14)
+		copy(pkt, encoded)
+		copy(pkt[len(encoded):], []byte(markerPrefix))
+		pkt[len(encoded)+10] = byte(i / 10 + '0')
+		pkt[len(encoded)+11] = byte(i % 10 + '0')
+		pkt[len(encoded)+12] = '!'
+		pkt[len(encoded)+13] = '!'
+		if err := trRuntime.Transport.BroadcastMulticast(pkt); err != nil {
+			t.Fatalf("BroadcastMulticast frame %d failed: %v", i, err)
+		}
+	}
+	sendElapsed := time.Since(start)
+	if sendElapsed > 500*time.Millisecond {
+		t.Fatalf("BroadcastMulticast burst stalled for %v", sendElapsed)
+	}
+
+	// Verify the latest frame in the burst arrives promptly without stalling.
+	wantSuffix := []byte("BURST-SEQ-24!!")
+	gotLatest := false
+	gotCount := 0
+	deadline = time.Now().Add(4 * time.Second)
+	for time.Now().Before(deadline) && !gotLatest {
+		select {
+		case pkt := <-receivedPayloads:
+			gotCount++
+			if len(pkt) >= len(wantSuffix) && string(pkt[len(pkt)-len(wantSuffix):]) == string(wantSuffix) {
+				gotLatest = true
+			}
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
+	if !gotLatest {
+		t.Fatalf("did not receive latest burst frame (%s) within timeout; received %d frames", wantSuffix, gotCount)
+	}
+
+	// Ensure the underlying encoded frame prefix remains decodable by the student media manager.
+	decoded, err := stMedia.DecodeFrame(encoded)
+	if err != nil || decoded == nil || decoded.Width <= 0 || decoded.Height <= 0 {
+		t.Fatalf("student DecodeFrame failed: err=%v decoded=%+v", err, decoded)
+	}
+}

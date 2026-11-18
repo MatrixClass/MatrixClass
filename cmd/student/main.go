@@ -48,6 +48,7 @@ type Runtime struct {
 	demoStop     context.CancelFunc
 	demoActive   bool
 	ctx          context.Context
+	bcastDecodeCh chan []byte
 }
 
 type videoStreamPacket struct {
@@ -130,9 +131,20 @@ func NewRuntime(channel, studentID, studentNo, teacherAddr, recvDir string) (*Ru
 		macAddr:     mac,
 		channel:     channel,
 		ctx:         context.Background(),
+		bcastDecodeCh: make(chan []byte, 16),
 	}
 	rt.wireHandlers()
+	go rt.broadcastDecodeLoop()
 	return rt, nil
+}
+
+func (rt *Runtime) broadcastDecodeLoop() {
+	for data := range rt.bcastDecodeCh {
+		frame, err := rt.Media.DecodeFrame(data)
+		if err == nil && frame != nil {
+			rt.App.UpdateVideoFrame(frame)
+		}
+	}
 }
 
 func (rt *Runtime) wireHandlers() {
@@ -162,9 +174,11 @@ func (rt *Runtime) wireHandlers() {
 		if isDemoSrc {
 			return
 		}
-		frame, err := rt.Media.DecodeFrame(data)
-		if err == nil && frame != nil {
-			rt.App.UpdateVideoFrame(frame)
+		cp := make([]byte, len(data))
+		copy(cp, data)
+		select {
+		case rt.bcastDecodeCh <- cp:
+		default:
 		}
 	})
 

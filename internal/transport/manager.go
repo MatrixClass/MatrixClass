@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"runtime"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -80,7 +81,11 @@ func WithCipherKey(key []byte) ManagerOption {
 func WithMulticastRateLimit(bytesPerSec int) ManagerOption {
 	return func(m *Manager) {
 		if bytesPerSec > 0 {
-			m.mcastLimiter = rate.NewLimiter(rate.Limit(bytesPerSec), bytesPerSec)
+			burst := bytesPerSec
+			if burst < 64*1024 {
+				burst = 64 * 1024
+			}
+			m.mcastLimiter = rate.NewLimiter(rate.Limit(bytesPerSec), burst)
 		}
 	}
 }
@@ -111,6 +116,12 @@ type mediaFallbackPayload struct {
 type mcastInfoPayload struct {
 	MulticastIP string `json:"multicast_ip"`
 	McastPort   int    `json:"mcast_port"`
+}
+
+type fallbackTask struct {
+	targets []*SmuxSession
+	seq     uint64
+	data    []byte
 }
 
 type ringEntry struct {
@@ -174,6 +185,10 @@ type Manager struct {
 	mcastDelivered   map[uint64]struct{}
 	mcastRxMu        sync.Mutex
 	nackPending      map[uint64]time.Time
+	fallbackCh       chan fallbackTask
+	mcastPktPool     sync.Pool
+	mcastTxBuf       []byte
+	mcastTxMu        sync.Mutex
 
 	statsMu       sync.Mutex
 	lastStatsTime time.Time
@@ -198,6 +213,13 @@ func NewManager(opts ...ManagerOption) *Manager {
 		mcastReasm:     make(map[uint64]*mcastReassembly),
 		mcastDelivered: make(map[uint64]struct{}),
 		nackPending:    make(map[uint64]time.Time),
+		fallbackCh:     make(chan fallbackTask, 32),
+		mcastPktPool: sync.Pool{
+			New: func() any {
+				return make([]byte, 64*1024)
+			},
+		},
+		mcastTxBuf:     make([]byte, mcastHeaderSize+defaultMcastChunkSize),
 		lastStatsTime:  time.Now(),
 	}
 	m.multicastEnabled.Store(true)
@@ -276,6 +298,7 @@ func (m *Manager) StartTeacher(ctx context.Context, listenAddr string, beacon pr
 			_ = listener.Close()
 			return err
 		}
+		_ = mcastConn.SetWriteBuffer(2 * 1024 * 1024)
 		m.mcastTarget = target
 		m.mcastConn = mcastConn
 	}
@@ -293,7 +316,21 @@ func (m *Manager) StartTeacher(ctx context.Context, listenAddr string, beacon pr
 	}
 
 	go m.acceptLoop()
+	go m.fallbackLoop()
 	return nil
+}
+
+func (m *Manager) fallbackLoop() {
+	for {
+		select {
+		case <-m.ctx.Done():
+			return
+		case task := <-m.fallbackCh:
+			if len(task.targets) > 0 {
+				_ = m.sendFallbackToSessions(task.targets, task.seq, task.data)
+			}
+		}
+	}
 }
 
 func (m *Manager) acceptLoop() {
@@ -483,6 +520,9 @@ func (m *Manager) startMulticastReceiver(addrStr string) error {
 		if err != nil {
 			return err
 		}
+		if uc, ok := pc.(*net.UDPConn); ok {
+			_ = uc.SetReadBuffer(2 * 1024 * 1024)
+		}
 	}
 
 	m.mu.Lock()
@@ -500,17 +540,17 @@ func (m *Manager) startMulticastReceiver(addrStr string) error {
 }
 
 func (m *Manager) multicastReadLoop(pc net.PacketConn) {
-	buf := make([]byte, 64*1024)
+	buf := m.mcastPktPool.Get().([]byte)
+	defer m.mcastPktPool.Put(buf)
 	for {
 		n, _, err := pc.ReadFrom(buf)
 		if err != nil {
 			return
 		}
 		m.rxBytesTotal.Add(uint64(n))
-		pkt := make([]byte, n)
-		copy(pkt, buf[:n])
+		pkt := buf[:n]
 		if m.cipher != nil {
-			dec, err := m.cipher.Decrypt(pkt)
+			dec, err := m.cipher.Decrypt(buf[:n])
 			if err != nil {
 				continue
 			}
@@ -619,6 +659,7 @@ func (m *Manager) processIncomingMulticastPacket(pkt []byte) bool {
 				completed = nil
 			} else {
 				m.recordDeliveredLocked(seq)
+				m.evictOlderIncompleteLocked(seq, now)
 			}
 		}
 	}
@@ -640,6 +681,30 @@ func (m *Manager) recordDeliveredLocked(seq uint64) {
 		for k := range m.mcastDelivered {
 			if k < cutoff {
 				delete(m.mcastDelivered, k)
+			}
+		}
+	}
+}
+
+func (m *Manager) evictOlderIncompleteLocked(completedSeq uint64, now time.Time) {
+	for oldSeq, rasm := range m.mcastReasm {
+		if oldSeq < completedSeq && (completedSeq-oldSeq >= 2 || now.Sub(rasm.createdAt) > 12*time.Millisecond) {
+			delete(m.mcastReasm, oldSeq)
+			if _, dup := m.mcastDelivered[oldSeq]; !dup {
+				if _, exists := m.nackPending[oldSeq]; !exists {
+					m.nackPending[oldSeq] = now
+				}
+			}
+		}
+	}
+	if len(m.mcastReasm) > m.ringSize {
+		cutoff := uint64(0)
+		if completedSeq > uint64(m.ringSize) {
+			cutoff = completedSeq - uint64(m.ringSize)
+		}
+		for oldSeq := range m.mcastReasm {
+			if oldSeq < cutoff {
+				delete(m.mcastReasm, oldSeq)
 			}
 		}
 	}
@@ -668,6 +733,7 @@ func (m *Manager) deliverMulticastFrame(seq uint64, frame []byte) {
 		return
 	}
 	m.recordDeliveredLocked(seq)
+	m.evictOlderIncompleteLocked(seq, now)
 	m.mcastRxMu.Unlock()
 
 	m.emitMulticastFrame(frame)
@@ -683,7 +749,7 @@ func (m *Manager) emitMulticastFrame(frame []byte) {
 }
 
 func (m *Manager) nackWatchLoop() {
-	ticker := time.NewTicker(15 * time.Millisecond)
+	ticker := time.NewTicker(10 * time.Millisecond)
 	defer ticker.Stop()
 	for {
 		select {
@@ -694,7 +760,7 @@ func (m *Manager) nackWatchLoop() {
 			now := time.Now()
 			m.mcastRxMu.Lock()
 			for seq, rasm := range m.mcastReasm {
-				if now.Sub(rasm.createdAt) > 30*time.Millisecond {
+				if now.Sub(rasm.createdAt) > 25*time.Millisecond {
 					delete(m.mcastReasm, seq)
 					m.nackPending[seq] = now.Add(-20 * time.Millisecond)
 				}
@@ -775,7 +841,7 @@ func (m *Manager) BroadcastMulticast(frame []byte) error {
 			}
 		}
 		if len(unconfirmed) > 0 {
-			_ = m.sendFallbackToSessions(unconfirmed, seq, stored)
+			m.enqueueFallback(unconfirmed, seq, stored)
 		}
 		return nil
 	}
@@ -784,26 +850,49 @@ func (m *Manager) BroadcastMulticast(frame []byte) error {
 	if total == 0 {
 		total = 1
 	}
+	m.mcastTxMu.Lock()
+	pktBuf := m.mcastTxBuf
 	for idx := 0; idx < total; idx++ {
 		start := idx * defaultMcastChunkSize
 		end := start + defaultMcastChunkSize
 		if end > len(stored) {
 			end = len(stored)
 		}
-		pkt := make([]byte, mcastHeaderSize+(end-start))
+		pktLen := mcastHeaderSize + (end - start)
+		pkt := pktBuf[:pktLen]
 		binary.BigEndian.PutUint16(pkt[0:2], mcastPacketMagic)
 		binary.BigEndian.PutUint64(pkt[2:10], seq)
 		binary.BigEndian.PutUint16(pkt[10:12], uint16(idx))
 		binary.BigEndian.PutUint16(pkt[12:14], uint16(total))
 		copy(pkt[mcastHeaderSize:], stored[start:end])
 		if err := m.writeMulticastPacket(mcastConn, mcastTarget, pkt); err != nil {
+			m.mcastTxMu.Unlock()
 			return err
 		}
+		if idx > 0 && idx%16 == 0 && m.mcastLimiter == nil {
+			runtime.Gosched()
+		}
 	}
+	m.mcastTxMu.Unlock()
 	if len(unconfirmed) > 0 {
-		_ = m.sendFallbackToSessions(unconfirmed, seq, stored)
+		m.enqueueFallback(unconfirmed, seq, stored)
 	}
 	return nil
+}
+
+func (m *Manager) enqueueFallback(targets []*SmuxSession, seq uint64, data []byte) {
+	select {
+	case m.fallbackCh <- fallbackTask{targets: targets, seq: seq, data: data}:
+	default:
+		select {
+		case <-m.fallbackCh:
+		default:
+		}
+		select {
+		case m.fallbackCh <- fallbackTask{targets: targets, seq: seq, data: data}:
+		default:
+		}
+	}
 }
 
 func (m *Manager) writeMulticastPacket(conn *net.UDPConn, target *net.UDPAddr, pkt []byte) error {
@@ -927,18 +1016,8 @@ func (m *Manager) handleEnvelope(sess core.Session, env protocol.Envelope) {
 	if env.Type == protocol.MsgMediaNACK && env.RequestID == internalNackRequestID {
 		var req mediaNACKPayload
 		if err := json.Unmarshal(env.Payload, &req); err == nil {
-			for _, seq := range req.Seqs {
-				if data, ok := m.LookupRingFrame(seq); ok {
-					payload, err := json.Marshal(mediaFallbackPayload{Seq: seq, Data: data})
-					if err == nil {
-						_ = sess.SendEnvelope(protocol.Envelope{
-							Type:      protocol.MsgVideoFrame,
-							RequestID: internalFallbackReqID,
-							Timestamp: time.Now().UnixMilli(),
-							Payload:   payload,
-						})
-					}
-				}
+			if len(req.Seqs) > 0 {
+				go m.serveNACK(sess, req.Seqs)
 			}
 		}
 		return
@@ -978,6 +1057,25 @@ func (m *Manager) handleEnvelope(sess core.Session, env protocol.Envelope) {
 	m.mu.RUnlock()
 	if cb != nil {
 		cb(sess, env)
+	}
+}
+
+func (m *Manager) serveNACK(sess core.Session, seqs []uint64) {
+	for i, seq := range seqs {
+		if data, ok := m.LookupRingFrame(seq); ok {
+			payload, err := json.Marshal(mediaFallbackPayload{Seq: seq, Data: data})
+			if err == nil {
+				_ = sess.SendEnvelope(protocol.Envelope{
+					Type:      protocol.MsgVideoFrame,
+					RequestID: internalFallbackReqID,
+					Timestamp: time.Now().UnixMilli(),
+					Payload:   payload,
+				})
+				if i+1 < len(seqs) {
+					time.Sleep(5 * time.Millisecond)
+				}
+			}
+		}
 	}
 }
 

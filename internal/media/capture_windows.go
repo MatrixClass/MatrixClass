@@ -132,6 +132,11 @@ type ScreenCapturer struct {
 	dxgi           *dxgiDuplicator
 	dxgiDisabled   bool
 	gdiDisabled    bool
+	gdiDC          uintptr
+	gdiBmp         uintptr
+	gdiOld         uintptr
+	gdiW           int
+	gdiH           int
 	rgbaBuf        []byte
 	bgraBuf        []byte
 	lastWidth      int
@@ -283,6 +288,7 @@ func (c *ScreenCapturer) Close() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.releaseDXGI()
+	c.releaseGDI()
 	return nil
 }
 
@@ -399,7 +405,11 @@ func (c *ScreenCapturer) captureDXGI() (int, int, bool, error) {
 	d := c.dxgi
 	var frameInfo dxgiOutduplFrameInfo
 	var resource uintptr
-	hr := comCall(d.dupl, 8, 50, uintptr(unsafe.Pointer(&frameInfo)), uintptr(unsafe.Pointer(&resource)))
+	timeoutMs := uintptr(0)
+	if !c.hasCachedFrame {
+		timeoutMs = 16
+	}
+	hr := comCall(d.dupl, 8, timeoutMs, uintptr(unsafe.Pointer(&frameInfo)), uintptr(unsafe.Pointer(&resource)))
 	if uint32(hr) == dxgiErrorWaitTimeout {
 		if c.hasCachedFrame && c.lastWidth > 0 && c.lastHeight > 0 {
 			return c.lastWidth, c.lastHeight, false, nil
@@ -495,25 +505,27 @@ func (c *ScreenCapturer) captureGDI() (int, int, error) {
 	}
 	defer procReleaseDC.Call(hwnd, hdcScreen)
 
-	hdcMem, _, _ := procCreateCompatibleDC.Call(hdcScreen)
-	if hdcMem == 0 {
-		return 0, 0, errors.New("media: CreateCompatibleDC failed")
-	}
-	defer procDeleteDC.Call(hdcMem)
-
-	hbmp, _, _ := procCreateCompatibleBitmap.Call(hdcScreen, uintptr(w), uintptr(h))
-	if hbmp == 0 {
-		return 0, 0, errors.New("media: CreateCompatibleBitmap failed")
-	}
-	defer procDeleteObject.Call(hbmp)
-
-	oldObj, _, _ := procSelectObject.Call(hdcMem, hbmp)
-	if oldObj != 0 {
-		defer procSelectObject.Call(hdcMem, oldObj)
+	if c.gdiDC == 0 || c.gdiBmp == 0 || c.gdiW != w || c.gdiH != h {
+		c.releaseGDI()
+		hdcMem, _, _ := procCreateCompatibleDC.Call(hdcScreen)
+		if hdcMem == 0 {
+			return 0, 0, errors.New("media: CreateCompatibleDC failed")
+		}
+		hbmp, _, _ := procCreateCompatibleBitmap.Call(hdcScreen, uintptr(w), uintptr(h))
+		if hbmp == 0 {
+			procDeleteDC.Call(hdcMem)
+			return 0, 0, errors.New("media: CreateCompatibleBitmap failed")
+		}
+		oldObj, _, _ := procSelectObject.Call(hdcMem, hbmp)
+		c.gdiDC = hdcMem
+		c.gdiBmp = hbmp
+		c.gdiOld = oldObj
+		c.gdiW = w
+		c.gdiH = h
 	}
 
 	ok, _, err := procBitBlt.Call(
-		hdcMem,
+		c.gdiDC,
 		0,
 		0,
 		uintptr(w),
@@ -524,6 +536,7 @@ func (c *ScreenCapturer) captureGDI() (int, int, error) {
 		srccopy|captureblt,
 	)
 	if ok == 0 {
+		c.releaseGDI()
 		return 0, 0, fmt.Errorf("media: BitBlt failed: %v", err)
 	}
 
@@ -541,8 +554,8 @@ func (c *ScreenCapturer) captureGDI() (int, int, error) {
 	bmi.BmiHeader.BiBitCount = 32
 
 	lines, _, err := procGetDIBits.Call(
-		hdcMem,
-		hbmp,
+		c.gdiDC,
+		c.gdiBmp,
 		0,
 		uintptr(h),
 		uintptr(unsafe.Pointer(&c.bgraBuf[0])),
@@ -550,11 +563,29 @@ func (c *ScreenCapturer) captureGDI() (int, int, error) {
 		dibRGBColors,
 	)
 	if int(lines) == 0 {
+		c.releaseGDI()
 		return 0, 0, fmt.Errorf("media: GetDIBits failed: %v", err)
 	}
 
 	c.rgbaBuf = bgraToRGBA(c.bgraBuf, c.rgbaBuf, w, h, w*4)
 	return w, h, nil
+}
+
+func (c *ScreenCapturer) releaseGDI() {
+	if c.gdiDC != 0 {
+		if c.gdiOld != 0 {
+			procSelectObject.Call(c.gdiDC, c.gdiOld)
+			c.gdiOld = 0
+		}
+		procDeleteDC.Call(c.gdiDC)
+		c.gdiDC = 0
+	}
+	if c.gdiBmp != 0 {
+		procDeleteObject.Call(c.gdiBmp)
+		c.gdiBmp = 0
+	}
+	c.gdiW = 0
+	c.gdiH = 0
 }
 
 func comMethod(obj uintptr, index int) uintptr {

@@ -55,11 +55,12 @@ func (c *FrameCipher) Encrypt(plaintext []byte) ([]byte, error) {
 		copy(out, plaintext)
 		return out, nil
 	}
-	nonce := make([]byte, c.aead.NonceSize())
-	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
+	ns := c.aead.NonceSize()
+	out := make([]byte, ns, ns+len(plaintext)+c.aead.Overhead())
+	if _, err := io.ReadFull(rand.Reader, out[:ns]); err != nil {
 		return nil, err
 	}
-	return c.aead.Seal(nonce, nonce, plaintext, nil), nil
+	return c.aead.Seal(out, out[:ns], plaintext, nil), nil
 }
 
 func (c *FrameCipher) Decrypt(ciphertext []byte) ([]byte, error) {
@@ -159,17 +160,14 @@ func (e *FECEncoder) EncodeBlock(payload []byte) ([][]byte, error) {
 		return nil, ErrFECInvalidPacket
 	}
 
-	framed := make([]byte, shardLen*e.dataShards)
-	binary.BigEndian.PutUint32(framed[0:4], uint32(len(payload)))
-	copy(framed[4:], payload)
+	totalShards := e.dataShards + e.parityShards
+	backing := make([]byte, totalShards*shardLen)
+	binary.BigEndian.PutUint32(backing[0:4], uint32(len(payload)))
+	copy(backing[4:], payload)
 
-	shards := make([][]byte, e.dataShards+e.parityShards)
-	for i := 0; i < e.dataShards; i++ {
-		shards[i] = make([]byte, shardLen)
-		copy(shards[i], framed[i*shardLen:(i+1)*shardLen])
-	}
-	for i := e.dataShards; i < len(shards); i++ {
-		shards[i] = make([]byte, shardLen)
+	shards := make([][]byte, totalShards)
+	for i := 0; i < totalShards; i++ {
+		shards[i] = backing[i*shardLen : (i+1)*shardLen]
 	}
 	if err := e.enc.Encode(shards); err != nil {
 		return nil, fmt.Errorf("fec: encode shards: %w", err)
@@ -271,6 +269,7 @@ type FECDecoder struct {
 	groups map[uint32]*fecGroup
 	codecs map[uint32]reedsolomon.Encoder
 	ttl    time.Duration
+	lastGC time.Time
 }
 
 func NewFECDecoder() *FECDecoder {
@@ -295,12 +294,20 @@ func (d *FECDecoder) getCodec(dataNum, parityNum int) (reedsolomon.Encoder, erro
 }
 
 func (d *FECDecoder) gcLocked(now time.Time) {
-	if len(d.groups) < 64 {
+	if len(d.groups) < 64 || now.Sub(d.lastGC) < 500*time.Millisecond {
 		return
 	}
+	d.lastGC = now
 	for id, g := range d.groups {
 		if now.Sub(g.lastActive) > d.ttl {
 			delete(d.groups, id)
+		}
+	}
+	if len(d.groups) > 128 {
+		for id, g := range d.groups {
+			if g.completed {
+				delete(d.groups, id)
+			}
 		}
 	}
 }
@@ -386,6 +393,7 @@ func (d *FECDecoder) DecodeBlock(raw []byte) ([]byte, bool, error) {
 	for i := 0; i < grp.dataNum; i++ {
 		joined = append(joined, grp.shards[i]...)
 	}
+	grp.shards = nil
 	if len(joined) < 4 {
 		return nil, false, ErrFECInvalidPacket
 	}
@@ -471,5 +479,6 @@ func (d *FECDecoder) DecodeStreamPacket(raw []byte) ([][]byte, error) {
 		copy(pktOut, s[2:2+n])
 		out = append(out, pktOut)
 	}
+	grp.shards = nil
 	return out, nil
 }

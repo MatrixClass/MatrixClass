@@ -26,15 +26,16 @@ const (
 	streamTagEnvelope  = byte(0xFE)
 	streamTagMediaEnv  = byte(0xFD)
 	ctrlWriteTimeout   = 1500 * time.Millisecond
-	mediaWriteTimeout  = 1500 * time.Millisecond
-	mediaQueueCapacity = 16
-	audioQueueCapacity = 8
+	mediaWriteTimeout  = 400 * time.Millisecond
+	mediaQueueCapacity = 2
+	audioQueueCapacity = 4
 )
 
 var (
 	ErrConnClosed    = errors.New("transport: connection closed")
 	ErrListenerClosed = errors.New("transport: listener closed")
 	ErrReadTimeout   = &netTimeoutError{msg: "i/o timeout"}
+	ErrWriteTimeout  = &netTimeoutError{msg: "i/o timeout"}
 )
 
 type netTimeoutError struct {
@@ -91,6 +92,7 @@ type KCPConn struct {
 	chReadEvent  chan struct{}
 	chWriteEvent chan struct{}
 	chUpdate     chan struct{}
+	interval     time.Duration
 	onClose      func()
 
 	startTime time.Time
@@ -120,6 +122,7 @@ func newKCPConn(conv uint32, udpConn net.PacketConn, remoteAddr net.Addr, ownsCo
 		chReadEvent:  make(chan struct{}, 1),
 		chWriteEvent: make(chan struct{}, 1),
 		chUpdate:     make(chan struct{}, 1),
+		interval:     time.Duration(cfg.Interval) * time.Millisecond,
 		onClose:      onClose,
 		startTime:    time.Now(),
 	}
@@ -161,7 +164,11 @@ func signalChan(ch chan struct{}) {
 }
 
 func (c *KCPConn) updateLoop() {
-	ticker := time.NewTicker(time.Duration(defaultKCPInterval) * time.Millisecond)
+	interval := c.interval
+	if interval <= 0 {
+		interval = time.Duration(defaultKCPInterval) * time.Millisecond
+	}
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
 	c.kcp.Update(c.currentMS())
@@ -263,7 +270,7 @@ func (c *KCPConn) Write(b []byte) (int, error) {
 			if !deadline.IsZero() {
 				wait := time.Until(deadline)
 				if wait <= 0 {
-					return written, ErrReadTimeout
+					return written, ErrWriteTimeout
 				}
 				timer = time.NewTimer(wait)
 				timeoutCh = timer.C
@@ -279,7 +286,7 @@ func (c *KCPConn) Write(b []byte) (int, error) {
 					timer.Stop()
 				}
 			case <-timeoutCh:
-				return written, ErrReadTimeout
+				return written, ErrWriteTimeout
 			}
 			continue
 		}
@@ -706,6 +713,15 @@ func (s *SmuxSession) enqueueMediaFrame(msgType protocol.MsgType, raw []byte) er
 		}
 		return nil
 	}
+	// Keep only the latest queued video frame to avoid stale frame buildup.
+	for {
+		select {
+		case <-s.videoMediaCh:
+		default:
+			goto enqueueVideo
+		}
+	}
+enqueueVideo:
 	select {
 	case s.videoMediaCh <- pkt:
 	default:
@@ -752,6 +768,16 @@ func (s *SmuxSession) mediaWriteLoop() {
 		}
 		_ = s.mediaStream.SetWriteDeadline(time.Time{})
 	}
+	drainLatestVideo := func(pkt []byte) []byte {
+		for {
+			select {
+			case newer := <-s.videoMediaCh:
+				pkt = newer
+			default:
+				return pkt
+			}
+		}
+	}
 	for {
 		select {
 		case <-s.done:
@@ -759,7 +785,7 @@ func (s *SmuxSession) mediaWriteLoop() {
 		case pkt := <-s.audioMediaCh:
 			writePacket(pkt)
 		case pkt := <-s.videoMediaCh:
-			writePacket(pkt)
+			writePacket(drainLatestVideo(pkt))
 		}
 	}
 }
