@@ -27,7 +27,6 @@ import (
 	"nexlab/internal/transport"
 	"nexlab/internal/ui/demo"
 	"nexlab/internal/ui/teacher"
-	"nexlab/internal/ui/theme"
 )
 
 type videoStreamPacket struct {
@@ -674,11 +673,7 @@ func main() {
 			})
 			winRef = win
 			app.AttachWindow(win)
-			_, _ = mygo.NewTray(mygo.TrayOptions{
-				ID:      "nexlab-teacher-tray",
-				Icon:    theme.AppIconPNG(true),
-				ToolTip: "矩联电子教室 MatrixClass 教师端",
-			})
+			app.InstallTray()
 		})
 		mygo.App.Run()
 		return
@@ -698,12 +693,7 @@ func main() {
 			Content:   ui.View(app.View),
 		})
 		app.AttachWindow(win)
-		_, _ = mygo.NewTray(mygo.TrayOptions{
-			ID:      "nexlab-teacher-tray",
-			Icon:    theme.AppIconPNG(true),
-			ToolTip: "矩联电子教室 MatrixClass 教师端",
-			Menu:    app.BuildMenu(),
-		})
+		app.InstallTray()
 	})
 
 	mygo.App.OnWindowAllClosed(func() {

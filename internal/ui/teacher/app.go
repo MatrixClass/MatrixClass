@@ -70,6 +70,7 @@ type App struct {
 
 	opts        Services
 	win         *mygo.Window
+	tray        *mygo.Tray
 	fileDistWin *mygo.Window
 
 	teacherID   string
@@ -506,6 +507,47 @@ func (a *App) Invalidate() {
 	}
 	if fw != nil {
 		fw.Invalidate()
+	}
+}
+
+// ShowMainWindow restores and focuses the main teacher window.
+func (a *App) ShowMainWindow() {
+	a.mu.Lock()
+	w := a.win
+	a.mu.Unlock()
+	if w != nil {
+		w.Show()
+		w.Restore()
+		w.Focus()
+	}
+}
+
+// BuildTrayMenu builds the context menu shown when right-clicking the teacher tray icon.
+func (a *App) BuildTrayMenu() *mygo.Menu {
+	return mygo.NewMenu([]*mygo.MenuItem{
+		{Label: "显示教师端主窗口", Click: func(_ *mygo.MenuItem, _ *mygo.Window) { a.ShowMainWindow() }},
+		mygo.Separator(),
+		{Label: "开始/停止屏幕广播", Click: func(_ *mygo.MenuItem, _ *mygo.Window) { a.ToggleBroadcast() }},
+		{Label: "开启/停止屏幕监控", Click: func(_ *mygo.MenuItem, _ *mygo.Window) { a.ToggleMonitor() }},
+		{Label: "黑屏锁定 / 解锁", Click: func(_ *mygo.MenuItem, _ *mygo.Window) { a.ToggleScreenLock() }},
+		{Label: "发起点名签到", Click: func(_ *mygo.MenuItem, _ *mygo.Window) { a.StartCheckIn() }},
+		mygo.Separator(),
+		{Role: mygo.RoleQuit, Label: "退出教师端"},
+	})
+}
+
+// InstallTray creates the teacher system tray icon with a right-click context menu.
+func (a *App) InstallTray() {
+	tray, err := mygo.NewTray(mygo.TrayOptions{
+		ID:      "nexlab-teacher-tray",
+		Icon:    theme.AppIconPNG(true),
+		ToolTip: "矩联电子教室 MatrixClass 教师端",
+		Menu:    a.BuildTrayMenu(),
+	})
+	if err == nil {
+		a.mu.Lock()
+		a.tray = tray
+		a.mu.Unlock()
 	}
 }
 

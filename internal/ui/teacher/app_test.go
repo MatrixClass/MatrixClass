@@ -685,3 +685,11 @@ func TestRevokeClassroomPolicy(t *testing.T) {
 		t.Fatalf("expected input fields preserved after revoke")
 	}
 }
+
+func TestTeacherTrayMenu(t *testing.T) {
+	app, _, _, _ := newTestTeacherApp()
+	menu := app.BuildTrayMenu()
+	if menu == nil {
+		t.Fatalf("expected non-nil tray menu")
+	}
+}
