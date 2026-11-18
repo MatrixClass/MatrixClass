@@ -7,6 +7,8 @@ import (
 
 	"github.com/egoist/mygo/ui"
 
+	"nexlab/internal/core"
+	"nexlab/internal/protocol"
 	"nexlab/internal/ui/demo"
 	"nexlab/internal/control"
 )
@@ -161,5 +163,93 @@ func TestStudentConcurrentStateTransitionsAndView(t *testing.T) {
 			tester.Frame()
 			time.Sleep(5 * time.Millisecond)
 		}
+	}
+}
+
+func TestStudentFileReceiveWindowAndRetry(t *testing.T) {
+	tr := demo.NewTransport("1", 1)
+	app := New(Options{
+		StudentID:   "stu-01",
+		StudentNo:   "202601",
+		MachineName: "LAB-PC01",
+		Channel:     "1",
+		Services: Services{
+			Transport: tr,
+			Media:     demo.NewMedia(),
+			Control:   demo.NewControl(),
+			Classroom: demo.NewClassroom(),
+			Files:     demo.NewFileTransfer(),
+			Exam:      demo.NewExam(),
+		},
+	})
+
+	app.RecordIncomingFile(core.TransferTask{
+		ID:         "rx-1",
+		Direction:  core.TransferSend,
+		FileName:   "lesson1.pdf",
+		LocalPath:  `C:\Users\Student\Desktop\lesson1.pdf`,
+		RemotePath: "Desktop",
+		TotalBytes: 1000,
+		DoneBytes:  400,
+		SHA256:     "abc123",
+		Status:     "running",
+	})
+	app.RecordIncomingFile(core.TransferTask{
+		ID:         "rx-2",
+		Direction:  core.TransferSend,
+		FileName:   "slides.pptx",
+		LocalPath:  `C:\Users\Student\Desktop\slides.pptx`,
+		RemotePath: "Desktop",
+		TotalBytes: 2000,
+		DoneBytes:  500,
+		SHA256:     "def456",
+		Status:     "failed",
+		Error:      "connection reset",
+	})
+
+	tester := ui.NewTester(app.FileReceiveView, 520, 420)
+	tester.Frame()
+
+	if _, ok := tester.Find("lesson1.pdf"); !ok {
+		t.Fatalf("expected lesson1.pdf in FileReceiveView")
+	}
+	if _, ok := tester.Find("slides.pptx"); !ok {
+		t.Fatalf("expected slides.pptx in FileReceiveView")
+	}
+	if err := tester.Click("重试"); err != nil {
+		t.Fatalf("expected clickable 重试 button, got err: %v", err)
+	}
+	tester.Frame()
+
+	foundRetry := false
+	for _, env := range tr.Broadcasts() {
+		if env.Type == protocol.MsgFileRetryReq {
+			foundRetry = true
+			break
+		}
+	}
+	if !foundRetry {
+		t.Fatalf("expected MsgFileRetryReq sent when clicking 重试")
+	}
+
+	// Subsequent retry task with same FileName+RemotePath should replace failed entry
+	app.RecordIncomingFile(core.TransferTask{
+		ID:         "rx-2-retry",
+		Direction:  core.TransferSend,
+		FileName:   "slides.pptx",
+		LocalPath:  `C:\Users\Student\Desktop\slides.pptx`,
+		RemotePath: "Desktop",
+		TotalBytes: 2000,
+		DoneBytes:  2000,
+		SHA256:     "def456",
+		Status:     "completed",
+	})
+	tester.Frame()
+
+	app.mu.Lock()
+	count := len(app.fileReceiveItems)
+	app.mu.Unlock()
+	if count != 2 {
+		t.Fatalf("expected failed item replaced by retry task (total 2 items), got %d", count)
 	}
 }

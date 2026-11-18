@@ -99,7 +99,16 @@ type Service struct {
 	onAutoOpen      func(path string)
 	tasks           map[string]*core.TransferTask
 	taskOrder       []string
+	sentRecords     map[string]sentRecord
 	nextTaskID      atomic.Uint64
+}
+
+type sentRecord struct {
+	localPath string
+	remoteDir string
+	fileName  string
+	sha256    string
+	autoOpen  bool
 }
 
 var _ core.FileTransferService = (*Service)(nil)
@@ -128,6 +137,7 @@ func NewService(cfg Config) *Service {
 		onProgress:      cfg.OnProgress,
 		onAutoOpen:      cfg.OnAutoOpen,
 		tasks:           make(map[string]*core.TransferTask),
+		sentRecords:     make(map[string]sentRecord),
 	}
 }
 
@@ -285,6 +295,13 @@ func (s *Service) DistributeFile(ctx context.Context, localPath, remoteDir strin
 	}
 
 	fileName := filepath.Base(localPath)
+	s.recordSentFile(sentRecord{
+		localPath: localPath,
+		remoteDir: remoteDir,
+		fileName:  fileName,
+		sha256:    hash,
+		autoOpen:  autoOpen,
+	})
 	task := s.newTask(core.TransferSend, fileName, localPath, remoteDir, size, hash, strings.Join(targetIDs, ","), autoOpen)
 
 	var (
@@ -331,6 +348,42 @@ func (s *Service) DistributeFile(ctx context.Context, localPath, remoteDir strin
 	}
 	s.updateTask(task, size, "completed", "")
 	return cloneTask(task), nil
+}
+
+func (s *Service) recordSentFile(rec sentRecord) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.sentRecords == nil {
+		s.sentRecords = make(map[string]sentRecord)
+	}
+	if rec.sha256 != "" {
+		s.sentRecords["sha:"+rec.sha256] = rec
+	}
+	s.sentRecords["name:"+rec.fileName+"|"+rec.remoteDir] = rec
+	s.sentRecords["file:"+rec.fileName] = rec
+}
+
+func (s *Service) RetryDistribute(ctx context.Context, studentID, fileName, remotePath, sha256 string, autoOpen bool) (*core.TransferTask, error) {
+	if studentID == "" {
+		return nil, ErrNoTargets
+	}
+	s.mu.RLock()
+	var rec sentRecord
+	var ok bool
+	if sha256 != "" {
+		rec, ok = s.sentRecords["sha:"+sha256]
+	}
+	if !ok && fileName != "" {
+		rec, ok = s.sentRecords["name:"+fileName+"|"+remotePath]
+	}
+	if !ok && fileName != "" {
+		rec, ok = s.sentRecords["file:"+fileName]
+	}
+	s.mu.RUnlock()
+	if !ok {
+		return nil, fmt.Errorf("filetransfer: no source record for retry (%s)", fileName)
+	}
+	return s.DistributeFile(ctx, rec.localPath, rec.remoteDir, []string{studentID}, autoOpen || rec.autoOpen)
 }
 
 func (s *Service) distributeToPeerWithRetry(

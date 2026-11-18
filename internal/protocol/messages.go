@@ -68,6 +68,7 @@ const (
 	MsgCollectReq   MsgType = 54
 	MsgHomeworkCollectStart MsgType = 55
 	MsgHomeworkCollectEnd   MsgType = 56
+	MsgFileRetryReq         MsgType = 57
 
 	MsgExamPublish MsgType = 60
 	MsgExamAnswer  MsgType = 61

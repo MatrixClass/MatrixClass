@@ -91,6 +91,10 @@ func NewRuntime(channel, studentID, studentNo, teacherAddr, recvDir string) (*Ru
 		ArchiveDir: recvDir,
 		OnProgress: func(task core.TransferTask) {
 			if appRef != nil {
+				if task.Direction == core.TransferSend {
+					appRef.RecordIncomingFile(task)
+					return
+				}
 				if task.Status == "completed" {
 					appRef.SetStatusNote("文件传输完成: " + task.FileName)
 				} else {

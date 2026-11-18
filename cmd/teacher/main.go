@@ -275,6 +275,25 @@ func (rt *Runtime) wireHandlers() {
 					_ = rt.Store.SaveExamSubmission(sub)
 				}
 			}
+		case protocol.MsgFileRetryReq:
+			var req struct {
+				StudentID  string `json:"student_id"`
+				FileName   string `json:"file_name"`
+				RemotePath string `json:"remote_path"`
+				SHA256     string `json:"sha256"`
+				AutoOpen   bool   `json:"auto_open"`
+			}
+			if err := json.Unmarshal(env.Payload, &req); err == nil {
+				targetID := req.StudentID
+				if targetID == "" {
+					targetID = senderID
+				}
+				if targetID != "" && rt.Files != nil {
+					go func(sid, fname, rpath, sha string, open bool) {
+						_, _ = rt.Files.RetryDistribute(context.Background(), sid, fname, rpath, sha, open)
+					}(targetID, req.FileName, req.RemotePath, req.SHA256, req.AutoOpen)
+				}
+			}
 		case protocol.MsgVideoFrame:
 			var pkt videoStreamPacket
 			if err := json.Unmarshal(env.Payload, &pkt); err == nil && len(pkt.Data) > 0 {
