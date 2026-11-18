@@ -187,3 +187,41 @@ func TestTeacherRemoteControlModalAndExamDraftBuilder(t *testing.T) {
 	}
 	_ = tr
 }
+
+func TestTeacherSelectAllAndBatchOperations(t *testing.T) {
+	app, _, cr, _ := newTestTeacherApp()
+	tester := ui.NewTester(app.View, 1280, 820)
+	tester.Frame()
+
+	students := cr.ListStudents()
+	if len(students) < 2 {
+		t.Fatalf("expected >= 2 demo students")
+	}
+
+	// Select all via Ctrl+A / Cmd+A button or shortcut in SeatMap
+	tester.Key(ui.Cmd, ui.KeyA)
+	tester.Frame()
+	if got := len(app.targetStudentIDs()); got != len(students) {
+		t.Fatalf("expected Ctrl+A in SeatMap to select %d students, got %d", len(students), got)
+	}
+
+	// Clear and test Ctrl+A in MonitorWall
+	app.clearSelection()
+	app.SetMainTab(TabMonitorWall)
+	tester.Frame()
+	tester.Key(ui.Cmd, ui.KeyA)
+	tester.Frame()
+	if got := len(app.targetStudentIDs()); got != len(students) {
+		t.Fatalf("expected Ctrl+A in MonitorWall to select %d students, got %d", len(students), got)
+	}
+
+	// Batch lock & file targets
+	app.setScreenLockTargets(true, app.targetStudentIDs())
+	if !app.ScreenLocked() {
+		t.Fatalf("expected screenLocked=true after batch lock")
+	}
+	app.fileTargetAll = false
+	if got := len(app.resolveFileTargets()); got != len(students) {
+		t.Fatalf("expected resolveFileTargets to return all %d selected students, got %d", len(students), got)
+	}
+}

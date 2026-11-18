@@ -77,6 +77,7 @@ type App struct {
 	treeMediaOpen bool
 	selectedGroup string
 	selectedID    string
+	selectedIDs   map[string]bool
 	searchQuery   string
 
 	// Active classroom modes
@@ -187,6 +188,7 @@ func New(opts Options) *App {
 		treeGroupOpen:     true,
 		treeMediaOpen:     true,
 		selectedGroup:     "all",
+		selectedIDs:       make(map[string]bool),
 		lockMessage:       "请注意听讲，教师已锁定屏幕。",
 		activeModeLabel:   "待机监听",
 		statusNote:        "就绪 · 局域网低延迟组播通道正常",
@@ -731,6 +733,12 @@ func (a *App) buildMainWorkspace(c *ui.Context, pal theme.Palette, students []co
 		case TabFiles:
 			a.buildFilesTab(c, pal)
 		}
+
+		if (a.mainTab == TabSeatMap || a.mainTab == TabMonitorWall) && !a.settingsOpen && !a.remoteControlOpen {
+			if c.Shortcut(ui.Cmd, ui.KeyA) {
+				a.selectAllStudents(students)
+			}
+		}
 	})
 }
 
@@ -739,11 +747,19 @@ func (a *App) buildSeatMapTab(c *ui.Context, pal theme.Palette, students []core.
 		ui.Row(c).AlignItems(ui.Center).Gap(8).Children(func() {
 			ui.Text(c, "机房座位拓扑图").FontSize(15).Bold()
 			ui.Badge(c, fmt.Sprintf("显示 %d 台", len(students)))
+			if selCount := a.selectedCount(); selCount > 0 {
+				ui.Badge(c, fmt.Sprintf("已选 %d 台", selCount)).Background(pal.Selection).TextColor(pal.Accent)
+			}
+			if len(students) > 0 {
+				if ui.Button(c, "全选 (Ctrl+A)").Padding(3, 10).Clicked() {
+					a.selectAllStudents(students)
+				}
+			}
 			if ui.Button(c, "自动排座").Padding(3, 10).Clicked() {
 				a.autoLayoutSeats()
 			}
 			ui.Spacer(c)
-			ui.Text(c, "提示：单击选中、双击监控，拖动卡片可调换座位").FontSize(11).TextColor(pal.TextMuted)
+			ui.Text(c, "提示：Ctrl+A全选、右键批量操作、双击监控，拖动卡片可调换座位").FontSize(11).TextColor(pal.TextMuted)
 		})
 
 		if len(students) == 0 {
@@ -762,7 +778,7 @@ func (a *App) buildSeatMapTab(c *ui.Context, pal theme.Palette, students []core.
 }
 
 func (a *App) buildSeatCard(c *ui.Context, pal theme.Palette, st core.StudentInfo) {
-	selected := a.selectedID == st.ID
+	selected := a.isSelected(st.ID)
 	bg := pal.Card
 	border := pal.CardBorder
 	if selected {
@@ -787,29 +803,7 @@ func (a *App) buildSeatCard(c *ui.Context, pal theme.Palette, st core.StudentInf
 		card.Opacity(0.55)
 	}
 
-	card.ContextMenu(func(m *ui.Menu) {
-		if m.Item("监控该学生屏幕").Chosen() {
-			a.selectedID = st.ID
-			a.monitoring = true
-			a.mainTab = TabMonitorWall
-			a.applyMonitorState()
-		}
-		if m.Item("远程控制").Chosen() {
-			a.StartRemoteControl(st.ID)
-		}
-		if m.Item("指定为学生演示").Chosen() {
-			a.ToggleStudentDemo(st.ID)
-		}
-		m.Separator()
-		if m.Item("黑屏锁定/解锁").Chosen() {
-			a.selectedID = st.ID
-			a.ToggleScreenLock()
-		}
-		if m.Item("远程唤醒 (WOL)").Chosen() {
-			a.selectedID = st.ID
-			a.ExecutePower(core.PowerWake)
-		}
-	})
+	a.attachStudentContextMenu(card, st)
 
 	card.Children(func() {
 		ui.Row(c).AlignItems(ui.Center).Gap(6).Children(func() {
@@ -839,10 +833,10 @@ func (a *App) buildSeatCard(c *ui.Context, pal theme.Palette, st core.StudentInf
 	})
 
 	if card.Clicked() {
-		a.selectedID = st.ID
+		a.selectSingle(st.ID)
 	}
 	if card.DoubleClicked() {
-		a.selectedID = st.ID
+		a.selectSingle(st.ID)
 		a.monitoring = true
 		a.mainTab = TabMonitorWall
 		a.statusNote = fmt.Sprintf("正在重点监控 %s", st.MachineName)
@@ -855,6 +849,14 @@ func (a *App) buildMonitorWallTab(c *ui.Context, pal theme.Palette, students []c
 		ui.Row(c).AlignItems(ui.Center).Gap(8).Children(func() {
 			ui.Text(c, "多画面屏幕监控墙").FontSize(15).Bold()
 			ui.Badge(c, fmt.Sprintf("%d FPS · 画质 %d%%", int(a.monitorFPS), int(a.monitorQual)))
+			if selCount := a.selectedCount(); selCount > 0 {
+				ui.Badge(c, fmt.Sprintf("已选 %d 台", selCount)).Background(pal.Selection).TextColor(pal.Accent)
+			}
+			if len(students) > 0 {
+				if ui.Button(c, "全选 (Ctrl+A)").Padding(3, 10).Clicked() {
+					a.selectAllStudents(students)
+				}
+			}
 			ui.Spacer(c)
 			if a.monitoring {
 				if ui.Button(c, "停止监控").Clicked() {
@@ -876,11 +878,14 @@ func (a *App) buildMonitorWallTab(c *ui.Context, pal theme.Palette, students []c
 					bmp := a.ensureTileBitmap(st.ID, 240, 135)
 					a.mu.Unlock()
 					border := pal.CardBorder
-					if a.selectedID == st.ID {
+					bg := pal.Card
+					if a.isSelected(st.ID) {
 						border = pal.Accent
+						bg = pal.Selection
 					}
 					tile := ui.Column(c).Key("mon-" + st.ID).Width(256).Padding(8).Gap(6).Radius(3).
-						Background(pal.Card).Border(1.5, border)
+						Background(bg).Border(1.5, border).Focusable()
+					a.attachStudentContextMenu(tile, st)
 					tile.Children(func() {
 						ui.Image(c, bmp).Size(240, 135).Fit(ui.Contain).Radius(2)
 						ui.Row(c).AlignItems(ui.Center).Gap(6).Children(func() {
@@ -891,7 +896,7 @@ func (a *App) buildMonitorWallTab(c *ui.Context, pal theme.Palette, students []c
 						})
 					})
 					if tile.Clicked() {
-						a.selectedID = st.ID
+						a.selectSingle(st.ID)
 					}
 				}
 			})
@@ -1603,16 +1608,21 @@ func (a *App) ToggleScreenLock() {
 }
 
 func (a *App) applyScreenLock() {
-	if a.screenLocked {
+	a.setScreenLockTargets(a.screenLocked, a.targetStudentIDs())
+}
+
+func (a *App) setScreenLockTargets(locked bool, targets []string) {
+	a.screenLocked = locked
+	if locked {
 		a.activeModeLabel = "黑屏锁屏"
-		a.statusNote = "已对目标学生执行黑屏肃静锁定"
+		if len(targets) > 1 {
+			a.statusNote = fmt.Sprintf("已对选中的 %d 台学生执行黑屏锁定", len(targets))
+		} else {
+			a.statusNote = "已对目标学生执行黑屏肃静锁定"
+		}
 	} else {
 		a.activeModeLabel = "待机监听"
 		a.statusNote = "已解除学生端屏幕锁定"
-	}
-	var targets []string
-	if a.selectedID != "" {
-		targets = []string{a.selectedID}
 	}
 	a.sendControlEnvelope(protocol.MsgScreenLock, map[string]any{
 		"locked":  a.screenLocked,
@@ -1687,22 +1697,34 @@ func (a *App) ApplyClassroomPolicy() {
 }
 
 func (a *App) ExecutePower(action core.PowerAction) {
-	var targets []string
-	mac := ""
-	if a.selectedID != "" {
-		targets = []string{a.selectedID}
-		for _, st := range a.listStudents() {
-			if st.ID == a.selectedID {
-				mac = st.MAC
-				break
-			}
+	a.ExecutePowerTargets(action, a.targetStudentIDs())
+}
+
+func (a *App) ExecutePowerTargets(action core.PowerAction, targets []string) {
+	if len(targets) == 0 {
+		if a.opts.Control != nil {
+			_ = a.opts.Control.ExecutePower(action, "")
 		}
+		a.sendControlEnvelope(protocol.MsgPowerCommand, map[string]any{"action": action, "mac": ""}, nil)
+		a.statusNote = fmt.Sprintf("已发送全班电源指令: %s", action)
+		return
 	}
-	if a.opts.Control != nil {
-		_ = a.opts.Control.ExecutePower(action, mac)
+	macMap := make(map[string]string)
+	for _, st := range a.listStudents() {
+		macMap[st.ID] = st.MAC
 	}
-	a.sendControlEnvelope(protocol.MsgPowerCommand, map[string]any{"action": action, "mac": mac}, targets)
-	a.statusNote = fmt.Sprintf("已发送电源指令: %s", action)
+	for _, id := range targets {
+		mac := macMap[id]
+		if a.opts.Control != nil {
+			_ = a.opts.Control.ExecutePower(action, mac)
+		}
+		a.sendControlEnvelope(protocol.MsgPowerCommand, map[string]any{"action": action, "mac": mac}, []string{id})
+	}
+	if len(targets) > 1 {
+		a.statusNote = fmt.Sprintf("已对 %d 台学生发送电源指令: %s", len(targets), action)
+	} else {
+		a.statusNote = fmt.Sprintf("已发送电源指令: %s", action)
+	}
 }
 
 func (a *App) DistributeFile() {
@@ -1758,8 +1780,10 @@ func (a *App) CollectHomework() {
 }
 
 func (a *App) resolveFileTargets() []string {
-	if !a.fileTargetAll && a.selectedID != "" {
-		return []string{a.selectedID}
+	if !a.fileTargetAll {
+		if targets := a.targetStudentIDs(); len(targets) > 0 {
+			return targets
+		}
 	}
 	var targets []string
 	for _, st := range a.listStudents() {
@@ -1771,6 +1795,162 @@ func (a *App) resolveFileTargets() []string {
 		targets = []string{a.selectedID}
 	}
 	return targets
+}
+
+func (a *App) isSelected(id string) bool {
+	if id == "" {
+		return false
+	}
+	if len(a.selectedIDs) > 0 {
+		return a.selectedIDs[id]
+	}
+	return a.selectedID == id
+}
+
+func (a *App) selectedCount() int {
+	if len(a.selectedIDs) > 0 {
+		return len(a.selectedIDs)
+	}
+	if a.selectedID != "" {
+		return 1
+	}
+	return 0
+}
+
+func (a *App) selectSingle(id string) {
+	if a.selectedIDs == nil {
+		a.selectedIDs = make(map[string]bool)
+	} else {
+		clear(a.selectedIDs)
+	}
+	a.selectedID = id
+	if id != "" {
+		a.selectedIDs[id] = true
+	}
+}
+
+func (a *App) selectAllStudents(students []core.StudentInfo) {
+	if a.selectedIDs == nil {
+		a.selectedIDs = make(map[string]bool)
+	} else {
+		clear(a.selectedIDs)
+	}
+	a.selectedID = ""
+	for i, st := range students {
+		a.selectedIDs[st.ID] = true
+		if i == 0 {
+			a.selectedID = st.ID
+		}
+	}
+	if len(students) > 0 {
+		a.statusNote = fmt.Sprintf("已全选 %d 台学生机 (可右键批量操作)", len(students))
+	}
+}
+
+func (a *App) clearSelection() {
+	if a.selectedIDs != nil {
+		clear(a.selectedIDs)
+	}
+	a.selectedID = ""
+}
+
+func (a *App) targetStudentIDs() []string {
+	if len(a.selectedIDs) > 0 {
+		var out []string
+		for _, st := range a.listStudents() {
+			if a.selectedIDs[st.ID] {
+				out = append(out, st.ID)
+			}
+		}
+		if len(out) > 0 {
+			return out
+		}
+	}
+	if a.selectedID != "" {
+		return []string{a.selectedID}
+	}
+	return nil
+}
+
+func (a *App) attachStudentContextMenu(elem ui.Element, st core.StudentInfo) {
+	elem.ContextMenu(func(m *ui.Menu) {
+		if !a.isSelected(st.ID) {
+			a.selectSingle(st.ID)
+		}
+		targets := a.targetStudentIDs()
+		if len(targets) == 0 {
+			targets = []string{st.ID}
+		}
+		batch := len(targets) > 1
+		prefix := ""
+		if batch {
+			prefix = fmt.Sprintf("批量(%d台) ", len(targets))
+		}
+
+		if m.Item(prefix + "监控屏幕").Chosen() {
+			a.monitoring = true
+			a.mainTab = TabMonitorWall
+			a.activeModeLabel = "屏幕监控"
+			a.statusNote = fmt.Sprintf("正在监控 %d 台学生屏幕", len(targets))
+			a.sendControlEnvelope(protocol.MsgMonitorControl, struct {
+				Active bool `json:"active"`
+				core.MonitorConfig
+			}{
+				Active: true,
+				MonitorConfig: core.MonitorConfig{
+					FPS:       int(a.monitorFPS),
+					Quality:   int(a.monitorQual),
+					Width:     320,
+					Height:    180,
+					TargetIDs: targets,
+				},
+			}, targets)
+		}
+		if m.Item(prefix + "屏幕广播").Chosen() {
+			a.broadcasting = true
+			a.syncRuntimeFlags()
+			cfg := a.CurrentBroadcastConfig()
+			a.activeModeLabel = "屏幕广播"
+			a.statusNote = fmt.Sprintf("正在向 %d 台学生广播屏幕", len(targets))
+			a.sendControlEnvelope(protocol.MsgBroadcastStart, cfg, targets)
+		}
+		if !batch {
+			if m.Item("远程控制").Chosen() {
+				a.StartRemoteControl(st.ID)
+			}
+			if m.Item("指定为学生演示").Chosen() {
+				a.ToggleStudentDemo(st.ID)
+			}
+		}
+		m.Separator()
+		if m.Item(prefix + "黑屏锁定").Chosen() {
+			a.setScreenLockTargets(true, targets)
+		}
+		if m.Item(prefix + "解除锁屏").Chosen() {
+			a.setScreenLockTargets(false, targets)
+		}
+		if m.Item(prefix + "发送文件...").Chosen() {
+			a.fileTargetAll = false
+			a.mainTab = TabFiles
+			a.statusNote = fmt.Sprintf("已选定 %d 台学生作为文件分发目标", len(targets))
+		}
+		m.Separator()
+		if m.Item(prefix + "远程唤醒 (WOL)").Chosen() {
+			a.ExecutePowerTargets(core.PowerWake, targets)
+		}
+		if m.Item(prefix + "远程重启").Chosen() {
+			a.ExecutePowerTargets(core.PowerReboot, targets)
+		}
+		if m.Item(prefix + "远程关机").Chosen() {
+			a.ExecutePowerTargets(core.PowerShutdown, targets)
+		}
+		if batch {
+			m.Separator()
+			if m.Item("取消全选").Chosen() {
+				a.clearSelection()
+			}
+		}
+	})
 }
 
 func (a *App) autoLayoutSeats() {
