@@ -1,0 +1,17 @@
+{
+  "name": "NexLabStudent",
+  "slug": "nexlab-student",
+  "identifier": "io.nexlab.classroom.student",
+  "version": "0.1.0",
+  "license": "GPL-3.0-or-later",
+  "main": "../cmd/student",
+  "out": "../dist/student",
+  "windows": {
+    "displayName": "矩联电子教室 MatrixClass 学生端",
+    "installDirName": "NexLabStudent"
+  },
+  "linux": {
+    "webview": false,
+    "categories": ["Education"]
+  }
+}

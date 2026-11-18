@@ -1,0 +1,17 @@
+{
+  "name": "NexLabTeacher",
+  "slug": "nexlab-teacher",
+  "identifier": "io.nexlab.classroom.teacher",
+  "version": "0.1.0",
+  "license": "GPL-3.0-or-later",
+  "main": "../cmd/teacher",
+  "out": "../dist/teacher",
+  "windows": {
+    "displayName": "矩联电子教室 MatrixClass 教师端",
+    "installDirName": "NexLabTeacher"
+  },
+  "linux": {
+    "webview": false,
+    "categories": ["Education"]
+  }
+}
