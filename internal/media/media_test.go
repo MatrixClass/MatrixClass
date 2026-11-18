@@ -390,3 +390,30 @@ func TestHybridVideoCodecMFTFallback(t *testing.T) {
 		t.Fatalf("fallback RGBA mismatch")
 	}
 }
+
+func TestDownscaleFrameAndCaptureMax(t *testing.T) {
+	rgba := renderSyntheticRGBA(nil, 1920, 1080, 5)
+	src := &core.VideoFrame{
+		Seq:       5,
+		Codec:     core.CodecFrameZstd,
+		Width:     1920,
+		Height:    1080,
+		KeyFrame:  true,
+		Timestamp: 5000,
+		Data:      rgba,
+	}
+	scaled := DownscaleFrame(src, 320, 180)
+	if scaled.Width != 320 || scaled.Height != 180 || len(scaled.Data) != 320*180*4 {
+		t.Fatalf("unexpected downscaled frame: %dx%d len=%d", scaled.Width, scaled.Height, len(scaled.Data))
+	}
+
+	mgr, err := NewManager(ManagerOptions{Capture: CaptureOptions{Width: 1280, Height: 720, ForceSynthetic: true}})
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	defer mgr.Close()
+	thumb, err := mgr.CaptureScreenMax(320, 180)
+	if err != nil || thumb.Width != 320 || thumb.Height != 180 {
+		t.Fatalf("CaptureScreenMax failed: err=%v frame=%+v", err, thumb)
+	}
+}

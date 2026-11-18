@@ -17,10 +17,11 @@ type ManagerOptions struct {
 // Manager implements core.MediaEngine, combining screen capture,
 // video/audio encoding & decoding, WASAPI audio capture/playback, and .nxlr recording.
 type Manager struct {
-	capturer   *ScreenCapturer
-	videoCodec *HybridVideoCodec
-	audioCodec *AudioCodec
-	audio      *AudioEngine
+	capturer      *ScreenCapturer
+	videoCodec    *HybridVideoCodec
+	audioCodec    *AudioCodec
+	audio         *AudioEngine
+	preferH264MFT bool
 
 	recMu    sync.Mutex
 	recorder *LessonRecorder
@@ -37,15 +38,20 @@ func NewManager(opts ManagerOptions) (*Manager, error) {
 		return nil, err
 	}
 	return &Manager{
-		capturer:   NewScreenCapturer(opts.Capture),
-		videoCodec: vc,
-		audioCodec: ac,
-		audio:      NewAudioEngine(),
+		capturer:      NewScreenCapturer(opts.Capture),
+		videoCodec:    vc,
+		audioCodec:    ac,
+		audio:         NewAudioEngine(),
+		preferH264MFT: opts.PreferH264MFT,
 	}, nil
 }
 
 func (m *Manager) CaptureScreen() (*core.VideoFrame, error) {
 	return m.capturer.CaptureScreen()
+}
+
+func (m *Manager) CaptureScreenMax(maxW, maxH int) (*core.VideoFrame, error) {
+	return m.capturer.CaptureScreenScaled(maxW, maxH, m.preferH264MFT)
 }
 
 func (m *Manager) CaptureBackend() CaptureBackend {

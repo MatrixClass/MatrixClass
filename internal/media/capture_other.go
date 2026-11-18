@@ -41,6 +41,10 @@ func (c *ScreenCapturer) Backend() CaptureBackend {
 }
 
 func (c *ScreenCapturer) CaptureScreen() (*core.VideoFrame, error) {
+	return c.CaptureScreenScaled(0, 0, true)
+}
+
+func (c *ScreenCapturer) CaptureScreenScaled(maxW, maxH int, withNV12 bool) (*core.VideoFrame, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.seq++
@@ -56,7 +60,12 @@ func (c *ScreenCapturer) CaptureScreen() (*core.VideoFrame, error) {
 		Timestamp: time.Now().UnixMilli(),
 		Data:      out,
 	}
-	_ = EnsureNV12(frame)
+	if (maxW > 0 && frame.Width > maxW) || (maxH > 0 && frame.Height > maxH) {
+		frame = DownscaleFrame(frame, maxW, maxH)
+	}
+	if withNV12 {
+		_ = EnsureNV12(frame)
+	}
 	return frame, nil
 }
 

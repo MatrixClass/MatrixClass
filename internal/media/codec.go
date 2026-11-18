@@ -165,6 +165,91 @@ func EnsureNV12(frame *core.VideoFrame) error {
 	return nil
 }
 
+// ScaleRGBA downscales or resamples an RGBA buffer using fast nearest/box sampling.
+func ScaleRGBA(src []byte, srcW, srcH, dstW, dstH int) []byte {
+	if srcW <= 0 || srcH <= 0 || dstW <= 0 || dstH <= 0 || len(src) < srcW*srcH*4 {
+		return nil
+	}
+	if srcW == dstW && srcH == dstH {
+		out := make([]byte, srcW*srcH*4)
+		copy(out, src[:srcW*srcH*4])
+		return out
+	}
+	dst := make([]byte, dstW*dstH*4)
+	for y := 0; y < dstH; y++ {
+		sy := (y * srcH) / dstH
+		if sy >= srcH {
+			sy = srcH - 1
+		}
+		srcRow := sy * srcW * 4
+		dstRow := y * dstW * 4
+		for x := 0; x < dstW; x++ {
+			sx := (x * srcW) / dstW
+			if sx >= srcW {
+				sx = srcW - 1
+			}
+			sOff := srcRow + sx*4
+			dOff := dstRow + x*4
+			dst[dOff] = src[sOff]
+			dst[dOff+1] = src[sOff+1]
+			dst[dOff+2] = src[sOff+2]
+			dst[dOff+3] = src[sOff+3]
+		}
+	}
+	return dst
+}
+
+// DownscaleFrame scales frame proportionally so its dimensions do not exceed maxW x maxH (even-aligned).
+func DownscaleFrame(frame *core.VideoFrame, maxW, maxH int) *core.VideoFrame {
+	if frame == nil || frame.Width <= 0 || frame.Height <= 0 || (maxW <= 0 && maxH <= 0) {
+		return frame
+	}
+	if (maxW <= 0 || frame.Width <= maxW) && (maxH <= 0 || frame.Height <= maxH) {
+		return frame
+	}
+	dstW, dstH := fitEvenBounds(frame.Width, frame.Height, maxW, maxH)
+	scaled := ScaleRGBA(frame.Data, frame.Width, frame.Height, dstW, dstH)
+	if scaled == nil {
+		return frame
+	}
+	return &core.VideoFrame{
+		Seq:       frame.Seq,
+		Codec:     frame.Codec,
+		Width:     dstW,
+		Height:    dstH,
+		KeyFrame:  frame.KeyFrame,
+		Timestamp: frame.Timestamp,
+		Data:      scaled,
+	}
+}
+
+func fitEvenBounds(srcW, srcH, maxW, maxH int) (int, int) {
+	if maxW <= 0 {
+		maxW = srcW
+	}
+	if maxH <= 0 {
+		maxH = srcH
+	}
+	scaleW := float64(maxW) / float64(srcW)
+	scaleH := float64(maxH) / float64(srcH)
+	scale := scaleW
+	if scaleH < scale {
+		scale = scaleH
+	}
+	if scale >= 1.0 {
+		return srcW &^ 1, srcH &^ 1
+	}
+	w := int(float64(srcW)*scale) &^ 1
+	h := int(float64(srcH)*scale) &^ 1
+	if w < 2 {
+		w = 2
+	}
+	if h < 2 {
+		h = 2
+	}
+	return w, h
+}
+
 func bgraToRGBA(bgra, dst []byte, width, height, stride int) []byte {
 	need := width * height * 4
 	if cap(dst) < need {
@@ -504,10 +589,6 @@ func (c *ZstdVideoCodec) Decode(data []byte) (*core.VideoFrame, error) {
 
 	outRGBA := make([]byte, expectedRGBA)
 	copy(outRGBA, c.decRGBA)
-	yPlane, uvPlane, sy, suv, err := RGBAToNV12(outRGBA, w, h)
-	if err != nil {
-		return nil, err
-	}
 
 	return &core.VideoFrame{
 		Seq:       seq,
@@ -517,10 +598,6 @@ func (c *ZstdVideoCodec) Decode(data []byte) (*core.VideoFrame, error) {
 		KeyFrame:  flags&videoFlagKeyFrame != 0,
 		Timestamp: ts,
 		Data:      outRGBA,
-		NV12Y:     yPlane,
-		NV12UV:    uvPlane,
-		StrideY:   sy,
-		StrideUV:  suv,
 	}, nil
 }
 

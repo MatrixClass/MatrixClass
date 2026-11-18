@@ -169,6 +169,10 @@ func (c *ScreenCapturer) Backend() CaptureBackend {
 }
 
 func (c *ScreenCapturer) CaptureScreen() (*core.VideoFrame, error) {
+	return c.CaptureScreenScaled(0, 0, true)
+}
+
+func (c *ScreenCapturer) CaptureScreenScaled(maxW, maxH int, withNV12 bool) (*core.VideoFrame, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -182,7 +186,7 @@ func (c *ScreenCapturer) CaptureScreen() (*core.VideoFrame, error) {
 			c.backend = CaptureBackendDXGI
 			c.lastWidth, c.lastHeight = w, h
 			c.hasCachedFrame = true
-			return c.buildVideoFrame(w, h), nil
+			return c.buildVideoFrameScaled(w, h, maxW, maxH, withNV12), nil
 		}
 		if errors.Is(err, errDXGIAccessLost) {
 			c.releaseDXGI()
@@ -192,7 +196,7 @@ func (c *ScreenCapturer) CaptureScreen() (*core.VideoFrame, error) {
 					c.backend = CaptureBackendDXGI
 					c.lastWidth, c.lastHeight = w, h
 					c.hasCachedFrame = true
-					return c.buildVideoFrame(w, h), nil
+					return c.buildVideoFrameScaled(w, h, maxW, maxH, withNV12), nil
 				}
 			}
 		}
@@ -206,7 +210,7 @@ func (c *ScreenCapturer) CaptureScreen() (*core.VideoFrame, error) {
 			c.backend = CaptureBackendGDI
 			c.lastWidth, c.lastHeight = w, h
 			c.hasCachedFrame = true
-			return c.buildVideoFrame(w, h), nil
+			return c.buildVideoFrameScaled(w, h, maxW, maxH, withNV12), nil
 		}
 		c.gdiDisabled = true
 	}
@@ -214,23 +218,32 @@ func (c *ScreenCapturer) CaptureScreen() (*core.VideoFrame, error) {
 	c.backend = CaptureBackendSynthetic
 	w, h = c.opts.Width, c.opts.Height
 	c.rgbaBuf = renderSyntheticRGBA(c.rgbaBuf, w, h, c.seq)
-	return c.buildVideoFrame(w, h), nil
+	return c.buildVideoFrameScaled(w, h, maxW, maxH, withNV12), nil
 }
 
-func (c *ScreenCapturer) buildVideoFrame(w, h int) *core.VideoFrame {
+func (c *ScreenCapturer) buildVideoFrameScaled(w, h, maxW, maxH int, withNV12 bool) *core.VideoFrame {
 	need := w * h * 4
-	out := make([]byte, need)
-	copy(out, c.rgbaBuf[:need])
+	dstW, dstH := w, h
+	var out []byte
+	if (maxW > 0 && w > maxW) || (maxH > 0 && h > maxH) {
+		dstW, dstH = fitEvenBounds(w, h, maxW, maxH)
+		out = ScaleRGBA(c.rgbaBuf[:need], w, h, dstW, dstH)
+	} else {
+		out = make([]byte, need)
+		copy(out, c.rgbaBuf[:need])
+	}
 	frame := &core.VideoFrame{
 		Seq:       c.seq,
 		Codec:     core.CodecFrameZstd,
-		Width:     w,
-		Height:    h,
+		Width:     dstW,
+		Height:    dstH,
 		KeyFrame:  c.seq == 1 || c.seq%60 == 0,
 		Timestamp: time.Now().UnixMilli(),
 		Data:      out,
 	}
-	_ = EnsureNV12(frame)
+	if withNV12 {
+		_ = EnsureNV12(frame)
+	}
 	return frame
 }
 
