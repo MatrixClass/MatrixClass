@@ -35,12 +35,12 @@ func TestStudentBarCheckInExamAndLockViews(t *testing.T) {
 	tester := ui.NewTester(app.View, 920, 560)
 	tester.Frame()
 
-	if !tester.HasText("举手提问") || tester.HasText("点名签到") {
+	if !tester.HasText("举手") || tester.HasText("点名签到") {
 		t.Fatalf("expected floating bar without manual 点名签到 button")
 	}
 
-	if err := tester.Click("举手提问"); err != nil {
-		t.Fatalf("click 举手提问 failed: %v", err)
+	if err := tester.Click("举手"); err != nil {
+		t.Fatalf("click 举手 failed: %v", err)
 	}
 	tester.Frame()
 	if !app.HandRaised() {
@@ -258,7 +258,7 @@ func TestStudentFloatingBarHoverFocusAndDock(t *testing.T) {
 	app := newTestStudentApp()
 	tester := ui.NewTester(app.View, 640, 88)
 	tester.Frame()
-	if !tester.HasText("举手提问") {
+	if !tester.HasText("举手") {
 		t.Fatalf("expected expanded floating bar initially")
 	}
 
@@ -266,7 +266,7 @@ func TestStudentFloatingBarHoverFocusAndDock(t *testing.T) {
 	app.barDocked = true
 	app.mu.Unlock()
 	tester.Frame()
-	if tester.HasText("举手提问") {
+	if tester.HasText("举手") {
 		t.Fatalf("expected docked floating bar to collapse into top handle")
 	}
 
@@ -276,7 +276,7 @@ func TestStudentFloatingBarHoverFocusAndDock(t *testing.T) {
 	if app.barDocked {
 		t.Fatalf("expected barDocked=false when hovered")
 	}
-	if !tester.HasText("举手提问") {
+	if !tester.HasText("举手") {
 		t.Fatalf("expected expanded floating bar after hover")
 	}
 
@@ -290,7 +290,7 @@ func TestStudentFloatingBarHoverFocusAndDock(t *testing.T) {
 	if app.barDocked {
 		t.Fatalf("expected barDocked=false when focused")
 	}
-	if !tester.HasText("举手提问") {
+	if !tester.HasText("举手") {
 		t.Fatalf("expected expanded floating bar after focus")
 	}
 }

@@ -764,35 +764,37 @@ func (a *App) buildFloatingBarView(c *ui.Context, pal theme.Palette) {
 			}
 			ui.Spacer(c)
 
-			handLabel := "举手提问"
+			handLabel := "举手"
 			if a.handRaised {
-				handLabel = "取消举手"
+				handLabel = "已举手"
 			}
-			if ui.Button(c, handLabel).Padding(4, 10).Radius(3).Clicked() {
+			a.barIconButton(c, pal, handLabel, theme.IconHandRaise, a.handRaised, func() {
 				a.ToggleHandRaise()
-			}
-			if ui.Button(c, "作业与消息").Padding(4, 10).Radius(3).Clicked() {
+			})
+			a.barIconButton(c, pal, "消息", theme.IconChat, false, func() {
 				a.mu.Lock()
 				a.mode = ModeChat
 				a.mu.Unlock()
 				a.syncWindow()
-			}
-			if ui.Button(c, "广播窗口").Padding(4, 10).Radius(3).Clicked() {
+			})
+			a.barIconButton(c, pal, "广播", theme.IconBroadcast, false, func() {
 				a.mu.Lock()
 				a.mode = ModeBroadcast
 				a.mu.Unlock()
 				a.syncWindow()
-			}
+			})
 			collapseLabel := "收起"
+			collapseIcon := theme.IconChevronUp
 			if a.barCollapsed {
 				collapseLabel = "展开"
+				collapseIcon = theme.IconChevronDown
 			}
-			if ui.Button(c, collapseLabel).Padding(4, 8).Radius(3).Clicked() {
+			a.barIconButton(c, pal, collapseLabel, collapseIcon, false, func() {
 				a.mu.Lock()
 				a.barCollapsed = !a.barCollapsed
 				a.mu.Unlock()
 				a.syncWindow()
-			}
+			})
 		})
 
 		if !a.barCollapsed {
@@ -809,6 +811,31 @@ func (a *App) buildFloatingBarView(c *ui.Context, pal theme.Palette) {
 			})
 		}
 	})
+}
+
+func (a *App) barIconButton(c *ui.Context, pal theme.Palette, label string, icon *ui.SVG, active bool, onClick func()) {
+	bg := pal.Card
+	fg := pal.Text
+	border := pal.CardBorder
+	if active {
+		bg = pal.Accent
+		fg = pal.AccentText
+		border = pal.Accent
+	}
+	btn := ui.Row(c).AlignItems(ui.Center).Gap(4).Padding(4, 8).Radius(6).
+		Background(bg).Border(1, border).Focusable().Label(label)
+	if btn.Hovered() && !active {
+		btn.Background(pal.ChromeHover)
+	}
+	btn.Children(func() {
+		if icon != nil {
+			ui.Image(c, icon).Size(14, 14)
+		}
+		ui.Text(c, label).FontSize(11).Bold().TextColor(fg).SingleLine()
+	})
+	if btn.Clicked() && onClick != nil {
+		onClick()
+	}
 }
 
 func (a *App) buildBroadcastView(c *ui.Context, pal theme.Palette) {

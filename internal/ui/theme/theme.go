@@ -268,6 +268,14 @@ var (
   <circle cx="12" cy="12" r="8.5" fill="#FFFFFF" stroke="#262626" stroke-width="1.7"/>
   <path d="M12 3.5a8.5 8.5 0 0 0 0 17z" fill="#262626"/>
 </svg>`)
+
+	IconChevronUp = MustSVG(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24">
+  <path d="M6.5 14.5L12 9l5.5 5.5" fill="none" stroke="#262626" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>`)
+
+	IconChevronDown = MustSVG(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24">
+  <path d="M6.5 9.5L12 15l5.5-5.5" fill="none" stroke="#262626" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>`)
 )
 
 // AppIconPNG generates an in-memory 32x32 PNG icon for windows and tray icons.
