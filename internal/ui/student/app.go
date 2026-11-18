@@ -65,6 +65,10 @@ type App struct {
 
 	mode             int
 	barCollapsed     bool
+	barDocked        bool
+	barHovered       bool
+	barFocused       bool
+	barAutoDockSeq   uint64
 	handRaised       bool
 	connected        bool
 	broadcasting     bool
@@ -92,6 +96,7 @@ type App struct {
 	lastWinMode      int
 	lastWinCollapsed bool
 	lastWinBcastWin  bool
+	lastWinDocked    bool
 	winSyncedOnce    bool
 
 	videoBitmap *ui.Bitmap
@@ -153,9 +158,14 @@ func New(opts Options) *App {
 func (a *App) AttachWindow(w *mygo.Window) {
 	a.mu.Lock()
 	a.win = w
+	a.barFocused = w != nil && w.IsFocused()
 	a.mu.Unlock()
 	if w != nil {
 		_ = w.SetIcon(theme.AppIconPNG(false))
+		a.positionBarTopCenter(w)
+		w.SetAlwaysOnTop(true)
+		w.OnFocus(func() { a.setBarFocused(true) })
+		w.OnBlur(func() { a.setBarFocused(false) })
 		w.OnClosed(func() {
 			a.mu.Lock()
 			tw := a.toastWin
@@ -165,6 +175,103 @@ func (a *App) AttachWindow(w *mygo.Window) {
 				tw.Destroy()
 			}
 		})
+		a.scheduleBarAutoDock()
+	}
+}
+
+func (a *App) positionBarTopCenter(w *mygo.Window) {
+	if w == nil {
+		return
+	}
+	wa := mygo.Screen.PrimaryDisplay().WorkArea
+	const barW = 640
+	x := wa.X + (wa.Width-barW)/2
+	if x < wa.X {
+		x = wa.X
+	}
+	w.SetPosition(x, wa.Y)
+}
+
+func (a *App) scheduleBarAutoDock() {
+	a.mu.Lock()
+	a.barAutoDockSeq++
+	seq := a.barAutoDockSeq
+	a.mu.Unlock()
+
+	time.AfterFunc(3*time.Second, func() {
+		a.mu.Lock()
+		if a.barAutoDockSeq != seq || a.mode != ModeBar || a.barHovered || a.barFocused || a.barDocked {
+			a.mu.Unlock()
+			return
+		}
+		a.barDocked = true
+		a.mu.Unlock()
+		a.syncWindow()
+		a.Invalidate()
+	})
+}
+
+func (a *App) wakeFloatingBar() {
+	a.mu.Lock()
+	a.barAutoDockSeq++
+	wasDocked := a.barDocked
+	a.barDocked = false
+	a.mu.Unlock()
+	if wasDocked {
+		a.syncWindow()
+		a.Invalidate()
+	}
+}
+
+func (a *App) setBarFocused(focused bool) {
+	a.mu.Lock()
+	if a.barFocused == focused {
+		a.mu.Unlock()
+		return
+	}
+	a.barFocused = focused
+	mode := a.mode
+	hovered := a.barHovered
+	wasDocked := a.barDocked
+	if focused && mode == ModeBar {
+		a.barAutoDockSeq++
+		a.barDocked = false
+	}
+	a.mu.Unlock()
+
+	if focused && mode == ModeBar && wasDocked {
+		a.syncWindow()
+		a.Invalidate()
+		return
+	}
+	if !focused && !hovered && mode == ModeBar {
+		a.scheduleBarAutoDock()
+	}
+}
+
+func (a *App) setBarHovered(hovered bool) {
+	a.mu.Lock()
+	if a.barHovered == hovered {
+		a.mu.Unlock()
+		return
+	}
+	a.barHovered = hovered
+	mode := a.mode
+	focused := a.barFocused
+	wasDocked := a.barDocked
+	if hovered && mode == ModeBar {
+		a.barAutoDockSeq++
+		a.barDocked = false
+	}
+	a.mu.Unlock()
+
+	if hovered && mode == ModeBar && wasDocked {
+		a.syncWindow()
+		a.Invalidate()
+		return
+	}
+	if !hovered && !focused && mode == ModeBar {
+		a.scheduleBarAutoDock()
 	}
 }
 
@@ -267,6 +374,8 @@ func (a *App) ShowFloatingBar() {
 	a.mu.Lock()
 	a.mode = ModeBar
 	a.barCollapsed = false
+	a.barDocked = false
+	a.barAutoDockSeq++
 	w := a.win
 	a.mu.Unlock()
 	if w != nil {
@@ -274,6 +383,7 @@ func (a *App) ShowFloatingBar() {
 			a.syncWindowOnMain(w, true, true)
 		})
 	}
+	a.scheduleBarAutoDock()
 }
 
 func (a *App) OpenMode(m int) {
@@ -493,12 +603,16 @@ func (a *App) syncWindowOnMain(w *mygo.Window, show, focus bool) {
 	mode := a.mode
 	collapsed := a.barCollapsed
 	bcastWin := a.broadcastWindow
-	changed := !a.winSyncedOnce || a.lastWinMode != mode || a.lastWinCollapsed != collapsed || a.lastWinBcastWin != bcastWin
+	docked := a.barDocked
+	firstSync := !a.winSyncedOnce
+	prevMode := a.lastWinMode
+	changed := firstSync || a.lastWinMode != mode || a.lastWinCollapsed != collapsed || a.lastWinBcastWin != bcastWin || a.lastWinDocked != docked
 	if changed {
 		a.winSyncedOnce = true
 		a.lastWinMode = mode
 		a.lastWinCollapsed = collapsed
 		a.lastWinBcastWin = bcastWin
+		a.lastWinDocked = docked
 	}
 	a.mu.Unlock()
 
@@ -550,12 +664,31 @@ func (a *App) syncWindowOnMain(w *mygo.Window, show, focus bool) {
 			w.SetAlwaysOnTop(true)
 			w.SetClosable(true)
 			w.SetResizable(true)
-			w.SetMinimumSize(520, 48)
-			h := 88
-			if collapsed {
-				h = 48
+			w.SetMinimumSize(520, 8)
+			wa := mygo.Screen.PrimaryDisplay().WorkArea
+			if docked {
+				w.SetSize(640, 8)
+				curX, _ := w.Position()
+				if firstSync || prevMode != ModeBar {
+					curX = wa.X + (wa.Width-640)/2
+				}
+				if curX < wa.X {
+					curX = wa.X
+				}
+				if wa.Width > 640 && curX > wa.X+wa.Width-640 {
+					curX = wa.X + wa.Width - 640
+				}
+				w.SetPosition(curX, wa.Y)
+			} else {
+				h := 88
+				if collapsed {
+					h = 48
+				}
+				w.SetSize(640, h)
+				if firstSync || prevMode != ModeBar {
+					a.positionBarTopCenter(w)
+				}
 			}
-			w.SetSize(640, h)
 		}
 	}
 	if show {
@@ -593,7 +726,25 @@ func (a *App) View(c *ui.Context) {
 }
 
 func (a *App) buildFloatingBarView(c *ui.Context, pal theme.Palette) {
-	ui.Column(c).Fill().Background(pal.ChromeBar).Padding(6, 10).Gap(6).Children(func() {
+	a.mu.Lock()
+	docked := a.barDocked
+	wasHovered := a.barHovered
+	a.mu.Unlock()
+
+	root := ui.Column(c).Fill().Background(pal.ChromeBar)
+	hovered := root.Hovered()
+	if hovered != wasHovered {
+		go a.setBarHovered(hovered)
+	}
+
+	if docked {
+		root.Padding(2, 0).Center().Border(1, pal.CardBorder).Children(func() {
+			ui.Box(c).Width(72).Height(3).Radius(2).Background(pal.Accent)
+		})
+		return
+	}
+
+	root.Padding(6, 10).Gap(6).Children(func() {
 		// Top draggable floating bar
 		ui.Row(c).FillWidth().Gap(8).AlignItems(ui.Center).DragWindow().Children(func() {
 			ui.Badge(c, a.channel).Background(pal.Selection).TextColor(pal.Text)

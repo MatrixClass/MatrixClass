@@ -640,15 +640,22 @@ func main() {
 	}
 
 	mygo.App.WhenReady(func() {
+		wa := mygo.Screen.PrimaryDisplay().WorkArea
+		barW := 640
+		barX := wa.X + (wa.Width-barW)/2
+		if barX < wa.X {
+			barX = wa.X
+		}
 		win := mygo.NewWindow(mygo.WindowOptions{
 			Title:       "矩联电子教室 MatrixClass 学生端",
-			Width:       640,
+			Width:       barW,
 			Height:      88,
+			X:           barX,
+			Y:           wa.Y,
 			MinWidth:    520,
-			MinHeight:   48,
+			MinHeight:   8,
 			Frameless:   true,
 			AlwaysOnTop: true,
-			StateKey:    "nexlab-student-bar-v2",
 			Content:     ui.View(app.View),
 		})
 		app.AttachWindow(win)

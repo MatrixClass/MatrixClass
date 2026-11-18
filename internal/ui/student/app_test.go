@@ -253,3 +253,44 @@ func TestStudentFileReceiveWindowAndRetry(t *testing.T) {
 		t.Fatalf("expected failed item replaced by retry task (total 2 items), got %d", count)
 	}
 }
+
+func TestStudentFloatingBarHoverFocusAndDock(t *testing.T) {
+	app := newTestStudentApp()
+	tester := ui.NewTester(app.View, 640, 88)
+	tester.Frame()
+	if !tester.HasText("举手提问") {
+		t.Fatalf("expected expanded floating bar initially")
+	}
+
+	app.mu.Lock()
+	app.barDocked = true
+	app.mu.Unlock()
+	tester.Frame()
+	if tester.HasText("举手提问") {
+		t.Fatalf("expected docked floating bar to collapse into top handle")
+	}
+
+	// Cursor hover wakes up docked bar
+	app.setBarHovered(true)
+	tester.Frame()
+	if app.barDocked {
+		t.Fatalf("expected barDocked=false when hovered")
+	}
+	if !tester.HasText("举手提问") {
+		t.Fatalf("expected expanded floating bar after hover")
+	}
+
+	// Focus also wakes up docked bar
+	app.setBarHovered(false)
+	app.mu.Lock()
+	app.barDocked = true
+	app.mu.Unlock()
+	app.setBarFocused(true)
+	tester.Frame()
+	if app.barDocked {
+		t.Fatalf("expected barDocked=false when focused")
+	}
+	if !tester.HasText("举手提问") {
+		t.Fatalf("expected expanded floating bar after focus")
+	}
+}
