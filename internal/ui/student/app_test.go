@@ -58,10 +58,11 @@ func TestStudentBarCheckInExamAndLockViews(t *testing.T) {
 	_ = tester.Click("返回")
 	tester.Frame()
 
-	// Exam flow
-	if err := tester.Click("随堂测验"); err != nil {
-		t.Fatalf("click 随堂测验 failed: %v", err)
+	// Exam entry must be hidden on floating bar and only pop up when teacher publishes exam
+	if tester.HasText("随堂测验") {
+		t.Fatalf("expected 随堂测验 entry hidden from student floating bar")
 	}
+	app.OpenMode(ModeExam)
 	tester.Frame()
 	if err := tester.Click("提交答卷"); err != nil {
 		t.Fatalf("click 提交答卷 failed: %v", err)

@@ -597,13 +597,6 @@ func (a *App) buildFloatingBarView(c *ui.Context, pal theme.Palette) {
 			if ui.Button(c, handLabel).Padding(4, 10).Radius(3).Clicked() {
 				a.ToggleHandRaise()
 			}
-			if ui.Button(c, "随堂测验").Padding(4, 10).Radius(3).Clicked() {
-				a.loadActivePaper()
-				a.mu.Lock()
-				a.mode = ModeExam
-				a.mu.Unlock()
-				a.syncWindow()
-			}
 			if ui.Button(c, "作业与消息").Padding(4, 10).Radius(3).Clicked() {
 				a.mu.Lock()
 				a.mode = ModeChat
