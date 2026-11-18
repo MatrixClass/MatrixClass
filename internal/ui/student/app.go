@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"image"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -44,6 +45,7 @@ const (
 	ModeExam
 	ModeCheckIn
 	ModeChat
+	ModeHomeworkSubmit
 )
 
 // App implements the MyGo native Student Client (tray + floating bar + broadcast/lock/exam/check-in views).
@@ -76,6 +78,10 @@ type App struct {
 	checkInNo        string
 	checkInSubmitted bool
 	homeworkPath     string
+	homeworkQueue    []string
+	homeworkSubmitWin *mygo.Window
+	homeworkCollecting bool
+	homeworkSubmitNote  string
 	chatInput        string
 	statusNote       string
 	volume           float64
@@ -180,9 +186,13 @@ func (a *App) InstallTray() {
 func (a *App) Invalidate() {
 	a.mu.Lock()
 	w := a.win
+	hw := a.homeworkSubmitWin
 	a.mu.Unlock()
 	if w != nil {
 		w.Invalidate()
+	}
+	if hw != nil {
+		hw.Invalidate()
 	}
 }
 
@@ -1087,3 +1097,235 @@ func (a *App) CheckInSubmitted() bool {
 	return a.checkInSubmitted
 }
 func (a *App) ExamResult() *core.ExamSubmission { return a.examResult }
+
+// OpenHomeworkSubmitWindow opens the standalone homework submission popup.
+func (a *App) OpenHomeworkSubmitWindow() {
+	a.mu.Lock()
+	a.homeworkCollecting = true
+	a.homeworkSubmitNote = "教师已发起作业收取，请提交作业"
+	w := a.win
+	hw := a.homeworkSubmitWin
+	a.mu.Unlock()
+
+	if w == nil {
+		a.mu.Lock()
+		a.mode = ModeHomeworkSubmit
+		a.mu.Unlock()
+		a.syncWindow()
+		return
+	}
+	if hw != nil {
+		hw.Show()
+		hw.Focus()
+		return
+	}
+	hw = mygo.NewWindow(mygo.WindowOptions{
+		Title:     "提交作业",
+		Width:     480,
+		Height:    420,
+		MinWidth:  380,
+		MinHeight: 340,
+		Content:   ui.View(a.HomeworkSubmitView),
+	})
+	hw.OnFileDrop(func(e *mygo.FileDropEvent) {
+		if e == nil || len(e.Paths) == 0 {
+			return
+		}
+		hw.Update(func() {
+			a.addHomeworkFiles(e.Paths)
+			a.homeworkSubmitNote = fmt.Sprintf("已拖入 %d 个文件", len(e.Paths))
+		})
+	})
+	hw.OnClosed(func() {
+		a.mu.Lock()
+		if a.homeworkSubmitWin == hw {
+			a.homeworkSubmitWin = nil
+		}
+		a.mu.Unlock()
+	})
+	a.mu.Lock()
+	a.homeworkSubmitWin = hw
+	a.mu.Unlock()
+}
+
+// CloseHomeworkSubmitWindow closes the homework submission popup (called on teacher end).
+func (a *App) CloseHomeworkSubmitWindow() {
+	a.mu.Lock()
+	a.homeworkCollecting = false
+	a.homeworkSubmitNote = "教师已结束作业收取"
+	hw := a.homeworkSubmitWin
+	a.mu.Unlock()
+
+	if hw != nil {
+		hw.Update(func() {
+			a.homeworkSubmitNote = "教师已结束作业收取，窗口将关闭"
+		})
+		go func() {
+			time.Sleep(1500 * time.Millisecond)
+			a.mu.Lock()
+			curHW := a.homeworkSubmitWin
+			a.mu.Unlock()
+			if curHW == hw {
+				hw.Close()
+			}
+		}()
+	}
+
+	a.mu.Lock()
+	if a.mode == ModeHomeworkSubmit {
+		a.mode = ModeBar
+	}
+	a.mu.Unlock()
+	a.syncWindow()
+}
+
+func (a *App) HomeworkSubmitView(c *ui.Context) {
+	a.mu.Lock()
+	dark := a.dark
+	a.mu.Unlock()
+	pal := theme.GetPalette(dark)
+	c.SetTheme(theme.Theme(dark))
+	ui.Column(c).Fill().Background(pal.Canvas).Children(func() {
+		a.buildHomeworkSubmitContent(c, pal)
+	})
+}
+
+func (a *App) buildHomeworkSubmitContent(c *ui.Context, pal theme.Palette) {
+	ui.Column(c).Fill().Padding(14).Gap(10).Children(func() {
+		ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(8).Children(func() {
+			ui.Text(c, "提交作业").FontSize(15).Bold()
+			ui.Badge(c, "教师正在收取").Background(pal.Selection).TextColor(pal.Accent)
+		})
+
+		ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(8).Children(func() {
+			ui.Text(c, fmt.Sprintf("待提交文件 (%d)", len(a.homeworkQueue))).FontSize(12).Bold()
+			ui.Spacer(c)
+			if ui.Button(c, "添加文件...").Padding(4, 12).Clicked() {
+				a.openHomeworkQueuePicker()
+			}
+			if len(a.homeworkQueue) > 0 {
+				if ui.Button(c, "清空").Padding(4, 10).Clicked() {
+					a.homeworkQueue = nil
+				}
+			}
+		})
+
+		queueScroll := ui.Scroll(c.Key("hw-queue")).Grow(1).FillWidth().Background(pal.Card).Radius(3).Padding(8).Gap(6)
+		if queueScroll.FileDragOver() {
+			queueScroll.Border(2, pal.Accent)
+		} else {
+			queueScroll.Border(1, pal.CardBorder)
+		}
+		if dropped := queueScroll.DroppedFiles(); len(dropped) > 0 {
+			a.addHomeworkFiles(dropped)
+			a.homeworkSubmitNote = fmt.Sprintf("已拖入 %d 个文件", len(dropped))
+		}
+		queueScroll.Children(func() {
+			if len(a.homeworkQueue) == 0 {
+				ui.Box(c).Fill().Center().Padding(20).Children(func() {
+					ui.Text(c, "将作业文件拖入此处，或点击「添加文件...」").FontSize(12).TextColor(pal.TextMuted)
+				})
+				return
+			}
+			for idx, p := range a.homeworkQueue {
+				idx, p := idx, p
+				ui.Row(c).Key("hq-"+p).FillWidth().Padding(6, 8).Radius(2).Background(pal.Canvas).Border(1, pal.CardBorder).AlignItems(ui.Center).Gap(8).Children(func() {
+					ui.Text(c, filepath.Base(p)).FontSize(12).Bold()
+					ui.Text(c, p).FontSize(11).TextColor(pal.TextMuted).Grow(1).SingleLine()
+					if ui.Button(c, "移除").Padding(2, 8).Clicked() {
+						a.removeHomeworkFile(idx)
+					}
+				})
+			}
+		})
+
+		ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(8).Children(func() {
+			ui.Text(c, a.homeworkSubmitNote).FontSize(11).TextColor(pal.TextMuted).Grow(1).SingleLine()
+			submitLabel := fmt.Sprintf("提交 (%d)", len(a.homeworkQueue))
+			if ui.PrimaryButton(c, submitLabel).Padding(5, 16).Clicked() {
+				a.SubmitHomeworkQueue()
+			}
+		})
+	})
+}
+
+func (a *App) addHomeworkFiles(paths []string) {
+	existing := make(map[string]bool, len(a.homeworkQueue))
+	for _, p := range a.homeworkQueue {
+		existing[p] = true
+	}
+	for _, p := range paths {
+		p = strings.TrimSpace(p)
+		if p != "" && !existing[p] {
+			existing[p] = true
+			a.homeworkQueue = append(a.homeworkQueue, p)
+		}
+	}
+}
+
+func (a *App) removeHomeworkFile(idx int) {
+	if idx < 0 || idx >= len(a.homeworkQueue) {
+		return
+	}
+	a.homeworkQueue = append(a.homeworkQueue[:idx], a.homeworkQueue[idx+1:]...)
+}
+
+func (a *App) openHomeworkQueuePicker() {
+	go func() {
+		paths, err := mygo.Dialog.Open(mygo.OpenDialogOptions{
+			Title:    "选择要提交的作业文件",
+			Multiple: true,
+		})
+		if err != nil || len(paths) == 0 {
+			return
+		}
+		a.mu.Lock()
+		hw := a.homeworkSubmitWin
+		w := a.win
+		a.mu.Unlock()
+		apply := func() {
+			a.addHomeworkFiles(paths)
+			a.homeworkSubmitNote = fmt.Sprintf("已添加 %d 个文件", len(paths))
+		}
+		if hw != nil {
+			hw.Update(apply)
+		} else if w != nil {
+			w.Update(apply)
+		} else {
+			apply()
+		}
+	}()
+}
+
+func (a *App) SubmitHomeworkQueue() {
+	if a.opts.Files == nil || len(a.homeworkQueue) == 0 {
+		a.homeworkSubmitNote = "请先添加作业文件"
+		return
+	}
+	queue := append([]string(nil), a.homeworkQueue...)
+	a.homeworkSubmitNote = fmt.Sprintf("正在上传 %d 个作业文件...", len(queue))
+	go func() {
+		sent := 0
+		var lastErr error
+		for _, p := range queue {
+			if _, err := a.opts.Files.SubmitHomework(context.Background(), a.studentID, p); err != nil {
+				lastErr = err
+			} else {
+				sent++
+			}
+		}
+		a.mu.Lock()
+		if lastErr != nil {
+			a.homeworkSubmitNote = fmt.Sprintf("提交完成 %d/%d（部分失败: %v）", sent, len(queue), lastErr)
+		} else {
+			a.homeworkSubmitNote = fmt.Sprintf("已成功提交 %d 个作业文件", sent)
+			a.homeworkQueue = nil
+		}
+		hw := a.homeworkSubmitWin
+		a.mu.Unlock()
+		if hw != nil {
+			hw.Invalidate()
+		}
+		a.Invalidate()
+	}()
+}

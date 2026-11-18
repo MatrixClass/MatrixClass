@@ -134,6 +134,7 @@ type App struct {
 	collectSaveDir string
 	autoOpenFile   bool
 	fileTargetAll  bool
+	collectingHomework bool
 
 	// Chat & Policy state
 	chatInput         string
@@ -594,7 +595,7 @@ func (a *App) buildToolbar(c *ui.Context, pal theme.Palette) {
 			a.toolbarButton(c, pal, "文件分发", theme.IconFileDistribute, a.fileDistModal, func() {
 				a.OpenFileDistributeWindow()
 			})
-			a.toolbarButton(c, pal, "收取作业", theme.IconCollectHomework, false, func() {
+			a.toolbarButton(c, pal, "收取作业", theme.IconCollectHomework, a.collectingHomework, func() {
 				a.CollectHomework()
 			})
 			a.toolbarButton(c, pal, "随堂测验", theme.IconExam, a.mainTab == TabExamStats, func() {
@@ -1093,8 +1094,15 @@ func (a *App) buildFilesTab(c *ui.Context, pal theme.Palette) {
 			if ui.PrimaryButton(c, "打开文件分发窗口").Padding(5, 14).Clicked() {
 				a.OpenFileDistributeWindow()
 			}
+		if a.collectingHomework {
+			if ui.Button(c, "结束收取").Padding(5, 12).Clicked() {
+				a.EndCollectHomework()
+			}
+			ui.Badge(c, "正在收取作业...").Background(pal.Selection).TextColor(pal.Accent)
+		} else {
 			if ui.Button(c, "收取作业").Padding(5, 12).Clicked() {
 				a.CollectHomework()
+			}
 			}
 		})
 
@@ -2133,27 +2141,26 @@ func (a *App) CollectHomework() {
 	if a.opts.Files == nil {
 		return
 	}
-	targets := a.resolveFileTargets()
-	if len(targets) == 0 {
-		a.statusNote = "没有可收取作业的在线学生目标"
+	if a.collectingHomework {
+		a.EndCollectHomework()
 		return
 	}
-	remoteDir := a.remoteDir
-	saveDir := a.collectSaveDir
-	a.mainTab = TabFiles
-	a.statusNote = "正在收取学生作业..."
-	go func() {
-		tasks, err := a.opts.Files.CollectFiles(context.Background(), remoteDir, saveDir, targets)
-		a.mu.Lock()
-		if err != nil {
-			a.statusNote = "收取作业失败: " + err.Error()
-		} else {
-			a.statusNote = fmt.Sprintf("作业回收完成 (%d 个文件)", len(tasks))
-		}
-		a.mu.Unlock()
-		a.Invalidate()
-	}()
+	a.collectingHomework = true
+	a.statusNote = "已发起作业收取，等待学生提交..."
+	a.sendControlEnvelope(protocol.MsgHomeworkCollectStart, map[string]any{
+		"channel": a.channel,
+	}, nil)
 }
+
+func (a *App) EndCollectHomework() {
+	a.collectingHomework = false
+	a.statusNote = "已结束作业收取"
+	a.sendControlEnvelope(protocol.MsgHomeworkCollectEnd, map[string]any{
+		"channel": a.channel,
+	}, nil)
+}
+
+func (a *App) CollectingHomework() bool { return a.collectingHomework }
 
 func (a *App) resolveFileTargets() []string {
 	if !a.fileTargetAll {

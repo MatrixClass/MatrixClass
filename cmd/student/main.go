@@ -305,6 +305,10 @@ func (rt *Runtime) wireHandlers() {
 				rt.Exam.PublishPaper(paper)
 				rt.App.OpenMode(student.ModeExam)
 			}
+		case protocol.MsgHomeworkCollectStart:
+			rt.App.OpenHomeworkSubmitWindow()
+		case protocol.MsgHomeworkCollectEnd:
+			rt.App.CloseHomeworkSubmitWindow()
 		case protocol.MsgChat:
 			var msg core.ChatMessage
 			if err := json.Unmarshal(env.Payload, &msg); err == nil {
