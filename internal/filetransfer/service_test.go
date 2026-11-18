@@ -459,3 +459,61 @@ func TestChecksumMismatchRejected(t *testing.T) {
 func strings_RepeatZeroHash() string {
 	return "0000000000000000000000000000000000000000000000000000000000000000"
 }
+
+func TestDistributeFileStalePartAndAutoOverwrite(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	tmp := t.TempDir()
+	teacherDir := filepath.Join(tmp, "teacher")
+	s1Recv := filepath.Join(tmp, "s1_recv")
+	_ = os.MkdirAll(teacherDir, 0o755)
+	_ = os.MkdirAll(s1Recv, 0o755)
+
+	srcPath := filepath.Join(teacherDir, "notes.txt")
+	newPayload := []byte("fresh-version-2-content-for-overwrite-test")
+	if err := os.WriteFile(srcPath, newPayload, 0o644); err != nil {
+		t.Fatalf("write src: %v", err)
+	}
+
+	// Pre-populate stale destination file and stale .part file from an older version.
+	destPath := filepath.Join(s1Recv, "notes.txt")
+	if err := os.WriteFile(destPath, []byte("old-version-1-content"), 0o644); err != nil {
+		t.Fatalf("write old dest: %v", err)
+	}
+	if err := os.WriteFile(destPath+".part", []byte("stale-partial"), 0o644); err != nil {
+		t.Fatalf("write stale part: %v", err)
+	}
+	if err := os.WriteFile(destPath+".part.sha256", []byte(strings_RepeatZeroHash()), 0o644); err != nil {
+		t.Fatalf("write stale sha256: %v", err)
+	}
+
+	teacherSvc := NewService(Config{ArchiveDir: teacherDir, ReceiveDir: teacherDir})
+	s1Svc := NewService(Config{ArchiveDir: s1Recv, ReceiveDir: s1Recv})
+
+	teacherSvc.RegisterSession("s1", newPipeSession("s1", func(_ protocol.StreamKind, stream io.ReadWriteCloser) {
+		_ = s1Svc.HandleStream(ctx, stream)
+	}))
+
+	task, err := teacherSvc.DistributeFile(ctx, srcPath, "", []string{"s1"}, false)
+	if err != nil {
+		t.Fatalf("DistributeFile failed: %v", err)
+	}
+	if task.Status != "completed" {
+		t.Fatalf("expected completed, got %+v", task)
+	}
+
+	got, err := os.ReadFile(destPath)
+	if err != nil {
+		t.Fatalf("read dest: %v", err)
+	}
+	if string(got) != string(newPayload) {
+		t.Fatalf("expected destination overwritten with %q, got %q", newPayload, got)
+	}
+	if _, err := os.Stat(destPath + ".part"); !os.IsNotExist(err) {
+		t.Fatalf("expected .part cleaned up, err=%v", err)
+	}
+	if _, err := os.Stat(destPath + ".part.sha256"); !os.IsNotExist(err) {
+		t.Fatalf("expected .part.sha256 cleaned up, err=%v", err)
+	}
+}

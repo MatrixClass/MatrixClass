@@ -1,6 +1,7 @@
 package filetransfer
 
 import (
+	"bufio"
 	"context"
 	"crypto/sha256"
 	"encoding/binary"
@@ -21,7 +22,7 @@ import (
 )
 
 const (
-	DefaultChunkSize = 64 * 1024
+	DefaultChunkSize = 256 * 1024
 	TeacherPeerID    = "teacher"
 )
 
@@ -285,38 +286,7 @@ func (s *Service) DistributeFile(ctx context.Context, localPath, remoteDir strin
 		wg.Add(1)
 		go func(tid string) {
 			defer wg.Done()
-			sess, ok := s.getSession(tid)
-			if !ok {
-				errMu.Lock()
-				if firstEr == nil {
-					firstEr = fmt.Errorf("%w: %s", ErrSessionNotFound, tid)
-				}
-				errMu.Unlock()
-				return
-			}
-			stream, err := sess.OpenStream(protocol.StreamFile)
-			if err != nil {
-				errMu.Lock()
-				if firstEr == nil {
-					firstEr = err
-				}
-				errMu.Unlock()
-				return
-			}
-			defer stream.Close()
-
-			offer := FileOffer{
-				TaskID:     task.ID,
-				Direction:  core.TransferSend,
-				FileName:   fileName,
-				RemoteDir:  remoteDir,
-				RemotePath: filepath.Join(remoteDir, fileName),
-				StudentID:  tid,
-				TotalBytes: size,
-				SHA256:     hash,
-				AutoOpen:   autoOpen,
-			}
-			_, sendErr := s.sendOverStream(ctx, stream, localPath, offer, func(done int64) {
+			sendErr := s.distributeToPeerWithRetry(ctx, task.ID, localPath, remoteDir, fileName, tid, size, hash, autoOpen, func(done int64) {
 				progMu.Lock()
 				perDone[tid] = done
 				minDone := size
@@ -345,6 +315,60 @@ func (s *Service) DistributeFile(ctx context.Context, localPath, remoteDir strin
 	}
 	s.updateTask(task, size, "completed", "")
 	return cloneTask(task), nil
+}
+
+func (s *Service) distributeToPeerWithRetry(
+	ctx context.Context,
+	taskID, localPath, remoteDir, fileName, tid string,
+	size int64,
+	hash string,
+	autoOpen bool,
+	onBytes func(int64),
+) error {
+	const maxAttempts = 3
+	var lastErr error
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		if attempt > 0 {
+			timer := time.NewTimer(300 * time.Millisecond)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return ctx.Err()
+			case <-timer.C:
+			}
+		}
+		sess, ok := s.getSession(tid)
+		if !ok {
+			lastErr = fmt.Errorf("%w: %s", ErrSessionNotFound, tid)
+			continue
+		}
+		stream, err := sess.OpenStream(protocol.StreamFile)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		offer := FileOffer{
+			TaskID:     taskID,
+			Direction:  core.TransferSend,
+			FileName:   fileName,
+			RemoteDir:  remoteDir,
+			RemotePath: filepath.Join(remoteDir, fileName),
+			StudentID:  tid,
+			TotalBytes: size,
+			SHA256:     hash,
+			AutoOpen:   autoOpen,
+		}
+		_, sendErr := s.sendOverStream(ctx, stream, localPath, offer, onBytes)
+		_ = stream.Close()
+		if sendErr == nil {
+			return nil
+		}
+		lastErr = sendErr
+		if errors.Is(sendErr, ErrTransferRejected) || ctx.Err() != nil {
+			return sendErr
+		}
+	}
+	return lastErr
 }
 
 func (s *Service) SubmitHomework(ctx context.Context, studentID, localPath string) (*core.TransferTask, error) {
@@ -783,11 +807,23 @@ func (s *Service) receiveOffer(ctx context.Context, stream io.ReadWriter, offer 
 	}
 
 	partPath := destPath + ".part"
+	partMetaPath := partPath + ".sha256"
 	var resumeOffset int64
 	if info, err := os.Stat(partPath); err == nil && info.Mode().IsRegular() {
 		if info.Size() > 0 && info.Size() <= offer.TotalBytes {
-			resumeOffset = info.Size()
+			canResume := true
+			if offer.SHA256 != "" {
+				if metaBytes, mErr := os.ReadFile(partMetaPath); mErr == nil {
+					canResume = strings.EqualFold(strings.TrimSpace(string(metaBytes)), offer.SHA256)
+				}
+			}
+			if canResume {
+				resumeOffset = info.Size()
+			}
 		}
+	}
+	if offer.SHA256 != "" {
+		_ = os.WriteFile(partMetaPath, []byte(offer.SHA256), 0o644)
 	}
 
 	flags := os.O_CREATE | os.O_WRONLY
@@ -808,6 +844,7 @@ func (s *Service) receiveOffer(ctx context.Context, stream io.ReadWriter, offer 
 			return cloneTask(task), err
 		}
 	}
+	bw := bufio.NewWriterSize(outFile, 512*1024)
 
 	if err := s.sendAckResume(stream, offer.TaskID, resumeOffset); err != nil {
 		outFile.Close()
@@ -840,6 +877,11 @@ func (s *Service) receiveOffer(ctx context.Context, stream io.ReadWriter, offer 
 			chunkOffset := int64(binary.BigEndian.Uint64(payload[:8]))
 			data := payload[8:]
 			if chunkOffset != doneBytes {
+				if err := bw.Flush(); err != nil {
+					outFile.Close()
+					s.updateTask(task, doneBytes, "failed", err.Error())
+					return cloneTask(task), err
+				}
 				if _, err := outFile.Seek(chunkOffset, io.SeekStart); err != nil {
 					outFile.Close()
 					s.updateTask(task, doneBytes, "failed", err.Error())
@@ -847,7 +889,7 @@ func (s *Service) receiveOffer(ctx context.Context, stream io.ReadWriter, offer 
 				}
 				doneBytes = chunkOffset
 			}
-			if _, err := outFile.Write(data); err != nil {
+			if _, err := bw.Write(data); err != nil {
 				outFile.Close()
 				s.updateTask(task, doneBytes, "failed", err.Error())
 				return cloneTask(task), err
@@ -856,6 +898,12 @@ func (s *Service) receiveOffer(ctx context.Context, stream io.ReadWriter, offer 
 			s.updateTask(task, doneBytes, "running", "")
 
 		case protocol.MsgFileComplete:
+			if err := bw.Flush(); err != nil {
+				outFile.Close()
+				s.sendFinalComplete(stream, offer.TaskID, doneBytes, "", "", false, err.Error())
+				s.updateTask(task, doneBytes, "failed", err.Error())
+				return cloneTask(task), err
+			}
 			if err := outFile.Close(); err != nil {
 				s.sendFinalComplete(stream, offer.TaskID, doneBytes, "", "", false, err.Error())
 				s.updateTask(task, doneBytes, "failed", err.Error())
@@ -869,6 +917,7 @@ func (s *Service) receiveOffer(ctx context.Context, stream io.ReadWriter, offer 
 			}
 			if offer.SHA256 != "" && !strings.EqualFold(actualHash, offer.SHA256) {
 				_ = os.Remove(partPath)
+				_ = os.Remove(partMetaPath)
 				s.sendFinalComplete(stream, offer.TaskID, actualSize, actualHash, "", false, ErrChecksumMismatch.Error())
 				s.updateTask(task, actualSize, "failed", ErrChecksumMismatch.Error())
 				return cloneTask(task), ErrChecksumMismatch
@@ -878,6 +927,7 @@ func (s *Service) receiveOffer(ctx context.Context, stream io.ReadWriter, offer 
 				s.updateTask(task, actualSize, "failed", err.Error())
 				return cloneTask(task), err
 			}
+			_ = os.Remove(partMetaPath)
 			s.sendFinalComplete(stream, offer.TaskID, actualSize, actualHash, destPath, true, "")
 			s.updateTask(task, actualSize, "completed", "")
 			s.triggerAutoOpen(offer.AutoOpen, destPath)

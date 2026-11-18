@@ -1,6 +1,8 @@
 package teacher
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -347,5 +349,34 @@ func TestTeacherFileDistributeQueueWindow(t *testing.T) {
 	app.closeFileDistributeWindow()
 	if app.fileDistModal {
 		t.Fatalf("expected fileDistModal=false after close")
+	}
+}
+
+func TestExpandQueueEntriesFolder(t *testing.T) {
+	tmp := t.TempDir()
+	rootDir := filepath.Join(tmp, "Lab01")
+	subDir := filepath.Join(rootDir, "sub")
+	if err := os.MkdirAll(subDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	f1 := filepath.Join(rootDir, "readme.txt")
+	f2 := filepath.Join(subDir, "main.go")
+	if err := os.WriteFile(f1, []byte("hi"), 0o644); err != nil {
+		t.Fatalf("write f1: %v", err)
+	}
+	if err := os.WriteFile(f2, []byte("package main"), 0o644); err != nil {
+		t.Fatalf("write f2: %v", err)
+	}
+
+	items := expandQueueEntries([]string{rootDir}, "")
+	if len(items) != 2 {
+		t.Fatalf("expected 2 expanded items, got %d", len(items))
+	}
+	got := map[string]string{}
+	for _, it := range items {
+		got[filepath.Base(it.localPath)] = filepath.ToSlash(it.remoteDir)
+	}
+	if got["readme.txt"] != "Lab01" || got["main.go"] != "Lab01/sub" {
+		t.Fatalf("unexpected expanded folder remoteDirs: %+v", got)
 	}
 }

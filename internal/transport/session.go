@@ -560,8 +560,8 @@ func NewSmuxSession(conn net.Conn, isServer bool, onEnvelope func(core.Session, 
 	smuxCfg := smux.DefaultConfig()
 	smuxCfg.KeepAliveInterval = 3 * time.Second
 	smuxCfg.KeepAliveTimeout = 12 * time.Second
-	smuxCfg.MaxReceiveBuffer = 4 * 1024 * 1024
-	smuxCfg.MaxStreamBuffer = 1024 * 1024
+	smuxCfg.MaxReceiveBuffer = 8 * 1024 * 1024
+	smuxCfg.MaxStreamBuffer = 2 * 1024 * 1024
 
 	var mux *smux.Session
 	var err error

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"image"
 	"image/color"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -1820,6 +1821,9 @@ func (a *App) buildFileDistributeContent(c *ui.Context, pal theme.Palette) {
 			if ui.Button(c, "添加文件...").Padding(4, 12).Clicked() {
 				a.openQueueFilePicker()
 			}
+			if ui.Button(c, "添加文件夹...").Padding(4, 12).Clicked() {
+				a.openQueueFolderPicker()
+			}
 			if len(a.fileQueue) > 0 {
 				if ui.Button(c, "清空队列").Padding(4, 10).Clicked() {
 					a.fileQueue = nil
@@ -1840,13 +1844,20 @@ func (a *App) buildFileDistributeContent(c *ui.Context, pal theme.Palette) {
 		queueScroll.Children(func() {
 			if len(a.fileQueue) == 0 {
 				ui.Box(c).Fill().Center().Padding(20).Children(func() {
-					ui.Text(c, "将文件拖入此处，或点击“添加文件...”加入上传队列").FontSize(12).TextColor(pal.TextMuted)
+					ui.Text(c, "将文件或文件夹拖入此处，或点击“添加文件/文件夹...”加入队列").FontSize(12).TextColor(pal.TextMuted)
 				})
 				return
 			}
 			for idx, p := range a.fileQueue {
 				idx, p := idx, p
+				isDir := false
+				if info, err := os.Stat(p); err == nil && info.IsDir() {
+					isDir = true
+				}
 				ui.Row(c).Key("fq-"+p).FillWidth().Padding(6, 8).Radius(2).Background(pal.Canvas).Border(1, pal.CardBorder).AlignItems(ui.Center).Gap(8).Children(func() {
+					if isDir {
+						ui.Badge(c, "文件夹").Background(pal.Selection).TextColor(pal.Accent)
+					}
 					ui.Text(c, filepath.Base(p)).FontSize(12).Bold()
 					ui.Text(c, p).FontSize(11).TextColor(pal.TextMuted).Grow(1).SingleLine()
 					if ui.Button(c, "移除").Padding(2, 8).Clicked() {
@@ -2001,6 +2012,78 @@ func (a *App) openQueueFilePicker() {
 	}()
 }
 
+func (a *App) openQueueFolderPicker() {
+	go func() {
+		paths, err := mygo.Dialog.Open(mygo.OpenDialogOptions{
+			Title:     "选择要添加到分发队列的文件夹",
+			Directory: true,
+			Multiple:  true,
+		})
+		if err != nil || len(paths) == 0 {
+			return
+		}
+		a.mu.Lock()
+		fw := a.fileDistWin
+		w := a.win
+		a.mu.Unlock()
+		apply := func() {
+			a.AddQueuedFiles(paths)
+			a.statusNote = fmt.Sprintf("已添加 %d 个文件夹到分发队列", len(paths))
+		}
+		if fw != nil {
+			fw.Update(apply)
+		} else if w != nil {
+			w.Update(apply)
+		} else {
+			apply()
+		}
+	}()
+}
+
+type queuedTransferItem struct {
+	localPath string
+	remoteDir string
+}
+
+func expandQueueEntries(queue []string, baseRemoteDir string) []queuedTransferItem {
+	var items []queuedTransferItem
+	for _, p := range queue {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		info, err := os.Stat(p)
+		if err != nil || !info.IsDir() {
+			items = append(items, queuedTransferItem{
+				localPath: p,
+				remoteDir: baseRemoteDir,
+			})
+			continue
+		}
+		parentDir := filepath.Dir(p)
+		_ = filepath.WalkDir(p, func(path string, d fs.DirEntry, walkErr error) error {
+			if walkErr != nil || d == nil || d.IsDir() {
+				return nil
+			}
+			rel, err := filepath.Rel(parentDir, path)
+			if err != nil {
+				return nil
+			}
+			subDir := filepath.Dir(rel)
+			targetDir := baseRemoteDir
+			if subDir != "." && subDir != "" {
+				targetDir = filepath.Join(baseRemoteDir, subDir)
+			}
+			items = append(items, queuedTransferItem{
+				localPath: path,
+				remoteDir: targetDir,
+			})
+			return nil
+		})
+	}
+	return items
+}
+
 func (a *App) DistributeQueue() {
 	if a.opts.Files == nil {
 		return
@@ -2019,14 +2102,19 @@ func (a *App) DistributeQueue() {
 		return
 	}
 	remoteDir := strings.TrimSpace(a.remoteDir)
+	items := expandQueueEntries(queue, remoteDir)
+	if len(items) == 0 {
+		a.statusNote = "队列中没有可发送的文件（空文件夹）"
+		return
+	}
 	autoOpen := a.autoOpenFile
 	a.fileSending = true
-	a.statusNote = fmt.Sprintf("正在向 %d 台学生分发 %d 个文件...", len(targets), len(queue))
+	a.statusNote = fmt.Sprintf("正在向 %d 台学生分发 %d 个文件...", len(targets), len(items))
 	go func() {
 		sent := 0
 		var lastErr error
-		for _, p := range queue {
-			if _, err := a.opts.Files.DistributeFile(context.Background(), p, remoteDir, targets, autoOpen); err != nil {
+		for _, it := range items {
+			if _, err := a.opts.Files.DistributeFile(context.Background(), it.localPath, it.remoteDir, targets, autoOpen); err != nil {
 				lastErr = err
 			} else {
 				sent++
@@ -2035,7 +2123,7 @@ func (a *App) DistributeQueue() {
 		a.mu.Lock()
 		a.fileSending = false
 		if lastErr != nil {
-			a.statusNote = fmt.Sprintf("分发完成 %d/%d（部分失败: %v）", sent, len(queue), lastErr)
+			a.statusNote = fmt.Sprintf("分发完成 %d/%d（部分失败: %v）", sent, len(items), lastErr)
 		} else {
 			a.statusNote = fmt.Sprintf("已成功发送 %d 个文件至 %d 台学生", sent, len(targets))
 		}
