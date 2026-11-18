@@ -139,3 +139,51 @@ func TestTeacherRightSidebarAndActions(t *testing.T) {
 		}
 	}
 }
+
+func TestTeacherRemoteControlModalAndExamDraftBuilder(t *testing.T) {
+	app, tr, cr, _ := newTestTeacherApp()
+	tester := ui.NewTester(app.View, 1280, 820)
+	tester.Frame()
+
+	students := cr.ListStudents()
+	if len(students) == 0 {
+		t.Fatalf("expected demo students")
+	}
+	targetID := students[0].ID
+
+	// Start and stop remote control
+	app.StartRemoteControl(targetID)
+	tester.Frame()
+	if app.RemoteControlID() != targetID {
+		t.Fatalf("expected remoteControlID=%s, got %s", targetID, app.RemoteControlID())
+	}
+	if !tester.HasText("退出远程控制") {
+		t.Fatalf("expected remote control modal to render exit button")
+	}
+	if err := tester.Click("退出远程控制"); err != nil {
+		t.Fatalf("click 退出远程控制 failed: %v", err)
+	}
+	tester.Frame()
+	if app.RemoteControlID() != "" {
+		t.Fatalf("expected remoteControlID cleared after exit")
+	}
+
+	// Multi-question draft & publish
+	app.SetMainTab(TabExamStats)
+	tester.Frame()
+	app.addDraftQuestion()
+	app.addDraftQuestion()
+	app.publishExam()
+	tester.Frame()
+	paper := app.opts.Exam.GetActivePaper()
+	if paper == nil || len(paper.Questions) != 2 {
+		t.Fatalf("expected 2-question published paper, got %+v", paper)
+	}
+
+	// File targets should resolve to all online demo students
+	targets := app.resolveFileTargets()
+	if len(targets) == 0 {
+		t.Fatalf("expected resolved online file targets")
+	}
+	_ = tr
+}

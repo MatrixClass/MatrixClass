@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"image"
 	"image/color"
+	"os"
 	"sort"
 	"strings"
 	"sync"
@@ -13,6 +14,7 @@ import (
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
 	"github.com/egoist/mygo/ui/chart"
+	"github.com/egoist/mygo/ui/video"
 
 	"nexlab/internal/core"
 	"nexlab/internal/protocol"
@@ -83,6 +85,7 @@ type App struct {
 	studentDemoID     string
 	monitoring        bool
 	remoteControlID   string
+	remoteControlOpen bool
 	screenLocked      bool
 	lockMessage       string
 	activeModeLabel   string
@@ -95,24 +98,31 @@ type App struct {
 	useMulticast bool
 
 	// Monitor wall & MyTheatre video bitmaps
-	monitorTiles map[string]*ui.Bitmap
-	theatreFrame *ui.Bitmap
-	theatre      core.TheatreState
-	theatreMedia []string
+	monitorTiles  map[string]*ui.Bitmap
+	remoteBitmap  *ui.Bitmap
+	demoBitmap    *ui.Bitmap
+	theatreFrame  *ui.Bitmap
+	theatrePlayer *ui.VideoPlayer
+	theatre       core.TheatreState
+	theatreMedia  []string
 
 	// Exam builder / publisher state
-	examTitleInput   string
-	examDurInput     float64
-	examPromptInput  string
-	examOptionsInput string
-	examAnswerInput  string
-	examPublished    bool
+	examTitleInput     string
+	examDurInput       float64
+	examKindInput      string
+	examPromptInput    string
+	examOptionsInput   string
+	examAnswerInput    string
+	examPointsInput    float64
+	examDraftQuestions []core.ExamQuestion
+	examPublished      bool
 
 	// File distribution & collection state
 	distributePath string
 	remoteDir      string
 	collectSaveDir string
 	autoOpenFile   bool
+	fileTargetAll  bool
 
 	// Chat & Policy state
 	chatInput         string
@@ -165,13 +175,16 @@ func New(opts Options) *App {
 		theatre:           core.TheatreState{Media: "01_计算机网络拓扑演示.mp4", Duration: 360, Volume: 0.75},
 		examTitleInput:    "随堂小测：计算机网络基础",
 		examDurInput:      10,
+		examKindInput:     "single",
 		examPromptInput:   "UDP 协议提供面向连接、可靠的字节流服务吗？",
 		examOptionsInput:  "是,否",
 		examAnswerInput:   "否",
+		examPointsInput:   100,
 		distributePath:    "D:\\Teaching\\Lab03_PacketGuide.pdf",
 		remoteDir:         "C:\\NexLab\\Recv",
 		collectSaveDir:    "D:\\Submissions\\Class301",
 		autoOpenFile:      true,
+		fileTargetAll:     true,
 		policyMode:        "blacklist",
 		blockedAppsInput:  "steam.exe, wechat.exe, chrome.exe",
 		allowedAppsInput:  "code.exe, wireshark.exe, notepad.exe",
@@ -201,7 +214,9 @@ func (a *App) Invalidate() {
 	w := a.win
 	a.mu.Unlock()
 	if w != nil {
-		w.Invalidate()
+		mygo.RunOnMain(func() {
+			w.Invalidate()
+		})
 	}
 }
 
@@ -260,7 +275,47 @@ func (a *App) UpdateMonitorFrame(studentID string, frame *core.VideoFrame) {
 	if studentID == "" || frame == nil || frame.Width <= 0 || frame.Height <= 0 {
 		return
 	}
+	a.mu.Lock()
 	bmp := a.ensureTileBitmap(studentID, frame.Width, frame.Height)
+	a.mu.Unlock()
+	updateBitmapFromFrame(bmp, frame)
+	a.Invalidate()
+}
+
+// UpdateRemoteFrame updates the live Remote Control interactive screen bitmap.
+func (a *App) UpdateRemoteFrame(studentID string, frame *core.VideoFrame) {
+	if studentID == "" || frame == nil || frame.Width <= 0 || frame.Height <= 0 {
+		return
+	}
+	a.mu.Lock()
+	if a.remoteBitmap == nil {
+		a.remoteBitmap = ui.NewBitmap(image.NewRGBA(image.Rect(0, 0, frame.Width, frame.Height)))
+	}
+	bmp := a.remoteBitmap
+	a.mu.Unlock()
+	updateBitmapFromFrame(bmp, frame)
+	a.Invalidate()
+}
+
+// UpdateDemoFrame updates the Student Demo preview bitmap on the Teacher Console.
+func (a *App) UpdateDemoFrame(studentID string, frame *core.VideoFrame) {
+	if studentID == "" || frame == nil || frame.Width <= 0 || frame.Height <= 0 {
+		return
+	}
+	a.mu.Lock()
+	if a.demoBitmap == nil {
+		a.demoBitmap = ui.NewBitmap(image.NewRGBA(image.Rect(0, 0, frame.Width, frame.Height)))
+	}
+	bmp := a.demoBitmap
+	a.mu.Unlock()
+	updateBitmapFromFrame(bmp, frame)
+	a.Invalidate()
+}
+
+func updateBitmapFromFrame(bmp *ui.Bitmap, frame *core.VideoFrame) {
+	if bmp == nil || frame == nil {
+		return
+	}
 	if len(frame.NV12Y) > 0 && len(frame.NV12UV) > 0 && frame.StrideY > 0 && frame.StrideUV > 0 {
 		bmp.UpdateYUV(&ui.YUVImage{
 			Format:  ui.NV12,
@@ -328,18 +383,16 @@ func placeholderScreenRGBA(w, h, seed int) *image.RGBA {
 		h = 135
 	}
 	img := image.NewRGBA(image.Rect(0, 0, w, h))
-	bgR := uint8(28 + (seed*23)%36)
-	bgG := uint8(52 + (seed*19)%48)
-	bgB := uint8(96 + (seed*31)%70)
+	shade := uint8(36 + (seed*11)%24)
 	for y := range h {
 		for x := range w {
-			c := color.RGBA{R: bgR, G: bgG, B: bgB, A: 255}
+			c := color.RGBA{R: shade, G: shade, B: shade, A: 255}
 			if y < 18 {
-				c = color.RGBA{R: 34, G: 66, B: 118, A: 255}
+				c = color.RGBA{R: 26, G: 26, B: 26, A: 255}
 			} else if x > 14 && x < w-14 && y > 26 && y < h-18 {
-				c = color.RGBA{R: 244, G: 247, B: 252, A: 255}
+				c = color.RGBA{R: 242, G: 242, B: 242, A: 255}
 				if y < 40 {
-					c = color.RGBA{R: 43, G: 87, B: 154, A: 255}
+					c = color.RGBA{R: 64, G: 64, B: 64, A: 255}
 				}
 			}
 			img.SetRGBA(x, y, c)
@@ -366,6 +419,10 @@ func (a *App) View(c *ui.Context) {
 
 	ui.Modal(c, &a.settingsOpen, func() {
 		a.buildSettingsModal(c, pal)
+	})
+
+	ui.Modal(c, &a.remoteControlOpen, func() {
+		a.buildRemoteControlModal(c, pal)
 	})
 }
 
@@ -414,20 +471,7 @@ func (a *App) buildToolbar(c *ui.Context, pal theme.Palette) {
 				a.statusNote = "已切换至网络影院 (MyTheatre)"
 			})
 			a.toolbarToggle(c, pal, "屏幕监控", theme.IconMonitor, &a.monitoring, func() {
-				if a.monitoring {
-					a.mainTab = TabMonitorWall
-					a.activeModeLabel = "屏幕监控"
-					a.statusNote = fmt.Sprintf("屏幕监控墙运行中 (%d FPS, 画质 %d%%)", int(a.monitorFPS), int(a.monitorQual))
-				} else {
-					a.activeModeLabel = "待机监听"
-					a.statusNote = "已停止屏幕监控"
-				}
-				a.sendControlEnvelope(protocol.MsgMonitorControl, core.MonitorConfig{
-					FPS:     int(a.monitorFPS),
-					Quality: int(a.monitorQual),
-					Width:   320,
-					Height:  180,
-				}, nil)
+				a.applyMonitorState()
 			})
 			a.toolbarButton(c, pal, "远程控制", theme.IconRemoteControl, a.remoteControlID != "", func() {
 				a.StartRemoteControl(a.selectedID)
@@ -599,6 +643,9 @@ func (a *App) buildSeatMapTab(c *ui.Context, pal theme.Palette, students []core.
 		ui.Row(c).AlignItems(ui.Center).Gap(8).Children(func() {
 			ui.Text(c, "机房座位拓扑图").FontSize(15).Bold()
 			ui.Badge(c, fmt.Sprintf("显示 %d 台", len(students)))
+			if ui.Button(c, "自动排座").Padding(3, 10).Clicked() {
+				a.autoLayoutSeats()
+			}
 			ui.Spacer(c)
 			ui.Text(c, "提示：单击选中、双击监控，拖动卡片可调换座位").FontSize(11).TextColor(pal.TextMuted)
 		})
@@ -714,12 +761,12 @@ func (a *App) buildMonitorWallTab(c *ui.Context, pal theme.Palette, students []c
 			if a.monitoring {
 				if ui.Button(c, "停止监控").Clicked() {
 					a.monitoring = false
-					a.activeModeLabel = "待机监听"
+					a.applyMonitorState()
 				}
 			} else {
 				if ui.PrimaryButton(c, "开启监控轮询").Clicked() {
 					a.monitoring = true
-					a.activeModeLabel = "屏幕监控"
+					a.applyMonitorState()
 				}
 			}
 		})
@@ -767,10 +814,16 @@ func (a *App) buildMyTheatreTab(c *ui.Context, pal theme.Palette) {
 
 		// Video stage with subtle "mytheatre" watermark when idle
 		ui.Box(c).Grow(1).MinHeight(280).Background(pal.TheatreBg).Radius(3).Center().Clip().Children(func() {
-			if a.theatreFrame != nil {
+			if a.theatrePlayer != nil {
+				if a.theatrePlayer.Ready() {
+					a.theatre.Duration = a.theatrePlayer.Duration().Seconds()
+					a.theatre.Position = a.theatrePlayer.Position().Seconds()
+				}
+				ui.Video(c, a.theatrePlayer).Fill().Fit(ui.Contain)
+			} else if a.theatreFrame != nil {
 				ui.Image(c, a.theatreFrame).Fill().Fit(ui.Contain)
 			}
-			if !a.theatre.Playing || a.theatreFrame == nil {
+			if a.theatrePlayer == nil && (!a.theatre.Playing || a.theatreFrame == nil) {
 				ui.Column(c).Center().Gap(6).Children(func() {
 					ui.Text(c, "mytheatre").FontSize(34).Bold().TextColor(ui.RGBA(255, 255, 255, 0.14))
 					ui.Text(c, fmt.Sprintf("当前影片：%s", a.theatre.Media)).FontSize(12).TextColor(ui.RGBA(212, 212, 212, 0.7))
@@ -786,21 +839,10 @@ func (a *App) buildMyTheatreTab(c *ui.Context, pal theme.Palette) {
 					playLabel = "暂停同步"
 				}
 				if ui.PrimaryButton(c, playLabel).Clicked() {
-					a.theatre.Playing = !a.theatre.Playing
-					if a.theatre.Playing {
-						a.activeModeLabel = "网络影院"
-						a.statusNote = "MyTheatre 正在同步播放: " + a.theatre.Media
-					} else {
-						a.activeModeLabel = "待机监听"
-						a.statusNote = "MyTheatre 已暂停"
-					}
-					a.sendControlEnvelope(protocol.MsgTheatreControl, a.theatre, nil)
+					a.toggleTheatrePlayback()
 				}
 				if ui.Button(c, "停止").Clicked() {
-					a.theatre.Playing = false
-					a.theatre.Position = 0
-					a.activeModeLabel = "待机监听"
-					a.sendControlEnvelope(protocol.MsgTheatreControl, a.theatre, nil)
+					a.stopTheatrePlayback()
 				}
 				if ui.Button(c, "选择本地视频").Clicked() {
 					a.openVideoPicker()
@@ -815,6 +857,9 @@ func (a *App) buildMyTheatreTab(c *ui.Context, pal theme.Palette) {
 			pos := a.theatre.Position
 			if ui.Slider(c, &pos, 0, max(1, a.theatre.Duration)).Label("播放进度").Changed() {
 				a.theatre.Position = pos
+				if a.theatrePlayer != nil {
+					a.theatrePlayer.Seek(time.Duration(pos * float64(time.Second)))
+				}
 				a.sendControlEnvelope(protocol.MsgTheatreControl, a.theatre, nil)
 			}
 		})
@@ -824,10 +869,17 @@ func (a *App) buildMyTheatreTab(c *ui.Context, pal theme.Palette) {
 func (a *App) buildExamStatsTab(c *ui.Context, pal theme.Palette) {
 	var paper *core.ExamPaper
 	var stats core.ExamStats
+	var subs []core.ExamSubmission
 	if a.opts.Exam != nil {
 		paper = a.opts.Exam.GetActivePaper()
 		if paper != nil {
 			stats = a.opts.Exam.ComputeStats(paper.ID)
+			type subLister interface {
+				ListSubmissions(paperID string) []core.ExamSubmission
+			}
+			if lister, ok := a.opts.Exam.(subLister); ok {
+				subs = lister.ListSubmissions(paper.ID)
+			}
 		}
 	}
 
@@ -835,24 +887,42 @@ func (a *App) buildExamStatsTab(c *ui.Context, pal theme.Palette) {
 		ui.Row(c).Gap(12).AlignItems(ui.Stretch).Children(func() {
 			// Left: Quick paper builder & publisher
 			ui.Column(c).Grow(1).Background(pal.Card).Border(1, pal.CardBorder).Radius(3).Padding(12).Gap(8).Children(func() {
-				ui.Text(c, "发布随堂测验").FontSize(14).Bold()
+				ui.Row(c).AlignItems(ui.Center).Children(func() {
+					ui.Text(c, "发布随堂测验").FontSize(14).Bold()
+					ui.Spacer(c)
+					ui.Badge(c, fmt.Sprintf("待发布题目: %d", len(a.examDraftQuestions)))
+				})
 				ui.Text(c, "测验标题").FontSize(12).TextColor(pal.TextMuted)
 				ui.TextInput(c, &a.examTitleInput).Placeholder("输入试卷标题")
-				ui.Text(c, "题目内容").FontSize(12).TextColor(pal.TextMuted)
-				ui.TextInput(c, &a.examPromptInput).Placeholder("输入客观题题干")
-				ui.Text(c, "选项 (逗号分隔)").FontSize(12).TextColor(pal.TextMuted)
-				ui.TextInput(c, &a.examOptionsInput).Placeholder("例如：A,B,C,D")
 				ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
-					ui.Column(c).Grow(1).Gap(4).Children(func() {
-						ui.Text(c, "参考答案").FontSize(12).TextColor(pal.TextMuted)
-						ui.TextInput(c, &a.examAnswerInput)
-					})
 					ui.Column(c).Width(130).Gap(4).Children(func() {
+						ui.Text(c, "题型").FontSize(12).TextColor(pal.TextMuted)
+						ui.Select(c, &a.examKindInput, []string{"single", "multi", "bool", "essay"})
+					})
+					ui.Column(c).Width(110).Gap(4).Children(func() {
+						ui.Text(c, "分值").FontSize(12).TextColor(pal.TextMuted)
+						ui.NumberInput(c, &a.examPointsInput, 1, 100, 5)
+					})
+					ui.Column(c).Width(120).Gap(4).Children(func() {
 						ui.Text(c, "时长(分钟)").FontSize(12).TextColor(pal.TextMuted)
 						ui.NumberInput(c, &a.examDurInput, 1, 120, 1)
 					})
 				})
+				ui.Text(c, "题目内容").FontSize(12).TextColor(pal.TextMuted)
+				ui.TextInput(c, &a.examPromptInput).Placeholder("输入题干内容")
+				ui.Text(c, "选项 (逗号分隔)").FontSize(12).TextColor(pal.TextMuted)
+				ui.TextInput(c, &a.examOptionsInput).Placeholder("例如：A,B,C,D")
+				ui.Text(c, "参考答案 (多选用逗号分隔)").FontSize(12).TextColor(pal.TextMuted)
+				ui.TextInput(c, &a.examAnswerInput)
 				ui.Row(c).Gap(8).Children(func() {
+					if ui.Button(c, "添加到试卷").Clicked() {
+						a.addDraftQuestion()
+					}
+					if len(a.examDraftQuestions) > 0 {
+						if ui.Button(c, "清空题目").Clicked() {
+							a.examDraftQuestions = nil
+						}
+					}
 					if ui.PrimaryButton(c, "下发随堂测验").Clicked() {
 						a.publishExam()
 					}
@@ -872,6 +942,11 @@ func (a *App) buildExamStatsTab(c *ui.Context, pal theme.Palette) {
 					ui.Text(c, "作答统计与正确率").FontSize(14).Bold()
 					ui.Spacer(c)
 					ui.Badge(c, fmt.Sprintf("已交 %d 份 · 均分 %.1f", stats.TotalSubmitted, stats.AverageScore))
+					if paper != nil {
+						if ui.Button(c, "导出CSV").Padding(2, 8).Clicked() {
+							a.exportExamCSV(paper.ID)
+						}
+					}
 				})
 				ui.Text(c, title).FontSize(12).TextColor(pal.TextMuted)
 
@@ -898,6 +973,16 @@ func (a *App) buildExamStatsTab(c *ui.Context, pal theme.Palette) {
 						}
 					}).Height(190).Gap(8).Label("随堂测验正确率图表")
 				}
+
+				if len(subs) > 0 {
+					ui.Text(c, "学生答卷明细").FontSize(12).Bold()
+					for _, sub := range subs {
+						ui.Row(c).Key("sub-" + sub.StudentID).Padding(4, 8).Background(pal.Canvas).Border(1, pal.CardBorder).Radius(2).AlignItems(ui.Center).Children(func() {
+							ui.Text(c, sub.StudentID).FontSize(12).Grow(1)
+							ui.Text(c, fmt.Sprintf("%d / %d 分", sub.Score, sub.MaxScore)).FontSize(12).Bold()
+						})
+					}
+				}
 			})
 		})
 	})
@@ -911,9 +996,16 @@ func (a *App) buildFilesTab(c *ui.Context, pal theme.Palette) {
 
 	ui.Column(c).Grow(1).Padding(12).Gap(10).Children(func() {
 		ui.Column(c).Background(pal.Card).Border(1, pal.CardBorder).Radius(3).Padding(12).Gap(8).Children(func() {
-			ui.Text(c, "文件分发与作业收集").FontSize(14).Bold()
+			ui.Row(c).AlignItems(ui.Center).Children(func() {
+				ui.Text(c, "文件分发与作业收集").FontSize(14).Bold()
+				ui.Spacer(c)
+				ui.Checkbox(c, &a.fileTargetAll, "发送/收取全部在线学生 (取消则仅选中学生)")
+			})
 			ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
 				ui.TextInput(c, &a.distributePath).Placeholder("本地分发文件路径").Grow(1)
+				if ui.Button(c, "选择文件").Clicked() {
+					a.openDistributeFilePicker()
+				}
 				ui.TextInput(c, &a.remoteDir).Placeholder("学生机接收目录").Width(180)
 				ui.Checkbox(c, &a.autoOpenFile, "到达后自动打开")
 				if ui.PrimaryButton(c, "发送文件").Clicked() {
@@ -922,6 +1014,9 @@ func (a *App) buildFilesTab(c *ui.Context, pal theme.Palette) {
 			})
 			ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
 				ui.TextInput(c, &a.collectSaveDir).Placeholder("作业回收保存目录").Grow(1)
+				if ui.Button(c, "选择目录").Clicked() {
+					a.openCollectDirPicker()
+				}
 				if ui.Button(c, "一键收取全班作业").Clicked() {
 					a.CollectHomework()
 				}
@@ -978,6 +1073,9 @@ func (a *App) buildRightSidebar(c *ui.Context, pal theme.Palette, students []cor
 				if a.opts.Media != nil {
 					a.opts.Media.SetVolume(float32(a.volume / 100.0))
 				}
+				if a.theatrePlayer != nil {
+					a.theatrePlayer.SetVolume(a.volume / 100.0)
+				}
 				a.theatre.Volume = float32(a.volume / 100.0)
 			}
 
@@ -986,8 +1084,12 @@ func (a *App) buildRightSidebar(c *ui.Context, pal theme.Palette, students []cor
 				ui.Spacer(c)
 				ui.Text(c, fmt.Sprintf("%d%% · %d FPS", int(a.monitorQual), int(a.monitorFPS))).FontSize(11).TextColor(pal.Accent)
 			})
-			ui.Slider(c, &a.monitorQual, 30, 95).Label("监控画质滑块")
-			ui.Slider(c, &a.monitorFPS, 5, 30).Label("监控帧率滑块")
+			if ui.Slider(c, &a.monitorQual, 30, 95).Label("监控画质滑块").Changed() && a.monitoring {
+				a.sendMonitorConfig()
+			}
+			if ui.Slider(c, &a.monitorFPS, 5, 30).Label("监控帧率滑块").Changed() && a.monitoring {
+				a.sendMonitorConfig()
+			}
 		})
 	})
 }
@@ -1141,6 +1243,92 @@ func (a *App) buildSettingsModal(c *ui.Context, pal theme.Palette) {
 	})
 }
 
+func (a *App) buildRemoteControlModal(c *ui.Context, pal theme.Palette) {
+	targetLabel := a.remoteControlID
+	for _, st := range a.listStudents() {
+		if st.ID == a.remoteControlID {
+			targetLabel = fmt.Sprintf("%s (%s · %s)", st.MachineName, st.StudentNo, st.IP)
+			break
+		}
+	}
+
+	ui.Column(c).Width(880).Height(580).Background(pal.Canvas).Border(1, pal.CardBorder).Radius(4).Padding(12).Gap(8).Children(func() {
+		ui.Row(c).AlignItems(ui.Center).Gap(8).Children(func() {
+			ui.Text(c, "远程控制: "+targetLabel).FontSize(14).Bold()
+			ui.Badge(c, "实时交互").Background(pal.Selection).TextColor(pal.Text)
+			ui.Spacer(c)
+			if ui.Button(c, "发送 Esc").Padding(3, 10).Clicked() {
+				a.sendRemoteInput(core.RemoteInputEvent{Kind: core.InputKeyDown, VKCode: 0x1B})
+				a.sendRemoteInput(core.RemoteInputEvent{Kind: core.InputKeyUp, VKCode: 0x1B})
+			}
+			if ui.PrimaryButton(c, "退出远程控制").Padding(4, 12).Clicked() {
+				a.StopRemoteControl()
+			}
+		})
+
+		a.mu.Lock()
+		bmp := a.remoteBitmap
+		if bmp == nil {
+			bmp = a.monitorTiles[a.remoteControlID]
+		}
+		a.mu.Unlock()
+
+		stage := ui.Box(c).Grow(1).FillWidth().Background(pal.TheatreBg).Border(1, pal.CardBorder).Radius(2).Center().Focusable().Clip()
+		const stageW, stageH = 856.0, 490.0
+		stage.HandleInput(func(ev ui.InputEvent) bool {
+			nx := float64(ev.X) / stageW
+			ny := float64(ev.Y) / stageH
+			if b := stage.Bounds(); b.W > 0 && b.H > 0 {
+				nx = float64(ev.X) / float64(b.W)
+				ny = float64(ev.Y) / float64(b.H)
+			}
+			if nx < 0 {
+				nx = 0
+			} else if nx > 1 {
+				nx = 1
+			}
+			if ny < 0 {
+				ny = 0
+			} else if ny > 1 {
+				ny = 1
+			}
+
+			switch ev.Kind {
+			case ui.InputPointerMove:
+				a.sendRemoteInput(core.RemoteInputEvent{Kind: core.InputMouseMove, X: nx, Y: ny})
+				return true
+			case ui.InputPointerDown:
+				a.sendRemoteInput(core.RemoteInputEvent{Kind: core.InputMouseDown, X: nx, Y: ny, Button: mapUIButton(ev.Button)})
+				return true
+			case ui.InputPointerUp:
+				a.sendRemoteInput(core.RemoteInputEvent{Kind: core.InputMouseUp, X: nx, Y: ny, Button: mapUIButton(ev.Button)})
+				return true
+			case ui.InputScroll:
+				a.sendRemoteInput(core.RemoteInputEvent{Kind: core.InputMouseWheel, Delta: int(-ev.DY * 120)})
+				return true
+			case ui.InputKeyDown:
+				if vk := uiKeyToVK(ev.Key); vk != 0 {
+					a.sendRemoteInput(core.RemoteInputEvent{Kind: core.InputKeyDown, VKCode: vk})
+					return true
+				}
+			case ui.InputKeyUp:
+				if vk := uiKeyToVK(ev.Key); vk != 0 {
+					a.sendRemoteInput(core.RemoteInputEvent{Kind: core.InputKeyUp, VKCode: vk})
+					return true
+				}
+			}
+			return false
+		})
+		stage.Children(func() {
+			if bmp != nil {
+				ui.Image(c, bmp).Fill().Fit(ui.Contain)
+			} else {
+				ui.Text(c, "正在请求学生机实时画面...").FontSize(13).TextColor(ui.Hex("#D4D4D4"))
+			}
+		})
+	})
+}
+
 // Action methods exported for menu bar, toolbar, and tests.
 
 func (a *App) ToggleBroadcast() {
@@ -1196,28 +1384,74 @@ func (a *App) ToggleStudentDemo(studentID string) {
 		}
 	}
 	if a.studentDemoID != "" {
+		prev := a.studentDemoID
 		a.studentDemoID = ""
 		a.activeModeLabel = "待机监听"
 		a.statusNote = "已结束学生演示"
-		a.sendControlEnvelope(protocol.MsgStudentDemoReq, map[string]any{"active": false}, nil)
+		a.sendControlEnvelope(protocol.MsgStudentDemoReq, map[string]any{"active": false, "student_id": prev}, []string{prev})
+		a.sendControlEnvelope(protocol.MsgBroadcastStop, nil, nil)
+		return
+	}
+	if studentID == "" {
+		a.statusNote = "暂无在线学生可用于学生演示"
 		return
 	}
 	a.studentDemoID = studentID
 	a.activeModeLabel = "学生演示"
 	a.statusNote = "正在全班转播学生演示: " + studentID
-	a.sendControlEnvelope(protocol.MsgStudentDemoReq, map[string]any{"active": true, "student_id": studentID}, nil)
+	a.sendControlEnvelope(protocol.MsgStudentDemoReq, map[string]any{"active": true, "student_id": studentID}, []string{studentID})
+	var viewers []string
+	for _, st := range a.listStudents() {
+		if st.ID != studentID && st.Status != core.StatusOffline {
+			viewers = append(viewers, st.ID)
+		}
+	}
+	if len(viewers) > 0 {
+		a.sendControlEnvelope(protocol.MsgBroadcastStart, core.BroadcastConfig{
+			Mode:         core.BroadcastWindowed,
+			WithAudio:    false,
+			FPS:          15,
+			Quality:      int(a.monitorQual),
+			UseMulticast: a.useMulticast,
+			SourceID:     studentID,
+		}, viewers)
+	}
 }
 
 func (a *App) ToggleMonitor() {
 	a.monitoring = !a.monitoring
+	a.applyMonitorState()
+}
+
+func (a *App) applyMonitorState() {
 	if a.monitoring {
 		a.mainTab = TabMonitorWall
 		a.activeModeLabel = "屏幕监控"
-		a.statusNote = "屏幕监控墙已启动"
+		a.statusNote = fmt.Sprintf("屏幕监控墙运行中 (%d FPS, 画质 %d%%)", int(a.monitorFPS), int(a.monitorQual))
 	} else {
 		a.activeModeLabel = "待机监听"
-		a.statusNote = "屏幕监控已停止"
+		a.statusNote = "已停止屏幕监控"
 	}
+	a.sendMonitorConfig()
+}
+
+func (a *App) sendMonitorConfig() {
+	fps := int(a.monitorFPS)
+	if !a.monitoring {
+		fps = 0
+	}
+	a.sendControlEnvelope(protocol.MsgMonitorControl, struct {
+		Active bool `json:"active"`
+		core.MonitorConfig
+	}{
+		Active: a.monitoring,
+		MonitorConfig: core.MonitorConfig{
+			FPS:     fps,
+			Quality: int(a.monitorQual),
+			Width:   320,
+			Height:  180,
+		},
+	}, nil)
 }
 
 func (a *App) StartRemoteControl(studentID string) {
@@ -1225,10 +1459,31 @@ func (a *App) StartRemoteControl(studentID string) {
 		a.statusNote = "请先在座位图或列表中选择一台学生机"
 		return
 	}
+	if a.remoteControlID != "" && a.remoteControlID != studentID {
+		a.sendControlEnvelope(protocol.MsgRemoteControlReq, map[string]any{"student_id": a.remoteControlID, "enabled": false}, []string{a.remoteControlID})
+	}
 	a.remoteControlID = studentID
+	a.remoteControlOpen = true
 	a.activeModeLabel = "远程控制"
 	a.statusNote = "已发起远程控制请求 -> " + studentID
 	a.sendControlEnvelope(protocol.MsgRemoteControlReq, map[string]any{"student_id": studentID, "enabled": true}, []string{studentID})
+}
+
+func (a *App) StopRemoteControl() {
+	if a.remoteControlID != "" {
+		a.sendControlEnvelope(protocol.MsgRemoteControlReq, map[string]any{"student_id": a.remoteControlID, "enabled": false}, []string{a.remoteControlID})
+	}
+	a.remoteControlID = ""
+	a.remoteControlOpen = false
+	a.activeModeLabel = "待机监听"
+	a.statusNote = "已结束远程控制"
+}
+
+func (a *App) sendRemoteInput(ev core.RemoteInputEvent) {
+	if a.remoteControlID == "" {
+		return
+	}
+	a.sendControlEnvelope(protocol.MsgRemoteInputEvent, ev, []string{a.remoteControlID})
 }
 
 func (a *App) ToggleScreenLock() {
@@ -1266,10 +1521,10 @@ func (a *App) ApproveHandRaise(studentID string) {
 	if a.opts.Classroom != nil {
 		a.opts.Classroom.RaiseHand(studentID, false)
 	}
-	a.studentDemoID = studentID
-	a.activeModeLabel = "学生演示"
-	a.statusNote = "已批准举手学生演示: " + studentID
 	a.sendControlEnvelope(protocol.MsgHandClear, map[string]any{"student_id": studentID, "approved": true}, []string{studentID})
+	a.studentDemoID = ""
+	a.ToggleStudentDemo(studentID)
+	a.statusNote = "已批准举手学生演示: " + studentID
 }
 
 func (a *App) clearAllHands() {
@@ -1343,25 +1598,78 @@ func (a *App) DistributeFile() {
 	if a.opts.Files == nil {
 		return
 	}
-	task, err := a.opts.Files.DistributeFile(context.Background(), a.distributePath, a.remoteDir, nil, a.autoOpenFile)
-	if err != nil {
-		a.statusNote = "文件分发失败: " + err.Error()
+	targets := a.resolveFileTargets()
+	if len(targets) == 0 {
+		a.statusNote = "没有可分发的在线学生目标"
 		return
 	}
-	a.statusNote = "文件已分发: " + task.FileName
+	localPath := a.distributePath
+	remoteDir := a.remoteDir
+	autoOpen := a.autoOpenFile
+	a.statusNote = "正在分发文件..."
+	go func() {
+		task, err := a.opts.Files.DistributeFile(context.Background(), localPath, remoteDir, targets, autoOpen)
+		a.mu.Lock()
+		if err != nil {
+			a.statusNote = "文件分发失败: " + err.Error()
+		} else {
+			a.statusNote = "文件已分发: " + task.FileName
+		}
+		a.mu.Unlock()
+		a.Invalidate()
+	}()
 }
 
 func (a *App) CollectHomework() {
 	if a.opts.Files == nil {
 		return
 	}
-	tasks, err := a.opts.Files.CollectFiles(context.Background(), a.remoteDir, a.collectSaveDir, nil)
-	if err != nil {
-		a.statusNote = "收取作业失败: " + err.Error()
+	targets := a.resolveFileTargets()
+	if len(targets) == 0 {
+		a.statusNote = "没有可收取作业的在线学生目标"
 		return
 	}
+	remoteDir := a.remoteDir
+	saveDir := a.collectSaveDir
 	a.mainTab = TabFiles
-	a.statusNote = fmt.Sprintf("已发起作业回收 (%d 个任务)", len(tasks))
+	a.statusNote = "正在收取学生作业..."
+	go func() {
+		tasks, err := a.opts.Files.CollectFiles(context.Background(), remoteDir, saveDir, targets)
+		a.mu.Lock()
+		if err != nil {
+			a.statusNote = "收取作业失败: " + err.Error()
+		} else {
+			a.statusNote = fmt.Sprintf("作业回收完成 (%d 个文件)", len(tasks))
+		}
+		a.mu.Unlock()
+		a.Invalidate()
+	}()
+}
+
+func (a *App) resolveFileTargets() []string {
+	if !a.fileTargetAll && a.selectedID != "" {
+		return []string{a.selectedID}
+	}
+	var targets []string
+	for _, st := range a.listStudents() {
+		if st.Status != core.StatusOffline {
+			targets = append(targets, st.ID)
+		}
+	}
+	if len(targets) == 0 && a.selectedID != "" {
+		targets = []string{a.selectedID}
+	}
+	return targets
+}
+
+func (a *App) autoLayoutSeats() {
+	type autoLayouter interface {
+		AutoLayoutSeats(rows, cols int)
+	}
+	if al, ok := a.opts.Classroom.(autoLayouter); ok {
+		al.AutoLayoutSeats(0, 4)
+		a.statusNote = "已按学号自动排列机房座位"
+	}
 }
 
 func (a *App) swapStudentSeats(idA, idB string) {
@@ -1389,25 +1697,160 @@ func (a *App) publishExam() {
 	if a.opts.Exam == nil {
 		return
 	}
+	questions := append([]core.ExamQuestion(nil), a.examDraftQuestions...)
+	if len(questions) == 0 {
+		questions = []core.ExamQuestion{a.buildCurrentDraftQuestion("q1")}
+	}
 	paper := core.ExamPaper{
 		ID:          fmt.Sprintf("exam-%d", time.Now().Unix()),
 		Title:       a.examTitleInput,
 		DurationSec: int(a.examDurInput) * 60,
-		Questions: []core.ExamQuestion{
-			{
-				ID:      "q1",
-				Kind:    core.QuestionSingle,
-				Prompt:  a.examPromptInput,
-				Options: splitCSV(a.examOptionsInput),
-				Answer:  []string{strings.TrimSpace(a.examAnswerInput)},
-				Points:  100,
-			},
-		},
+		Questions:   questions,
 	}
 	a.opts.Exam.PublishPaper(paper)
 	a.examPublished = true
 	a.sendControlEnvelope(protocol.MsgExamPublish, paper, nil)
-	a.statusNote = "已发布随堂测验: " + paper.Title
+	a.statusNote = fmt.Sprintf("已发布随堂测验: %s (%d 题)", paper.Title, len(questions))
+}
+
+func (a *App) buildCurrentDraftQuestion(id string) core.ExamQuestion {
+	kind := core.QuestionKind(a.examKindInput)
+	if kind == "" {
+		kind = core.QuestionSingle
+	}
+	pts := int(a.examPointsInput)
+	if pts <= 0 {
+		pts = 20
+	}
+	var opts []string
+	if kind != core.QuestionEssay {
+		opts = splitCSV(a.examOptionsInput)
+	}
+	ans := splitCSV(a.examAnswerInput)
+	return core.ExamQuestion{
+		ID:      id,
+		Kind:    kind,
+		Prompt:  a.examPromptInput,
+		Options: opts,
+		Answer:  ans,
+		Points:  pts,
+	}
+}
+
+func (a *App) addDraftQuestion() {
+	id := fmt.Sprintf("q%d", len(a.examDraftQuestions)+1)
+	q := a.buildCurrentDraftQuestion(id)
+	if strings.TrimSpace(q.Prompt) == "" {
+		a.statusNote = "请先填写题干内容"
+		return
+	}
+	a.examDraftQuestions = append(a.examDraftQuestions, q)
+	a.statusNote = fmt.Sprintf("已添加第 %d 题到待发布试卷", len(a.examDraftQuestions))
+}
+
+func (a *App) exportExamCSV(paperID string) {
+	type csvExporter interface {
+		ExportResultsCSV(paperID string) ([]byte, error)
+	}
+	exp, ok := a.opts.Exam.(csvExporter)
+	if !ok {
+		return
+	}
+	data, err := exp.ExportResultsCSV(paperID)
+	if err != nil {
+		a.statusNote = "导出成绩失败: " + err.Error()
+		return
+	}
+	go func() {
+		path, err := mygo.Dialog.Save(mygo.SaveDialogOptions{
+			Title:       "导出随堂测验成绩 (CSV)",
+			DefaultPath: paperID + "_results.csv",
+			Filters:     []mygo.FileFilter{{Name: "CSV 表格", Extensions: []string{"csv"}}},
+		})
+		if err != nil || path == "" {
+			return
+		}
+		note := "成绩已导出: " + path
+		if werr := os.WriteFile(path, data, 0o644); werr != nil {
+			note = "导出写入失败: " + werr.Error()
+		}
+		a.mu.Lock()
+		a.statusNote = note
+		a.mu.Unlock()
+		a.Invalidate()
+	}()
+}
+
+func (a *App) toggleTheatrePlayback() {
+	a.theatre.Playing = !a.theatre.Playing
+	if a.theatrePlayer != nil {
+		if a.theatre.Playing {
+			a.theatrePlayer.Play()
+		} else {
+			a.theatrePlayer.Pause()
+		}
+	}
+	if a.theatre.Playing {
+		a.activeModeLabel = "网络影院"
+		a.statusNote = "MyTheatre 正在同步播放: " + a.theatre.Media
+		a.sendControlEnvelope(protocol.MsgBroadcastStart, core.BroadcastConfig{
+			Mode:         core.BroadcastWindowed,
+			WithAudio:    true,
+			FPS:          20,
+			Quality:      int(a.monitorQual),
+			UseMulticast: a.useMulticast,
+			SourceID:     a.teacherID,
+		}, nil)
+	} else {
+		a.activeModeLabel = "待机监听"
+		a.statusNote = "MyTheatre 已暂停"
+		a.sendControlEnvelope(protocol.MsgBroadcastStop, nil, nil)
+	}
+	a.sendControlEnvelope(protocol.MsgTheatreControl, a.theatre, nil)
+}
+
+func (a *App) stopTheatrePlayback() {
+	a.theatre.Playing = false
+	a.theatre.Position = 0
+	if a.theatrePlayer != nil {
+		a.theatrePlayer.Pause()
+		a.theatrePlayer.Seek(0)
+	}
+	a.activeModeLabel = "待机监听"
+	a.statusNote = "MyTheatre 已停止"
+	a.sendControlEnvelope(protocol.MsgBroadcastStop, nil, nil)
+	a.sendControlEnvelope(protocol.MsgTheatreControl, a.theatre, nil)
+}
+
+func (a *App) openDistributeFilePicker() {
+	go func() {
+		paths, err := mygo.Dialog.Open(mygo.OpenDialogOptions{
+			Title: "选择要分发给学生的教学文件",
+		})
+		if err != nil || len(paths) == 0 {
+			return
+		}
+		a.mu.Lock()
+		a.distributePath = paths[0]
+		a.mu.Unlock()
+		a.Invalidate()
+	}()
+}
+
+func (a *App) openCollectDirPicker() {
+	go func() {
+		paths, err := mygo.Dialog.Open(mygo.OpenDialogOptions{
+			Title:     "选择作业回收保存目录",
+			Directory: true,
+		})
+		if err != nil || len(paths) == 0 {
+			return
+		}
+		a.mu.Lock()
+		a.collectSaveDir = paths[0]
+		a.mu.Unlock()
+		a.Invalidate()
+	}()
 }
 
 func (a *App) openVideoPicker() {
@@ -1421,11 +1864,43 @@ func (a *App) openVideoPicker() {
 		if err != nil || len(paths) == 0 {
 			return
 		}
-		a.mu.Lock()
-		a.theatre.Media = paths[0]
-		a.mu.Unlock()
-		a.Invalidate()
+		path := paths[0]
+		if a.win != nil {
+			a.win.Update(func() {
+				a.loadLocalVideo(path)
+			})
+		} else {
+			a.loadLocalVideo(path)
+		}
 	}()
+}
+
+func (a *App) loadLocalVideo(path string) {
+	if a.theatrePlayer != nil {
+		a.theatrePlayer.Close()
+		a.theatrePlayer = nil
+	}
+	p, err := video.Open(path)
+	if err != nil {
+		a.theatre.Media = path
+		a.statusNote = "视频打开失败 (改用屏幕演示): " + err.Error()
+		return
+	}
+	p.SetVolume(a.volume / 100.0)
+	a.theatrePlayer = p
+	a.theatre.Media = path
+	a.theatre.Playing = true
+	a.activeModeLabel = "网络影院"
+	a.statusNote = "MyTheatre 正在播放: " + path
+	a.sendControlEnvelope(protocol.MsgBroadcastStart, core.BroadcastConfig{
+		Mode:         core.BroadcastWindowed,
+		WithAudio:    true,
+		FPS:          20,
+		Quality:      int(a.monitorQual),
+		UseMulticast: a.useMulticast,
+		SourceID:     a.teacherID,
+	}, nil)
+	a.sendControlEnvelope(protocol.MsgTheatreControl, a.theatre, nil)
 }
 
 func (a *App) sendControlEnvelope(msgType protocol.MsgType, payload any, targetIDs []string) {
@@ -1529,3 +2004,92 @@ func (a *App) MonitorQual() float64 {
 func (a *App) Broadcasting() bool { return a.broadcasting }
 func (a *App) ScreenLocked() bool { return a.screenLocked }
 func (a *App) SelectedID() string   { return a.selectedID }
+func (a *App) VoiceActive() bool  { return a.voiceActive }
+func (a *App) Monitoring() bool   { return a.monitoring }
+func (a *App) RemoteControlID() string {
+	return a.remoteControlID
+}
+func (a *App) StudentDemoID() string {
+	return a.studentDemoID
+}
+func (a *App) TheatrePlaying() bool {
+	return a.theatre.Playing
+}
+
+func mapUIButton(btn int) int {
+	switch btn {
+	case 1:
+		return 2 // UI secondary -> Win32 right
+	case 2:
+		return 1 // UI middle -> Win32 middle
+	default:
+		return 0
+	}
+}
+
+func uiKeyToVK(k ui.Key) uint16 {
+	switch {
+	case k >= ui.KeyA && k <= ui.KeyZ:
+		return uint16('A' + (k - ui.KeyA))
+	case k >= ui.Key0 && k <= ui.Key9:
+		return uint16('0' + (k - ui.Key0))
+	case k >= ui.KeyF1 && k <= ui.KeyF12:
+		return uint16(0x70 + (k - ui.KeyF1))
+	}
+	switch k {
+	case ui.KeyEnter:
+		return 0x0D
+	case ui.KeyEscape:
+		return 0x1B
+	case ui.KeyBackspace:
+		return 0x08
+	case ui.KeyTab:
+		return 0x09
+	case ui.KeySpace:
+		return 0x20
+	case ui.KeyDelete:
+		return 0x2E
+	case ui.KeyInsert:
+		return 0x2D
+	case ui.KeyHome:
+		return 0x24
+	case ui.KeyEnd:
+		return 0x23
+	case ui.KeyPageUp:
+		return 0x21
+	case ui.KeyPageDown:
+		return 0x22
+	case ui.KeyLeft:
+		return 0x25
+	case ui.KeyUp:
+		return 0x26
+	case ui.KeyRight:
+		return 0x27
+	case ui.KeyDown:
+		return 0x28
+	case ui.KeyMinus:
+		return 0xBD
+	case ui.KeyEqual:
+		return 0xBB
+	case ui.KeyComma:
+		return 0xBC
+	case ui.KeyPeriod:
+		return 0xBE
+	case ui.KeySlash:
+		return 0xBF
+	case ui.KeySemicolon:
+		return 0xBA
+	case ui.KeyQuote:
+		return 0xDE
+	case ui.KeyBracketLeft:
+		return 0xDB
+	case ui.KeyBracketRight:
+		return 0xDD
+	case ui.KeyBackslash:
+		return 0xDC
+	case ui.KeyBackquote:
+		return 0xC0
+	default:
+		return 0
+	}
+}
