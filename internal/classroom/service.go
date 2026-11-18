@@ -199,6 +199,25 @@ func (s *Service) UpdateTelemetry(id string, rttMs int, lossRate float64) error 
 	return nil
 }
 
+func (s *Service) TouchStudent(id string) {
+	s.mu.Lock()
+	st, ok := s.students[id]
+	if !ok {
+		s.mu.Unlock()
+		return
+	}
+	st.LastSeen = time.Now()
+	var callbacks []func()
+	if st.Status == core.StatusOffline {
+		st.Status = core.StatusOnline
+		callbacks = s.snapshotListenersLocked()
+	}
+	s.students[id] = st
+	s.mu.Unlock()
+
+	notifyListeners(callbacks)
+}
+
 func (s *Service) MarkOfflineStale(timeout time.Duration) []string {
 	cutoff := time.Now().Add(-timeout)
 	s.mu.Lock()

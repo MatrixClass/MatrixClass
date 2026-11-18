@@ -152,6 +152,8 @@ type Manager struct {
 	mcastConfirmed   map[*SmuxSession]bool
 	multicastEnabled atomic.Bool
 	mcastAckSent     atomic.Bool
+	reconnecting     atomic.Bool
+	studentChannel   string
 
 	ringSize int
 	ring     []ringEntry
@@ -341,10 +343,23 @@ func (m *Manager) StartStudent(ctx context.Context, channel string) error {
 	}
 	m.role = core.RoleStudent
 	m.ctx, m.cancel = context.WithCancel(ctx)
+	m.studentChannel = channel
+	m.mu.Unlock()
+
+	return m.connectStudentOnce(channel)
+}
+
+func (m *Manager) connectStudentOnce(channel string) error {
+	m.mu.RLock()
+	if m.closed || m.ctx == nil || m.ctx.Err() != nil {
+		m.mu.RUnlock()
+		return ErrConnClosed
+	}
+	ctx := m.ctx
 	teacherAddr := m.explicitTeacherAddr
 	dPort := m.discoveryCfg.Port
 	explicitMcast := m.explicitMcastListen
-	m.mu.Unlock()
+	m.mu.RUnlock()
 
 	var discovered DiscoveredTeacher
 	if teacherAddr == "" {
@@ -352,7 +367,7 @@ func (m *Manager) StartStudent(ctx context.Context, channel string) error {
 		if dPort <= 0 {
 			listenAddr = fmt.Sprintf(":%d", DefaultDiscoveryPort)
 		}
-		d, err := ListenDiscovery(m.ctx, listenAddr, channel)
+		d, err := ListenDiscovery(ctx, listenAddr, channel)
 		if err != nil {
 			return err
 		}
@@ -375,6 +390,7 @@ func (m *Manager) StartStudent(ctx context.Context, channel string) error {
 	}
 	sess.SetOnClose(func(closed core.Session) {
 		m.removeSession(closed.ID())
+		m.scheduleStudentReconnect()
 	})
 	m.addSession(sess)
 
@@ -395,6 +411,48 @@ func (m *Manager) StartStudent(ctx context.Context, channel string) error {
 		cb(sess)
 	}
 	return nil
+}
+
+func (m *Manager) scheduleStudentReconnect() {
+	m.mu.RLock()
+	isStudent := m.role == core.RoleStudent
+	closed := m.closed
+	ctx := m.ctx
+	channel := m.studentChannel
+	m.mu.RUnlock()
+	if !isStudent || closed || ctx == nil || ctx.Err() != nil {
+		return
+	}
+	if !m.reconnecting.CompareAndSwap(false, true) {
+		return
+	}
+	go func() {
+		defer m.reconnecting.Store(false)
+		backoff := 500 * time.Millisecond
+		const maxBackoff = 5 * time.Second
+		for {
+			m.mu.RLock()
+			stillOpen := !m.closed && m.ctx != nil && m.ctx.Err() == nil
+			m.mu.RUnlock()
+			if !stillOpen {
+				return
+			}
+			timer := time.NewTimer(backoff)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return
+			case <-timer.C:
+			}
+			if err := m.connectStudentOnce(channel); err == nil {
+				return
+			}
+			backoff *= 2
+			if backoff > maxBackoff {
+				backoff = maxBackoff
+			}
+		}
+	}()
 }
 
 func (m *Manager) startMulticastReceiver(addrStr string) error {

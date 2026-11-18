@@ -138,6 +138,7 @@ func NewRuntime(channel, studentID, studentNo, teacherAddr, recvDir string) (*Ru
 func (rt *Runtime) wireHandlers() {
 	rt.Transport.OnSession(func(sess core.Session) {
 		rt.Files.SetTeacherSession(sess)
+		rt.App.SetStatusNote("已连接频道: " + rt.channel)
 		go rt.acceptFileStreams(sess)
 		env, err := protocol.NewEnvelope(protocol.MsgStudentRegister, rt.studentID, core.StudentInfo{
 			ID:          rt.studentID,
@@ -407,6 +408,10 @@ func (rt *Runtime) runScreenStream(ctx context.Context, kind string, maxW, maxH,
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+			if len(rt.Transport.Sessions()) == 0 {
+				seq = 0
+				continue
+			}
 			frame, err := rt.Media.CaptureScreenMax(maxW, maxH)
 			if err != nil || frame == nil {
 				continue

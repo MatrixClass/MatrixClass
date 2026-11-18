@@ -464,3 +464,67 @@ func TestControlEnvelopeNotBlockedByMediaBurst(t *testing.T) {
 		}
 	}
 }
+
+func TestStudentAutoReconnectOnSessionDrop(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	teacher := NewManager(WithDiscoveryConfig(DiscoveryConfig{Port: 0}))
+	defer teacher.Close()
+	tSessCh := make(chan core.Session, 4)
+	teacher.OnSession(func(s core.Session) {
+		tSessCh <- s
+	})
+	if err := teacher.StartTeacher(ctx, "127.0.0.1:0", protocol.DiscoveryBeacon{Channel: "Lab-Reconn", KCPPort: 1}); err != nil {
+		t.Fatalf("StartTeacher: %v", err)
+	}
+
+	student := NewManager(
+		WithDiscoveryConfig(DiscoveryConfig{Port: 0}),
+		WithTeacherAddr(teacher.listener.Addr().String()),
+	)
+	defer student.Close()
+	sSessCh := make(chan core.Session, 4)
+	student.OnSession(func(s core.Session) {
+		sSessCh <- s
+	})
+	if err := student.StartStudent(ctx, "Lab-Reconn"); err != nil {
+		t.Fatalf("StartStudent: %v", err)
+	}
+	pingEnv, _ := protocol.NewEnvelope(protocol.MsgPing, "stu-reconn", nil)
+	if err := student.SendTo("", pingEnv); err != nil {
+		t.Fatalf("initial student ping: %v", err)
+	}
+
+	select {
+	case <-tSessCh:
+	case <-ctx.Done():
+		t.Fatalf("timed out waiting for initial teacher session")
+	}
+	var firstStudentSess core.Session
+	select {
+	case firstStudentSess = <-sSessCh:
+	case <-ctx.Done():
+		t.Fatalf("timed out waiting for initial student session")
+	}
+
+	// Simulate unexpected session drop on student side.
+	_ = firstStudentSess.Close()
+
+	// Student should automatically reconnect and invoke OnSession again.
+	select {
+	case <-sSessCh:
+	case <-ctx.Done():
+		t.Fatalf("timed out waiting for student auto-reconnect")
+	}
+
+	ping2, _ := protocol.NewEnvelope(protocol.MsgPing, "stu-reconn", nil)
+	if err := student.SendTo("", ping2); err != nil {
+		t.Fatalf("reconnected student ping: %v", err)
+	}
+	select {
+	case <-tSessCh:
+	case <-ctx.Done():
+		t.Fatalf("timed out waiting for reconnected teacher session")
+	}
+}

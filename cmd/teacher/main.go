@@ -189,6 +189,24 @@ func (rt *Runtime) wireHandlers() {
 						_ = sess.SendEnvelope(lEnv)
 					}
 				}
+				if rt.App.Monitoring() {
+					if mEnv, err := protocol.NewEnvelope(protocol.MsgMonitorControl, rt.teacherID, struct {
+						Active bool `json:"active"`
+						core.MonitorConfig
+					}{
+						Active: true,
+						MonitorConfig: core.MonitorConfig{
+							Width:        320,
+							Height:       180,
+							FPS:          int(rt.App.MonitorFPS()),
+							Quality:      int(rt.App.MonitorQual()),
+						},
+					}); err == nil {
+						mEnv.Channel = rt.channel
+						mEnv.Timestamp = time.Now().UnixMilli()
+						_ = sess.SendEnvelope(mEnv)
+					}
+				}
 			}
 		case protocol.MsgCheckInSubmit:
 			var req struct {
@@ -234,6 +252,7 @@ func (rt *Runtime) wireHandlers() {
 				}
 				frame, err := rt.decodeStudentFrame(senderID+":"+kind, pkt.Data)
 				if err == nil && frame != nil {
+					rt.Classroom.TouchStudent(senderID)
 					switch kind {
 					case "remote":
 						rt.App.UpdateRemoteFrame(senderID, frame)

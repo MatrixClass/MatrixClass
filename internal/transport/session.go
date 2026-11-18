@@ -558,8 +558,8 @@ type SmuxSession struct {
 
 func NewSmuxSession(conn net.Conn, isServer bool, onEnvelope func(core.Session, protocol.Envelope)) (*SmuxSession, error) {
 	smuxCfg := smux.DefaultConfig()
-	smuxCfg.KeepAliveInterval = 5 * time.Second
-	smuxCfg.KeepAliveTimeout = 20 * time.Second
+	smuxCfg.KeepAliveInterval = 3 * time.Second
+	smuxCfg.KeepAliveTimeout = 12 * time.Second
 	smuxCfg.MaxReceiveBuffer = 4 * 1024 * 1024
 	smuxCfg.MaxStreamBuffer = 1024 * 1024
 
