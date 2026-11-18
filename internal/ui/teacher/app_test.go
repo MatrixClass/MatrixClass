@@ -514,6 +514,41 @@ func TestTeacherSQLitePersistenceAndChannelPrompt(t *testing.T) {
 	}
 }
 
+func TestClearOfflineStudents(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "nexlab-teacher.db")
+	st, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	defer st.Close()
+
+	app, _, cr, _ := newTestTeacherApp()
+	app.store = st
+	cr.UpsertStudent(core.StudentInfo{ID: "off-1", MachineName: "PC-OFF-1", Status: core.StatusOffline})
+	_ = st.UpsertStudent(core.StudentInfo{ID: "off-1", MachineName: "PC-OFF-1", Status: core.StatusOffline})
+
+	before := len(cr.ListStudents())
+	app.ClearOfflineStudents()
+	after := len(cr.ListStudents())
+	if after >= before {
+		t.Fatalf("expected offline students removed, before=%d after=%d", before, after)
+	}
+	for _, s := range cr.ListStudents() {
+		if s.Status == core.StatusOffline {
+			t.Fatalf("found remaining offline student: %+v", s)
+		}
+	}
+	persisted, err := st.LoadStudents()
+	if err != nil {
+		t.Fatalf("LoadStudents: %v", err)
+	}
+	for _, s := range persisted {
+		if s.ID == "off-1" {
+			t.Fatalf("expected off-1 deleted from sqlite store")
+		}
+	}
+}
+
 func TestUpdateMonitorFrameResizeAndConcurrency(t *testing.T) {
 	app, _, _, _ := newTestTeacherApp()
 	tester := ui.NewTester(app.View, 1280, 820)

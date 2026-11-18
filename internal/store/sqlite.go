@@ -352,6 +352,25 @@ func (s *Store) LoadStudents() ([]core.StudentInfo, error) {
 	return out, rows.Err()
 }
 
+func (s *Store) DeleteStudents(ids []string) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	for _, id := range ids {
+		if _, err := tx.Exec(`DELETE FROM students WHERE id = ?`, id); err != nil {
+			_ = tx.Rollback()
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
 func (s *Store) SaveChat(msg core.ChatMessage) error {
 	if msg.ID == "" {
 		msg.ID = time.Now().Format("20060102150405.000000000")

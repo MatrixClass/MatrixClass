@@ -968,6 +968,7 @@ func (a *App) buildSeatMapTab(c *ui.Context, pal theme.Palette, students []core.
 	var childClicked bool
 	ui.Column(c).Grow(1).FillWidth().Children(func() {
 		scroll := ui.Scroll(c).Grow(1).Padding(12).Gap(10)
+		a.attachBlankAreaContextMenu(scroll, students)
 		scroll.Children(func() {
 			ui.Row(c).AlignItems(ui.Center).Gap(8).Children(func() {
 				ui.Text(c, "设备视图").FontSize(15).Bold()
@@ -1110,6 +1111,7 @@ func (a *App) buildMonitorWallTab(c *ui.Context, pal theme.Palette, students []c
 		})
 
 		scroll := ui.Scroll(c).Grow(1)
+		a.attachBlankAreaContextMenu(scroll, students)
 		scroll.Children(func() {
 			if len(students) == 0 {
 				ui.Box(c).Fill().Center().Padding(24).Children(func() {
@@ -2772,6 +2774,70 @@ func (a *App) assignTargetsToGroup(groupID string, targets []string) {
 	} else {
 		a.statusNote = fmt.Sprintf("已将 %d 台设备移入分组", len(targets))
 	}
+}
+
+func (a *App) attachBlankAreaContextMenu(elem ui.Element, students []core.StudentInfo) {
+	elem.ContextMenu(func(m *ui.Menu) {
+		offlineCount := 0
+		for _, st := range a.listStudents() {
+			if st.Status == core.StatusOffline {
+				offlineCount++
+			}
+		}
+		clearLbl := "清除离线电脑"
+		if offlineCount > 0 {
+			clearLbl = fmt.Sprintf("清除离线电脑 (%d)", offlineCount)
+		}
+		if m.Item(clearLbl).Chosen() {
+			a.ClearOfflineStudents()
+		}
+		if len(students) > 0 {
+			if m.Item("全选 (Ctrl+A)").Chosen() {
+				a.selectAllStudents(students)
+			}
+		}
+		if a.selectedCount() > 0 {
+			if m.Item("取消选择").Chosen() {
+				a.clearSelection()
+			}
+		}
+	})
+}
+
+func (a *App) ClearOfflineStudents() {
+	if a.opts.Classroom == nil {
+		return
+	}
+	var removedIDs []string
+	for _, st := range a.opts.Classroom.ListStudents() {
+		if st.Status == core.StatusOffline {
+			removedIDs = append(removedIDs, st.ID)
+		}
+	}
+	if len(removedIDs) == 0 {
+		a.statusNote = "当前没有离线电脑需要清除"
+		return
+	}
+	a.mu.Lock()
+	for _, id := range removedIDs {
+		delete(a.monitorTiles, id)
+		delete(a.pendingMonitor, id)
+		if a.selectedIDs != nil {
+			delete(a.selectedIDs, id)
+		}
+		if a.selectedID == id {
+			a.selectedID = ""
+		}
+	}
+	a.mu.Unlock()
+
+	for _, id := range removedIDs {
+		a.opts.Classroom.RemoveStudent(id)
+	}
+	if a.store != nil {
+		_ = a.store.DeleteStudents(removedIDs)
+	}
+	a.statusNote = fmt.Sprintf("已清除 %d 台离线电脑", len(removedIDs))
 }
 
 func (a *App) attachStudentContextMenu(elem ui.Element, st core.StudentInfo) {
