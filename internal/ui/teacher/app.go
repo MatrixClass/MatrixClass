@@ -50,8 +50,7 @@ const (
 )
 
 const (
-	SideTabStudents = iota
-	SideTabChatQueue
+	SideTabChatQueue = iota
 	SideTabPolicy
 )
 
@@ -72,10 +71,9 @@ type App struct {
 	sideTab       int
 	leftPaneSize  float32
 	mainSplitPct  float32
-	treeAllOpen   bool
-	treeGroupOpen bool
-	treeMediaOpen bool
 	selectedGroup string
+	creatingGroup bool
+	newGroupInput string
 	selectedID    string
 	selectedIDs   map[string]bool
 	searchQuery   string
@@ -140,8 +138,6 @@ type App struct {
 	allowedSitesInput string
 
 	// Widget states
-	studentTable ui.ListState
-	selectedRow  int
 	settingsOpen bool
 
 	// Lock-free snapshots for background media/transport goroutines
@@ -181,12 +177,9 @@ func New(opts Options) *App {
 		dark:              opts.Dark,
 		broadcastWindowed: true,
 		mainTab:           TabSeatMap,
-		sideTab:           SideTabStudents,
+		sideTab:           SideTabChatQueue,
 		leftPaneSize:      185,
 		mainSplitPct:      72,
-		treeAllOpen:       true,
-		treeGroupOpen:     true,
-		treeMediaOpen:     true,
 		selectedGroup:     "all",
 		selectedIDs:       make(map[string]bool),
 		lockMessage:       "请注意听讲，教师已锁定屏幕。",
@@ -217,10 +210,7 @@ func New(opts Options) *App {
 		allowedAppsInput:  "code.exe, wireshark.exe, notepad.exe",
 		blockedSitesInput: "game.example.com, video.example.com",
 		allowedSitesInput: "lab.nexlab.local, docs.golang.org",
-		selectedRow:       -1,
 	}
-	app.studentTable.Selected = &app.selectedRow
-	app.studentTable.RoundRows = true
 	app.syncRuntimeFlags()
 	app.ctrlCh = make(chan ctrlOutbound, 64)
 	go app.controlSendWorker()
@@ -298,7 +288,7 @@ func (a *App) BuildMenu() *mygo.Menu {
 		{
 			Label: "视图(&V)",
 			Submenu: []*mygo.MenuItem{
-				{Label: "座位视图", Click: func(_ *mygo.MenuItem, _ *mygo.Window) { a.mainTab = TabSeatMap; a.Invalidate() }},
+				{Label: "设备视图", Click: func(_ *mygo.MenuItem, _ *mygo.Window) { a.mainTab = TabSeatMap; a.Invalidate() }},
 				{Label: "屏幕监控", Click: func(_ *mygo.MenuItem, _ *mygo.Window) { a.mainTab = TabMonitorWall; a.Invalidate() }},
 				{Label: "网络影院", Click: func(_ *mygo.MenuItem, _ *mygo.Window) { a.mainTab = TabMyTheatre; a.Invalidate() }},
 				{Label: "随堂测验", Click: func(_ *mygo.MenuItem, _ *mygo.Window) { a.mainTab = TabExamStats; a.Invalidate() }},
@@ -645,14 +635,14 @@ func (a *App) buildBody(c *ui.Context, pal theme.Palette, students []core.Studen
 func (a *App) buildLeftSidebar(c *ui.Context, pal theme.Palette) {
 	ui.Column(c).Fill().Background(pal.ChromeRail).BorderWidth(0, 1, 0, 0).BorderColor(pal.CardBorder).Children(func() {
 		// Quick vertical navigation rail
-		ui.Column(c).Padding(8).Gap(4).BorderWidth(0, 0, 1, 0).BorderColor(pal.CardBorder).Children(func() {
+		ui.Column(c).Grow(1).Padding(8).Gap(4).Children(func() {
 			ui.Text(c, "课堂导航").FontSize(11).Bold().TextColor(pal.TextMuted)
 			navItems := []struct {
 				tab   int
 				label string
 				icon  *ui.SVG
 			}{
-				{TabSeatMap, "座位视图", theme.IconSeat},
+				{TabSeatMap, "设备视图", theme.IconSeat},
 				{TabMonitorWall, "屏幕监控", theme.IconMonitor},
 				{TabMyTheatre, "网络影院", theme.IconMyTheatre},
 				{TabExamStats, "随堂测验", theme.IconExam},
@@ -674,44 +664,13 @@ func (a *App) buildLeftSidebar(c *ui.Context, pal theme.Palette) {
 				}
 			}
 		})
-
-		// Classroom group & media library tree
-		ui.Scroll(c).Grow(1).Padding(8).Gap(6).Children(func() {
-			ui.Text(c, "分组与媒体库").FontSize(11).Bold().TextColor(pal.TextMuted)
-			ui.Tree(c, func() {
-				allItem := ui.TreeItem(c, fmt.Sprintf("全部教室 (%s)", a.channel), &a.treeAllOpen, func() {
-					if ui.TreeItem(c, "全部在线学生", nil, nil).Clicked() {
-						a.selectedGroup = "all"
-					}
-				})
-				if allItem.Clicked() {
-					a.selectedGroup = "all"
-				}
-				ui.TreeItem(c, "教学小组", &a.treeGroupOpen, func() {
-					for _, g := range a.listGroups() {
-						label := fmt.Sprintf("%s (%d人)", g.Name, len(g.Members))
-						if ui.TreeItem(c, label, nil, nil).Clicked() {
-							a.selectedGroup = g.ID
-						}
-					}
-				})
-				ui.TreeItem(c, "影院媒体库 (MyTheatre)", &a.treeMediaOpen, func() {
-					for _, media := range a.theatreMedia {
-						if ui.TreeItem(c, media, nil, nil).Clicked() {
-							a.theatre.Media = media
-							a.mainTab = TabMyTheatre
-						}
-					}
-				})
-			})
-		})
 	})
 }
 
 func (a *App) buildMainWorkspace(c *ui.Context, pal theme.Palette, students []core.StudentInfo) {
 	ui.Column(c).Fill().Background(pal.Canvas).Children(func() {
 		ui.Row(c).Background(pal.ChromeBar).Padding(4, 10).AlignItems(ui.Center).BorderWidth(0, 0, 1, 0).BorderColor(pal.CardBorder).Children(func() {
-			ui.Tabs(c, &a.mainTab, "座位视图", "屏幕监控", "网络影院", "随堂测验", "文件与作业")
+			ui.Tabs(c, &a.mainTab, "设备视图", "屏幕监控", "网络影院", "随堂测验", "文件与作业")
 			ui.Spacer(c)
 			ui.Checkbox(c, &a.broadcastWindowed, "窗口模式广播").OnChange(func() {
 				a.syncRuntimeFlags()
@@ -744,46 +703,49 @@ func (a *App) buildMainWorkspace(c *ui.Context, pal theme.Palette, students []co
 
 func (a *App) buildSeatMapTab(c *ui.Context, pal theme.Palette, students []core.StudentInfo) {
 	var childClicked bool
-	scroll := ui.Scroll(c).Grow(1).Padding(12).Gap(10)
-	scroll.Children(func() {
-		ui.Row(c).AlignItems(ui.Center).Gap(8).Children(func() {
-			ui.Text(c, "机房座位拓扑图").FontSize(15).Bold()
-			ui.Badge(c, fmt.Sprintf("显示 %d 台", len(students)))
-			if selCount := a.selectedCount(); selCount > 0 {
-				ui.Badge(c, fmt.Sprintf("已选 %d 台", selCount)).Background(pal.Selection).TextColor(pal.Accent)
-			}
-			if len(students) > 0 {
-				if ui.Button(c, "全选 (Ctrl+A)").Padding(3, 10).Clicked() {
-					childClicked = true
-					a.selectAllStudents(students)
+	ui.Column(c).Grow(1).FillWidth().Children(func() {
+		scroll := ui.Scroll(c).Grow(1).Padding(12).Gap(10)
+		scroll.Children(func() {
+			ui.Row(c).AlignItems(ui.Center).Gap(8).Children(func() {
+				ui.Text(c, "设备视图").FontSize(15).Bold()
+				ui.Badge(c, fmt.Sprintf("显示 %d 台", len(students)))
+				if selCount := a.selectedCount(); selCount > 0 {
+					ui.Badge(c, fmt.Sprintf("已选 %d 台", selCount)).Background(pal.Selection).TextColor(pal.Accent)
 				}
-			}
-			if ui.Button(c, "自动排座").Padding(3, 10).Clicked() {
-				childClicked = true
-				a.autoLayoutSeats()
-			}
-			ui.Spacer(c)
-			ui.Text(c, "提示：Ctrl+左键多选、Ctrl+A全选、点空白处取消、右键批量操作").FontSize(11).TextColor(pal.TextMuted)
-		})
-
-		if len(students) == 0 {
-			ui.Box(c).Padding(24).Center().Children(func() {
-				ui.Text(c, "当前筛选条件下暂无学生机在线").TextColor(pal.TextMuted)
+				if len(students) > 0 {
+					if ui.Button(c, "全选 (Ctrl+A)").Padding(3, 10).Clicked() {
+						childClicked = true
+						a.selectAllStudents(students)
+					}
+				}
+				if ui.Button(c, "自动排座").Padding(3, 10).Clicked() {
+					childClicked = true
+					a.autoLayoutSeats()
+				}
+				ui.Spacer(c)
+				ui.Text(c, "提示：Ctrl+左键多选、Ctrl+A全选、点空白处取消、右键批量操作").FontSize(11).TextColor(pal.TextMuted)
 			})
-			return
-		}
 
-		ui.Row(c).Wrap().Gap(12).Children(func() {
-			for _, st := range students {
-				if a.buildSeatCard(c, pal, st) {
-					childClicked = true
-				}
+			if len(students) == 0 {
+				ui.Box(c).Padding(24).Center().Children(func() {
+					ui.Text(c, "当前分组暂无学生机在线").TextColor(pal.TextMuted)
+				})
+				return
 			}
+
+			ui.Row(c).Wrap().Gap(12).Children(func() {
+				for _, st := range students {
+					if a.buildSeatCard(c, pal, st) {
+						childClicked = true
+					}
+				}
+			})
 		})
+		if scroll.Clicked() && !childClicked {
+			a.clearSelection()
+		}
+		a.buildGroupBottomBar(c, pal)
 	})
-	if scroll.Clicked() && !childClicked {
-		a.clearSelection()
-	}
 }
 
 func (a *App) buildSeatCard(c *ui.Context, pal theme.Palette, st core.StudentInfo) bool {
@@ -932,6 +894,7 @@ func (a *App) buildMonitorWallTab(c *ui.Context, pal theme.Palette, students []c
 		if scroll.Clicked() && !childClicked {
 			a.clearSelection()
 		}
+		a.buildGroupBottomBar(c, pal)
 	})
 }
 
@@ -1183,13 +1146,11 @@ func (a *App) buildFilesTab(c *ui.Context, pal theme.Palette) {
 func (a *App) buildRightSidebar(c *ui.Context, pal theme.Palette, students []core.StudentInfo) {
 	ui.Column(c).Fill().Background(pal.ChromeRail).BorderWidth(0, 0, 0, 1).BorderColor(pal.CardBorder).Children(func() {
 		ui.Row(c).Padding(6, 8).Background(pal.ChromeBar).BorderWidth(0, 0, 1, 0).BorderColor(pal.CardBorder).Children(func() {
-			ui.Segmented(c, &a.sideTab, "学生列表", "消息/举手", "管控策略").FillEqually()
+			ui.Segmented(c, &a.sideTab, "消息/举手", "管控策略").FillEqually()
 		})
 
 		ui.Column(c).Grow(1).Padding(8).Gap(8).Children(func() {
 			switch a.sideTab {
-			case SideTabStudents:
-				a.buildSideStudents(c, pal, students)
 			case SideTabChatQueue:
 				a.buildSideChatQueue(c, pal, students)
 			case SideTabPolicy:
@@ -1228,36 +1189,6 @@ func (a *App) buildRightSidebar(c *ui.Context, pal theme.Palette, students []cor
 			}
 		})
 	})
-}
-
-func (a *App) buildSideStudents(c *ui.Context, pal theme.Palette, students []core.StudentInfo) {
-	cols := []ui.TableColumn{
-		{Title: "机位", ID: "machine", Width: 64},
-		{Title: "学号", ID: "student_no", Width: 76},
-		{Title: "状态", ID: "status", Width: 70},
-		{Title: "延迟", ID: "rtt", Align: ui.End},
-	}
-	tbl := ui.Table(c, &a.studentTable, cols, len(students), func(row, col int) {
-		st := students[row]
-		switch col {
-		case 0:
-			ui.Text(c, st.MachineName).FontSize(12).SingleLine()
-		case 1:
-			ui.Text(c, st.StudentNo).FontSize(12).SingleLine()
-		case 2:
-			txt, colr := statusBadge(pal, st)
-			ui.Text(c, txt).FontSize(11).TextColor(colr).SingleLine()
-		case 3:
-			ui.Text(c, fmt.Sprintf("%dms", st.RTTMs)).FontSize(11).TextColor(pal.TextMuted)
-		}
-	}).Grow(1)
-
-	if tbl.Changed() && a.selectedRow >= 0 && a.selectedRow < len(students) {
-		a.selectedID = students[a.selectedRow].ID
-	}
-	if tbl.Submitted() && a.selectedRow >= 0 && a.selectedRow < len(students) {
-		a.StartRemoteControl(students[a.selectedRow].ID)
-	}
 }
 
 func (a *App) buildSideChatQueue(c *ui.Context, pal theme.Palette, students []core.StudentInfo) {
@@ -1928,6 +1859,108 @@ func (a *App) targetStudentIDs() []string {
 	return nil
 }
 
+func (a *App) buildGroupBottomBar(c *ui.Context, pal theme.Palette) {
+	groups := a.listGroups()
+	ui.Row(c).FillWidth().Padding(6, 12).Gap(6).Background(pal.ChromeBar).
+		BorderWidth(1, 0, 0, 0).BorderColor(pal.CardBorder).AlignItems(ui.Center).Children(func() {
+		defBtn := ui.Button(c, "默认分组").Padding(4, 12).Radius(3)
+		if a.selectedGroup == "" || a.selectedGroup == "all" {
+			defBtn.Background(pal.Selection).Border(1, pal.Accent)
+		}
+		if defBtn.Clicked() {
+			a.selectedGroup = "all"
+		}
+
+		for _, g := range groups {
+			g := g
+			btn := ui.Button(c, g.Name).Key("grp-" + g.ID).Padding(4, 12).Radius(3)
+			if a.selectedGroup == g.ID {
+				btn.Background(pal.Selection).Border(1, pal.Accent)
+			}
+			if btn.Clicked() {
+				a.selectedGroup = g.ID
+			}
+		}
+
+		if a.creatingGroup {
+			inp := ui.TextInput(c, &a.newGroupInput).Placeholder("输入分组名称...").Width(130)
+			if inp.Submitted() || ui.PrimaryButton(c, "确定").Padding(4, 10).Clicked() {
+				a.createGroup(a.newGroupInput)
+			}
+			if ui.Button(c, "取消").Padding(4, 8).Clicked() {
+				a.creatingGroup = false
+				a.newGroupInput = ""
+			}
+		} else {
+			if ui.Button(c, "+").Tooltip("创建新分组").Padding(4, 10).Radius(3).Clicked() {
+				a.creatingGroup = true
+				a.newGroupInput = ""
+			}
+		}
+		ui.Spacer(c)
+	})
+}
+
+func (a *App) createGroup(name string) {
+	name = strings.TrimSpace(name)
+	groups := a.listGroups()
+	if name == "" {
+		name = fmt.Sprintf("分组 %d", len(groups)+1)
+	}
+	id := fmt.Sprintf("grp-%d", time.Now().UnixNano())
+	groups = append(groups, core.GroupInfo{
+		ID:   id,
+		Name: name,
+	})
+	if a.opts.Classroom != nil {
+		a.opts.Classroom.SetGroups(groups)
+	}
+	a.selectedGroup = id
+	a.creatingGroup = false
+	a.newGroupInput = ""
+	a.statusNote = "已创建分组: " + name
+}
+
+func (a *App) assignTargetsToGroup(groupID string, targets []string) {
+	if a.opts.Classroom == nil || len(targets) == 0 {
+		return
+	}
+	type memberAdder interface {
+		AddGroupMember(groupID, studentID string) error
+		RemoveGroupMember(groupID, studentID string) error
+	}
+	if adder, ok := a.opts.Classroom.(memberAdder); ok && groupID != "" && groupID != "all" {
+		for _, id := range targets {
+			_ = adder.AddGroupMember(groupID, id)
+		}
+		a.statusNote = fmt.Sprintf("已将 %d 台设备移入分组", len(targets))
+		return
+	}
+	groups := a.listGroups()
+	targetSet := make(map[string]bool, len(targets))
+	for _, id := range targets {
+		targetSet[id] = true
+	}
+	for gi := range groups {
+		kept := groups[gi].Members[:0]
+		for _, mid := range groups[gi].Members {
+			if !targetSet[mid] {
+				kept = append(kept, mid)
+			}
+		}
+		groups[gi].Members = kept
+		if groups[gi].ID == groupID {
+			groups[gi].Members = append(groups[gi].Members, targets...)
+		}
+	}
+	a.opts.Classroom.SetGroups(groups)
+	if groupID == "" || groupID == "all" {
+		a.statusNote = fmt.Sprintf("已将 %d 台设备移回默认分组", len(targets))
+	} else {
+		a.statusNote = fmt.Sprintf("已将 %d 台设备移入分组", len(targets))
+	}
+}
+
 func (a *App) attachStudentContextMenu(elem ui.Element, st core.StudentInfo) {
 	elem.ContextMenu(func(m *ui.Menu) {
 		if !a.isSelected(st.ID) {
@@ -1989,6 +2022,15 @@ func (a *App) attachStudentContextMenu(elem ui.Element, st core.StudentInfo) {
 			a.fileTargetAll = false
 			a.mainTab = TabFiles
 			a.statusNote = fmt.Sprintf("已选定 %d 台学生作为文件分发目标", len(targets))
+		}
+		if groups := a.listGroups(); len(groups) > 0 {
+			m.Separator()
+			for _, g := range groups {
+				g := g
+				if m.Item(prefix + "移入「" + g.Name + "」").Chosen() {
+					a.assignTargetsToGroup(g.ID, targets)
+				}
+			}
 		}
 		m.Separator()
 		if m.Item(prefix + "远程唤醒 (WOL)").Chosen() {

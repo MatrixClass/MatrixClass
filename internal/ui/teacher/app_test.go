@@ -37,8 +37,11 @@ func TestTeacherConsoleViewsAndTabs(t *testing.T) {
 	if !tester.HasText("矩联电子教室 MatrixClass 教师端") {
 		t.Fatalf("expected teacher title in view")
 	}
-	if !tester.HasText("座位视图") || !tester.HasText("屏幕广播") || !tester.HasText("网络影院") {
+	if !tester.HasText("设备视图") || !tester.HasText("屏幕广播") || !tester.HasText("网络影院") || !tester.HasText("默认分组") {
 		t.Fatalf("expected primary navigation/toolbar items")
+	}
+	if tester.HasText("学生列表") || tester.HasText("分组与媒体库") || tester.HasText("座位视图") {
+		t.Fatalf("unexpected removed sidebar sections or old tab label")
 	}
 
 	// Click toolbar "屏幕广播" toggle
@@ -103,6 +106,20 @@ func TestTeacherRightSidebarAndActions(t *testing.T) {
 	tester.Frame()
 	if !tester.HasText("发送") {
 		t.Fatalf("expected chat send button in right sidebar")
+	}
+
+	// Create a new group via bottom horizontal group bar "+" button
+	if err := tester.Click("+"); err != nil {
+		t.Fatalf("click + group button failed: %v", err)
+	}
+	tester.Frame()
+	app.newGroupInput = "实验一组"
+	if err := tester.Click("确定"); err != nil {
+		t.Fatalf("click 确定 group failed: %v", err)
+	}
+	tester.Frame()
+	if !tester.HasText("实验一组") {
+		t.Fatalf("expected newly created group tab 实验一组 in bottom bar")
 	}
 
 	// Verify check-in trigger resets checked-in counts
