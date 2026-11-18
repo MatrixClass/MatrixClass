@@ -427,6 +427,7 @@ func (a *App) ShowTeacherNotice(sender, text string) {
 			a.mu.Unlock()
 		} else {
 			tw.SetPosition(x, y)
+			tw.SetAlwaysOnTop(true)
 			tw.Invalidate()
 		}
 		tw.ShowInactive()
@@ -510,15 +511,14 @@ func (a *App) syncWindowOnMain(w *mygo.Window, show, focus bool) {
 			w.Focus()
 		case ModeBroadcast:
 			w.SetClosable(true)
+			w.SetAlwaysOnTop(true)
 			if bcastWin {
 				w.SetFullScreen(false)
-				w.SetAlwaysOnTop(false)
 				w.SetResizable(true)
 				w.SetMinimumSize(480, 320)
 				w.SetSize(720, 460)
 				w.Center()
 			} else {
-				w.SetAlwaysOnTop(true)
 				w.SetFullScreen(true)
 			}
 		case ModeCheckIn:
@@ -531,7 +531,7 @@ func (a *App) syncWindowOnMain(w *mygo.Window, show, focus bool) {
 			w.Center()
 		case ModeExam:
 			w.SetFullScreen(false)
-			w.SetAlwaysOnTop(false)
+			w.SetAlwaysOnTop(true)
 			w.SetClosable(true)
 			w.SetResizable(true)
 			w.SetMinimumSize(520, 380)
@@ -1143,6 +1143,7 @@ func (a *App) OpenFileReceiveWindow() {
 	a.mu.Unlock()
 
 	if frw != nil {
+		frw.SetAlwaysOnTop(true)
 		frw.Show()
 		frw.Focus()
 		frw.Invalidate()
@@ -1160,18 +1161,20 @@ func (a *App) ensureFileReceiveWindowOnMain() {
 	frw := a.fileReceiveWin
 	a.mu.Unlock()
 	if frw != nil {
+		frw.SetAlwaysOnTop(true)
 		frw.Show()
 		frw.Focus()
 		frw.Invalidate()
 		return
 	}
 	frw = mygo.NewWindow(mygo.WindowOptions{
-		Title:     "文件接收队列",
-		Width:     520,
-		Height:    420,
-		MinWidth:  420,
-		MinHeight: 320,
-		Content:   ui.View(a.FileReceiveView),
+		Title:       "文件接收队列",
+		Width:       520,
+		Height:      420,
+		MinWidth:    420,
+		MinHeight:   320,
+		AlwaysOnTop: true,
+		Content:     ui.View(a.FileReceiveView),
 	})
 	frw.OnClosed(func() {
 		a.mu.Lock()
@@ -1465,37 +1468,52 @@ func (a *App) OpenHomeworkSubmitWindow() {
 		return
 	}
 	if hw != nil {
-		hw.Show()
-		hw.Focus()
+		hw.Update(func() {
+			hw.SetAlwaysOnTop(true)
+			hw.Show()
+			hw.Focus()
+		})
 		return
 	}
-	hw = mygo.NewWindow(mygo.WindowOptions{
-		Title:     "提交作业",
-		Width:     480,
-		Height:    420,
-		MinWidth:  380,
-		MinHeight: 340,
-		Content:   ui.View(a.HomeworkSubmitView),
-	})
-	hw.OnFileDrop(func(e *mygo.FileDropEvent) {
-		if e == nil || len(e.Paths) == 0 {
+	w.Update(func() {
+		a.mu.Lock()
+		existing := a.homeworkSubmitWin
+		a.mu.Unlock()
+		if existing != nil {
+			existing.SetAlwaysOnTop(true)
+			existing.Show()
+			existing.Focus()
 			return
 		}
-		hw.Update(func() {
-			a.addHomeworkFiles(e.Paths)
-			a.homeworkSubmitNote = fmt.Sprintf("已拖入 %d 个文件", len(e.Paths))
+		newHW := mygo.NewWindow(mygo.WindowOptions{
+			Title:       "提交作业",
+			Width:       480,
+			Height:      420,
+			MinWidth:    380,
+			MinHeight:   340,
+			AlwaysOnTop: true,
+			Content:     ui.View(a.HomeworkSubmitView),
 		})
-	})
-	hw.OnClosed(func() {
+		newHW.OnFileDrop(func(e *mygo.FileDropEvent) {
+			if e == nil || len(e.Paths) == 0 {
+				return
+			}
+			newHW.Update(func() {
+				a.addHomeworkFiles(e.Paths)
+				a.homeworkSubmitNote = fmt.Sprintf("已拖入 %d 个文件", len(e.Paths))
+			})
+		})
+		newHW.OnClosed(func() {
+			a.mu.Lock()
+			if a.homeworkSubmitWin == newHW {
+				a.homeworkSubmitWin = nil
+			}
+			a.mu.Unlock()
+		})
 		a.mu.Lock()
-		if a.homeworkSubmitWin == hw {
-			a.homeworkSubmitWin = nil
-		}
+		a.homeworkSubmitWin = newHW
 		a.mu.Unlock()
 	})
-	a.mu.Lock()
-	a.homeworkSubmitWin = hw
-	a.mu.Unlock()
 }
 
 // CloseHomeworkSubmitWindow closes the homework submission popup (called on teacher end).
