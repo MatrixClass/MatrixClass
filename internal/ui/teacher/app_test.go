@@ -123,4 +123,19 @@ func TestTeacherRightSidebarAndActions(t *testing.T) {
 	tester.Frame()
 	_ = ctrl
 	_ = core.PowerWake
+
+	// Verify seat swap helper
+	students := cr.ListStudents()
+	if len(students) >= 2 {
+		s0, s1 := students[0], students[1]
+		app.swapStudentSeats(s0.ID, s1.ID)
+		for _, updated := range cr.ListStudents() {
+			if updated.ID == s0.ID && updated.Seat != s1.Seat {
+				t.Fatalf("expected %s seat swapped to %+v, got %+v", s0.ID, s1.Seat, updated.Seat)
+			}
+			if updated.ID == s1.ID && updated.Seat != s0.Seat {
+				t.Fatalf("expected %s seat swapped to %+v, got %+v", s1.ID, s0.Seat, updated.Seat)
+			}
+		}
+	}
 }

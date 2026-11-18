@@ -68,7 +68,7 @@ type App struct {
 	mainTab       int
 	sideTab       int
 	leftPaneSize  float32
-	rightPaneSize float32
+	mainSplitPct  float32
 	treeAllOpen   bool
 	treeGroupOpen bool
 	treeMediaOpen bool
@@ -148,7 +148,7 @@ func New(opts Options) *App {
 		mainTab:           TabSeatMap,
 		sideTab:           SideTabStudents,
 		leftPaneSize:      210,
-		rightPaneSize:     305,
+		mainSplitPct:      72,
 		treeAllOpen:       true,
 		treeGroupOpen:     true,
 		treeMediaOpen:     true,
@@ -371,7 +371,7 @@ func (a *App) View(c *ui.Context) {
 
 func (a *App) buildToolbar(c *ui.Context, pal theme.Palette) {
 	ui.Column(c).Background(pal.ChromeBar).Padding(6, 10).Gap(4).Children(func() {
-		ui.Row(c).AlignItems(ui.Center).Gap(8).Children(func() {
+		ui.Row(c).AlignItems(ui.Center).Gap(8).DragWindow().Children(func() {
 			ui.Text(c, "矩联电子教室 MatrixClass 教师端").FontSize(14).Bold().TextColor(pal.Accent)
 			ui.Badge(c, a.channel).Background(pal.Selection).TextColor(pal.Accent)
 			ui.Spacer(c)
@@ -493,12 +493,12 @@ func (a *App) buildBody(c *ui.Context, pal theme.Palette, students []core.Studen
 	ui.Split(c, &a.leftPaneSize, func() {
 		a.buildLeftSidebar(c, pal)
 	}, func() {
-		ui.Split(c, &a.rightPaneSize, func() {
+		ui.SplitPercent(c, &a.mainSplitPct, func() {
 			a.buildMainWorkspace(c, pal, students)
 		}, func() {
 			a.buildRightSidebar(c, pal, students)
-		}).Grow(1)
-	}).Grow(1)
+		}).SplitReset(72).Grow(1)
+	}).SplitReset(210).Grow(1)
 }
 
 func (a *App) buildLeftSidebar(c *ui.Context, pal theme.Palette) {
@@ -600,7 +600,7 @@ func (a *App) buildSeatMapTab(c *ui.Context, pal theme.Palette, students []core.
 			ui.Text(c, "机房座位拓扑图").FontSize(15).Bold()
 			ui.Badge(c, fmt.Sprintf("显示 %d 台", len(students)))
 			ui.Spacer(c)
-			ui.Text(c, "提示：单击选中机位，双击进入屏幕监控/远程控制").FontSize(11).TextColor(pal.TextMuted)
+			ui.Text(c, "提示：单击选中、双击监控，拖动卡片可调换座位").FontSize(11).TextColor(pal.TextMuted)
 		})
 
 		if len(students) == 0 {
@@ -631,7 +631,18 @@ func (a *App) buildSeatCard(c *ui.Context, pal theme.Palette, st core.StudentInf
 
 	card := ui.Column(c).Key("seat-" + st.ID).Width(178).Padding(10).Gap(6).Radius(8).
 		Background(bg).Border(1.5, border).Focusable().
+		Drag(st.ID).
 		Label(fmt.Sprintf("%s %s", st.MachineName, st.Name))
+
+	if draggedID, over := ui.DragOver[string](card); over && draggedID != st.ID {
+		card.Border(2, pal.Warning)
+	}
+	if draggedID, ok := ui.Drop[string](card); ok && draggedID != "" && draggedID != st.ID {
+		a.swapStudentSeats(draggedID, st.ID)
+	}
+	if card.Dragging() {
+		card.Opacity(0.55)
+	}
 
 	card.ContextMenu(func(m *ui.Menu) {
 		if m.Item("监控该学生屏幕").Chosen() {
@@ -1353,6 +1364,27 @@ func (a *App) CollectHomework() {
 	}
 	a.mainTab = TabFiles
 	a.statusNote = fmt.Sprintf("已发起作业回收 (%d 个任务)", len(tasks))
+}
+
+func (a *App) swapStudentSeats(idA, idB string) {
+	if a.opts.Classroom == nil {
+		return
+	}
+	var stuA, stuB *core.StudentInfo
+	for _, s := range a.opts.Classroom.ListStudents() {
+		sCopy := s
+		if s.ID == idA {
+			stuA = &sCopy
+		} else if s.ID == idB {
+			stuB = &sCopy
+		}
+	}
+	if stuA == nil || stuB == nil {
+		return
+	}
+	a.opts.Classroom.UpdateSeat(stuA.ID, stuB.Seat)
+	a.opts.Classroom.UpdateSeat(stuB.ID, stuA.Seat)
+	a.statusNote = fmt.Sprintf("已调换座位: %s ↔ %s", stuA.Name, stuB.Name)
 }
 
 func (a *App) publishExam() {
