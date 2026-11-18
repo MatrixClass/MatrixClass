@@ -158,7 +158,7 @@ func New(opts Options) *App {
 func (a *App) AttachWindow(w *mygo.Window) {
 	a.mu.Lock()
 	a.win = w
-	a.barFocused = w != nil && w.IsFocused()
+	a.barFocused = false
 	a.mu.Unlock()
 	if w != nil {
 		_ = w.SetIcon(theme.AppIconPNG(false))
