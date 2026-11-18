@@ -547,11 +547,13 @@ func main() {
 	mygo.App.WhenReady(func() {
 		win := mygo.NewWindow(mygo.WindowOptions{
 			Title:       "矩联电子教室 MatrixClass 学生端",
-			Width:       780,
-			Height:      96,
+			Width:       640,
+			Height:      88,
+			MinWidth:    520,
+			MinHeight:   48,
 			Frameless:   true,
 			AlwaysOnTop: true,
-			StateKey:    "nexlab-student-bar",
+			StateKey:    "nexlab-student-bar-v2",
 			Content:     ui.View(app.View),
 		})
 		app.AttachWindow(win)

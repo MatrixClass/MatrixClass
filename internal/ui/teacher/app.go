@@ -178,9 +178,10 @@ func New(opts Options) *App {
 		teacherName:       opts.TeacherName,
 		channel:           opts.Channel,
 		dark:              opts.Dark,
+		broadcastWindowed: true,
 		mainTab:           TabSeatMap,
 		sideTab:           SideTabStudents,
-		leftPaneSize:      210,
+		leftPaneSize:      185,
 		mainSplitPct:      72,
 		treeAllOpen:       true,
 		treeGroupOpen:     true,
@@ -636,7 +637,7 @@ func (a *App) buildBody(c *ui.Context, pal theme.Palette, students []core.Studen
 		}, func() {
 			a.buildRightSidebar(c, pal, students)
 		}).SplitReset(72).Grow(1)
-	}).SplitReset(210).Grow(1)
+	}).SplitReset(185).Grow(1)
 }
 
 func (a *App) buildLeftSidebar(c *ui.Context, pal theme.Palette) {

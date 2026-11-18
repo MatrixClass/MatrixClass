@@ -116,6 +116,7 @@ func New(opts Options) *App {
 		channel:       opts.Channel,
 		dark:          opts.Dark,
 		mode:          ModeBar,
+		broadcastWindow: true,
 		connected:     true,
 		lockMessage:   "课堂黑屏安静模式：请注意前方黑板或教师讲解。",
 		checkInNo:     opts.StudentNo,
@@ -369,7 +370,8 @@ func (a *App) syncWindowOnMain(w *mygo.Window, show, focus bool) {
 				w.SetFullScreen(false)
 				w.SetAlwaysOnTop(false)
 				w.SetResizable(true)
-				w.SetSize(960, 600)
+				w.SetMinimumSize(480, 320)
+				w.SetSize(720, 460)
 				w.Center()
 			} else {
 				w.SetAlwaysOnTop(true)
@@ -379,33 +381,37 @@ func (a *App) syncWindowOnMain(w *mygo.Window, show, focus bool) {
 			w.SetFullScreen(false)
 			w.SetAlwaysOnTop(true)
 			w.SetClosable(true)
-			w.SetResizable(false)
-			w.SetSize(460, 270)
+			w.SetResizable(true)
+			w.SetMinimumSize(380, 220)
+			w.SetSize(420, 250)
 			w.Center()
 		case ModeExam:
 			w.SetFullScreen(false)
 			w.SetAlwaysOnTop(false)
 			w.SetClosable(true)
 			w.SetResizable(true)
-			w.SetSize(760, 560)
+			w.SetMinimumSize(520, 380)
+			w.SetSize(640, 460)
 			w.Center()
 		case ModeChat:
 			w.SetFullScreen(false)
 			w.SetAlwaysOnTop(false)
 			w.SetClosable(true)
 			w.SetResizable(true)
-			w.SetSize(640, 480)
+			w.SetMinimumSize(460, 340)
+			w.SetSize(560, 420)
 			w.Center()
 		default: // ModeBar
 			w.SetFullScreen(false)
 			w.SetAlwaysOnTop(true)
 			w.SetClosable(true)
-			w.SetResizable(false)
-			h := 104
+			w.SetResizable(true)
+			w.SetMinimumSize(520, 48)
+			h := 88
 			if collapsed {
-				h = 54
+				h = 48
 			}
-			w.SetSize(780, h)
+			w.SetSize(640, h)
 		}
 	}
 	if show {
