@@ -874,8 +874,8 @@ func (a *App) buildChannelSelectModal(c *ui.Context, pal theme.Palette) {
 }
 
 func (a *App) buildToolbar(c *ui.Context, pal theme.Palette) {
-	ui.Column(c).Background(pal.ChromeBar).Padding(6, 10).Gap(4).Children(func() {
-		ui.Row(c).AlignItems(ui.Center).Gap(8).DragWindow().Children(func() {
+	ui.Column(c).Background(pal.ChromeBar).Padding(8, 12).Gap(6).Children(func() {
+		ui.Row(c).AlignItems(ui.Center).Gap(10).DragWindow().Children(func() {
 			ui.Text(c, "矩联电子教室 MatrixClass").FontSize(14).Bold().TextColor(pal.Accent)
 			ui.Badge(c, a.channel).Background(pal.Selection).TextColor(pal.Accent)
 			ui.Spacer(c)
@@ -948,14 +948,14 @@ func (a *App) buildToolbar(c *ui.Context, pal theme.Palette) {
 }
 
 func (a *App) toolbarButton(c *ui.Context, pal theme.Palette, label string, icon *ui.SVG, active bool, onClick func()) {
-	btn := ui.Button(c, "").Label(label).Tooltip(label).Padding(4, 8).Radius(3)
+	btn := ui.Button(c, "").Label(label).Tooltip(label).Padding(5, 9).Radius(4)
 	if active {
-		btn.Background(pal.Selection).Border(1, pal.Accent)
+		btn.Background(pal.Selection).Border(1, pal.CardBorder)
 	}
 	btn.Children(func() {
-		ui.Column(c).AlignItems(ui.Center).Gap(2).Children(func() {
-			ui.Image(c, icon).Size(22, 22)
-			ui.Text(c, label).FontSize(11).SingleLine()
+		ui.Column(c).AlignItems(ui.Center).Gap(3).Children(func() {
+			ui.Image(c, icon).Size(20, 20)
+			ui.Text(c, label).FontSize(10).SingleLine()
 		})
 	})
 	if btn.Clicked() {
@@ -964,14 +964,14 @@ func (a *App) toolbarButton(c *ui.Context, pal theme.Palette, label string, icon
 }
 
 func (a *App) toolbarToggle(c *ui.Context, pal theme.Palette, label string, icon *ui.SVG, state *bool, onChanged func()) {
-	tg := ui.Toggle(c, state, "").Label(label).Tooltip(label).Padding(4, 8).Radius(3)
+	tg := ui.Toggle(c, state, "").Label(label).Tooltip(label).Padding(5, 9).Radius(4)
 	if *state {
-		tg.Background(pal.Selection).Border(1, pal.Accent)
+		tg.Background(pal.Selection).Border(1, pal.CardBorder)
 	}
 	tg.Children(func() {
-		ui.Column(c).AlignItems(ui.Center).Gap(2).Children(func() {
-			ui.Image(c, icon).Size(22, 22)
-			ui.Text(c, label).FontSize(11).SingleLine()
+		ui.Column(c).AlignItems(ui.Center).Gap(3).Children(func() {
+			ui.Image(c, icon).Size(20, 20)
+			ui.Text(c, label).FontSize(10).SingleLine()
 		})
 	})
 	if tg.Changed() {

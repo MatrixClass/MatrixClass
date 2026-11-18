@@ -39,26 +39,26 @@ type Palette struct {
 func LightPalette() Palette {
 	return Palette{
 		Dark:          false,
-		ChromeBar:     ui.Hex("#F2F2F2"),
-		ChromeRail:    ui.Hex("#F7F7F7"),
-		ChromeHover:   ui.Hex("#E6E6E6"),
-		ChromeActive:  ui.Hex("#DCDCDC"),
-		Canvas:        ui.Hex("#FFFFFF"),
-		Card:          ui.Hex("#FAFAFA"),
-		CardBorder:    ui.Hex("#D4D4D4"),
-		Selection:     ui.Hex("#E4E4E4"),
-		Accent:        ui.Hex("#1F1F1F"),
+		ChromeBar:     ui.Hex("#FFFFFF"),
+		ChromeRail:    ui.Hex("#F7F7F8"),
+		ChromeHover:   ui.Hex("#F0F0F1"),
+		ChromeActive:  ui.Hex("#E7E7E8"),
+		Canvas:        ui.Hex("#F7F7F8"),
+		Card:          ui.Hex("#FFFFFF"),
+		CardBorder:    ui.Hex("#E2E2E5"),
+		Selection:     ui.Hex("#ECECEF"),
+		Accent:        ui.Hex("#2F2F32"),
 		AccentText:    ui.Hex("#FFFFFF"),
-		Success:       ui.Hex("#262626"),
-		Warning:       ui.Hex("#525252"),
-		Danger:        ui.Hex("#141414"),
-		Info:          ui.Hex("#404040"),
-		StatusBarBg:   ui.Hex("#ECECEC"),
-		StatusBarText: ui.Hex("#262626"),
+		Success:       ui.Hex("#3F3F43"),
+		Warning:       ui.Hex("#66666B"),
+		Danger:        ui.Hex("#242428"),
+		Info:          ui.Hex("#55555A"),
+		StatusBarBg:   ui.Hex("#F0F0F1"),
+		StatusBarText: ui.Hex("#3F3F43"),
 		TheatreBg:     ui.Hex("#111111"),
 		LockBg:        ui.Hex("#0A0A0A"),
-		Text:          ui.Hex("#171717"),
-		TextMuted:     ui.Hex("#6B6B6B"),
+		Text:          ui.Hex("#2B2B2F"),
+		TextMuted:     ui.Hex("#77777D"),
 	}
 }
 
@@ -66,15 +66,15 @@ func LightPalette() Palette {
 func DarkPalette() Palette {
 	return Palette{
 		Dark:          true,
-		ChromeBar:     ui.Hex("#1D1D1D"),
-		ChromeRail:    ui.Hex("#181818"),
-		ChromeHover:   ui.Hex("#2A2A2A"),
-		ChromeActive:  ui.Hex("#333333"),
-		Canvas:        ui.Hex("#121212"),
-		Card:          ui.Hex("#1B1B1B"),
-		CardBorder:    ui.Hex("#323232"),
-		Selection:     ui.Hex("#2D2D2D"),
-		Accent:        ui.Hex("#EAEAEA"),
+		ChromeBar:     ui.Hex("#202023"),
+		ChromeRail:    ui.Hex("#18181B"),
+		ChromeHover:   ui.Hex("#2B2B2F"),
+		ChromeActive:  ui.Hex("#36363B"),
+		Canvas:        ui.Hex("#151518"),
+		Card:          ui.Hex("#1D1D21"),
+		CardBorder:    ui.Hex("#343439"),
+		Selection:     ui.Hex("#2B2B30"),
+		Accent:        ui.Hex("#F0F0F2"),
 		AccentText:    ui.Hex("#111111"),
 		Success:       ui.Hex("#D4D4D4"),
 		Warning:       ui.Hex("#A3A3A3"),
@@ -84,8 +84,8 @@ func DarkPalette() Palette {
 		StatusBarText: ui.Hex("#D4D4D4"),
 		TheatreBg:     ui.Hex("#0A0A0A"),
 		LockBg:        ui.Hex("#050505"),
-		Text:          ui.Hex("#ECECEC"),
-		TextMuted:     ui.Hex("#8E8E8E"),
+		Text:          ui.Hex("#E8E8EB"),
+		TextMuted:     ui.Hex("#96969D"),
 	}
 }
 
@@ -110,8 +110,8 @@ func Light() *ui.Theme {
 	t.Text = p.Text
 	t.TextMuted = p.TextMuted
 	t.Accent = p.Accent
-	t.AccentHover = ui.Hex("#333333")
-	t.AccentPressed = ui.Hex("#0D0D0D")
+	t.AccentHover = ui.Hex("#454549")
+	t.AccentPressed = ui.Hex("#1F1F22")
 	t.AccentText = p.AccentText
 	t.InactiveAccent = ui.Hex("#7A7A7A")
 	t.Danger = p.Danger
@@ -119,8 +119,8 @@ func Light() *ui.Theme {
 	t.Success = p.Success
 	t.Selection = p.Selection
 	t.Focus = p.Accent
-	t.Radius = 3
-	t.Spacing = 4
+	t.Radius = 4
+	t.Spacing = 5
 	t.FontSize = 13
 	return t
 }
@@ -138,8 +138,8 @@ func Dark() *ui.Theme {
 	t.Text = p.Text
 	t.TextMuted = p.TextMuted
 	t.Accent = p.Accent
-	t.AccentHover = ui.Hex("#D4D4D4")
-	t.AccentPressed = ui.Hex("#BDBDBD")
+	t.AccentHover = ui.Hex("#FFFFFF")
+	t.AccentPressed = ui.Hex("#D4D4D8")
 	t.AccentText = p.AccentText
 	t.InactiveAccent = ui.Hex("#666666")
 	t.Danger = p.Danger
@@ -147,8 +147,8 @@ func Dark() *ui.Theme {
 	t.Success = p.Success
 	t.Selection = p.Selection
 	t.Focus = p.Accent
-	t.Radius = 3
-	t.Spacing = 4
+	t.Radius = 4
+	t.Spacing = 5
 	t.FontSize = 13
 	return t
 }

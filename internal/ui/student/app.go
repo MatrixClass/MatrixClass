@@ -751,7 +751,7 @@ func (a *App) buildFloatingBarView(c *ui.Context, pal theme.Palette) {
 		return
 	}
 
-	root.Radius(12).Border(1, pal.CardBorder).Padding(6, 6).Gap(6).Children(func() {
+	root.Radius(10).Border(1, pal.CardBorder).Padding(6, 7).Gap(6).Children(func() {
 		// Top draggable floating bar
 		ui.Row(c).FillWidth().Gap(6).AlignItems(ui.Center).DragWindow().Children(func() {
 			ui.Badge(c, a.channel).Background(pal.Selection).TextColor(pal.Text)
@@ -825,7 +825,7 @@ func (a *App) barIconButton(c *ui.Context, pal theme.Palette, label string, icon
 		fg = pal.AccentText
 		border = pal.Accent
 	}
-	btn := ui.Row(c).AlignItems(ui.Center).Gap(5).Padding(6, 11).Radius(7).
+	btn := ui.Row(c).AlignItems(ui.Center).Gap(5).Padding(5, 10).Radius(5).
 		Background(bg).Border(1, border).Focusable().Label(label)
 	if btn.Hovered() && !active {
 		btn.Background(pal.ChromeHover)
