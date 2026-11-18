@@ -228,9 +228,13 @@ func (rt *Runtime) wireHandlers() {
 		case protocol.MsgVideoFrame:
 			var pkt videoStreamPacket
 			if err := json.Unmarshal(env.Payload, &pkt); err == nil && len(pkt.Data) > 0 {
-				frame, err := rt.decodeStudentFrame(senderID, pkt.Data)
+				kind := pkt.Kind
+				if kind == "" {
+					kind = "monitor"
+				}
+				frame, err := rt.decodeStudentFrame(senderID+":"+kind, pkt.Data)
 				if err == nil && frame != nil {
-					switch pkt.Kind {
+					switch kind {
 					case "remote":
 						rt.App.UpdateRemoteFrame(senderID, frame)
 					case "demo":

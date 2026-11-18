@@ -397,6 +397,10 @@ func (rt *Runtime) runScreenStream(ctx context.Context, kind string, maxW, maxH,
 	defer ticker.Stop()
 
 	var seq uint64
+	kfInterval := uint64(60)
+	if kind == "monitor" {
+		kfInterval = 15
+	}
 	for {
 		select {
 		case <-ctx.Done():
@@ -408,7 +412,7 @@ func (rt *Runtime) runScreenStream(ctx context.Context, kind string, maxW, maxH,
 			}
 			seq++
 			frame.Seq = seq
-			frame.KeyFrame = seq == 1 || seq%60 == 0
+			frame.KeyFrame = seq == 1 || seq%kfInterval == 0
 			encoded, err := codec.Encode(frame, quality)
 			if err != nil {
 				continue

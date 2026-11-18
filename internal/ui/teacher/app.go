@@ -792,6 +792,7 @@ func (a *App) buildSeatCard(c *ui.Context, pal theme.Palette, st core.StudentInf
 			a.selectedID = st.ID
 			a.monitoring = true
 			a.mainTab = TabMonitorWall
+			a.applyMonitorState()
 		}
 		if m.Item("远程控制").Chosen() {
 			a.StartRemoteControl(st.ID)
@@ -845,6 +846,7 @@ func (a *App) buildSeatCard(c *ui.Context, pal theme.Palette, st core.StudentInf
 		a.monitoring = true
 		a.mainTab = TabMonitorWall
 		a.statusNote = fmt.Sprintf("正在重点监控 %s", st.MachineName)
+		a.applyMonitorState()
 	}
 }
 
@@ -870,7 +872,9 @@ func (a *App) buildMonitorWallTab(c *ui.Context, pal theme.Palette, students []c
 		ui.Scroll(c).Grow(1).Children(func() {
 			ui.Row(c).Wrap().Gap(12).Children(func() {
 				for _, st := range students {
+					a.mu.Lock()
 					bmp := a.ensureTileBitmap(st.ID, 240, 135)
+					a.mu.Unlock()
 					border := pal.CardBorder
 					if a.selectedID == st.ID {
 						border = pal.Accent
