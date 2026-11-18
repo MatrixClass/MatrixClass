@@ -47,6 +47,7 @@ const (
 
 	dxgiErrorWaitTimeout = 0x887A0027
 	dxgiErrorAccessLost  = 0x887A0026
+	dxgiErrorInvalidCall = 0x887A0001
 
 	smCXScreen   = 0
 	smCYScreen   = 1
@@ -131,6 +132,7 @@ type ScreenCapturer struct {
 	backend        CaptureBackend
 	dxgi           *dxgiDuplicator
 	dxgiDisabled   bool
+	dxgiRetryAt    time.Time
 	gdiDisabled    bool
 	gdiDC          uintptr
 	gdiBmp         uintptr
@@ -189,7 +191,7 @@ func (c *ScreenCapturer) CaptureScreenScaled(maxW, maxH int, withNV12 bool) (*co
 	var err error
 	c.lastChanged = true
 
-	if !c.dxgiDisabled {
+	if !c.dxgiDisabled && (c.dxgi != nil || time.Now().After(c.dxgiRetryAt)) {
 		var changed bool
 		w, h, changed, err = c.captureDXGI()
 		if err == nil && w > 0 && h > 0 {
@@ -208,7 +210,7 @@ func (c *ScreenCapturer) CaptureScreenScaled(maxW, maxH int, withNV12 bool) (*co
 				return c.buildVideoFrameScaled(gW, gH, maxW, maxH, withNV12), nil
 			}
 		}
-		if errors.Is(err, errDXGIAccessLost) {
+		if errors.Is(err, errDXGIAccessLost) || errors.Is(err, errDXGIInvalidCall) {
 			c.releaseDXGI()
 			if initErr := c.initDXGI(); initErr == nil {
 				w, h, changed, err = c.captureDXGI()
@@ -222,7 +224,12 @@ func (c *ScreenCapturer) CaptureScreenScaled(maxW, maxH int, withNV12 bool) (*co
 			}
 		}
 		c.releaseDXGI()
-		c.dxgiDisabled = true
+		if c.opts.ForceSynthetic {
+			c.dxgiDisabled = true
+		} else {
+			// Cooldown before retrying DXGI so transient desktop/mode transitions recover.
+			c.dxgiRetryAt = time.Now().Add(3 * time.Second)
+		}
 	}
 
 	if !c.gdiDisabled {
@@ -242,12 +249,15 @@ func (c *ScreenCapturer) CaptureScreenScaled(maxW, maxH int, withNV12 bool) (*co
 			c.hasCachedFrame = true
 			return c.buildVideoFrameScaled(w, h, maxW, maxH, withNV12), nil
 		}
-		c.gdiDisabled = true
+		if c.opts.ForceSynthetic {
+			c.gdiDisabled = true
+		}
 	}
 
 	c.backend = CaptureBackendSynthetic
 	w, h = c.opts.Width, c.opts.Height
 	c.rgbaBuf = renderSyntheticRGBA(c.rgbaBuf, w, h, c.seq)
+	c.hasCachedFrame = false
 	return c.buildVideoFrameScaled(w, h, maxW, maxH, withNV12), nil
 }
 
@@ -294,6 +304,7 @@ func (c *ScreenCapturer) Close() error {
 
 var (
 	errDXGIAccessLost         = errors.New("media: dxgi access lost")
+	errDXGIInvalidCall        = errors.New("media: dxgi invalid call")
 	errDXGIWaitTimeoutNoCache = errors.New("media: dxgi acquire timeout with no cached frame")
 )
 
@@ -406,18 +417,22 @@ func (c *ScreenCapturer) captureDXGI() (int, int, bool, error) {
 	var frameInfo dxgiOutduplFrameInfo
 	var resource uintptr
 	timeoutMs := uintptr(0)
-	if !c.hasCachedFrame {
+	hasDXGICache := c.hasCachedFrame && d.staging != 0 && d.width > 0 && d.height > 0 && c.lastWidth == d.width && c.lastHeight == d.height && len(c.rgbaBuf) >= d.width*d.height*4
+	if !hasDXGICache {
 		timeoutMs = 16
 	}
 	hr := comCall(d.dupl, 8, timeoutMs, uintptr(unsafe.Pointer(&frameInfo)), uintptr(unsafe.Pointer(&resource)))
 	if uint32(hr) == dxgiErrorWaitTimeout {
-		if c.hasCachedFrame && c.lastWidth > 0 && c.lastHeight > 0 {
+		if hasDXGICache {
 			return c.lastWidth, c.lastHeight, false, nil
 		}
 		return 0, 0, false, errDXGIWaitTimeoutNoCache
 	}
 	if uint32(hr) == dxgiErrorAccessLost {
 		return 0, 0, false, errDXGIAccessLost
+	}
+	if uint32(hr) == dxgiErrorInvalidCall {
+		return 0, 0, false, errDXGIInvalidCall
 	}
 	if int32(hr) < 0 || resource == 0 {
 		return 0, 0, false, fmt.Errorf("media: AcquireNextFrame failed: 0x%08x", uint32(hr))

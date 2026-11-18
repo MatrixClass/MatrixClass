@@ -479,3 +479,154 @@ func TestEndToEndBroadcastBurstLatestFrameOverKCP(t *testing.T) {
 		t.Fatalf("student DecodeFrame failed: err=%v decoded=%+v", err, decoded)
 	}
 }
+
+func TestMonitorDecodeErrorResetsDecoderRequestsRestartAndTouchesStudent(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	teacherAddr := freeUDPAddr(t)
+	trRuntime, err := NewRuntime("Lab-MonErr", "teacher-monerr", "教师端", t.TempDir())
+	if err != nil {
+		t.Fatalf("NewRuntime teacher failed: %v", err)
+	}
+	defer trRuntime.Close()
+
+	if err := trRuntime.Start(ctx, teacherAddr, "教师端"); err != nil {
+		t.Fatalf("teacher Start failed: %v", err)
+	}
+
+	stTransport := transport.NewManager(
+		transport.WithDiscoveryConfig(transport.DiscoveryConfig{Port: 0}),
+		transport.WithTeacherAddr(teacherAddr),
+	)
+	defer stTransport.Close()
+
+	monitorCtrlCh := make(chan bool, 8)
+	stTransport.OnSession(func(sess core.Session) {
+		env, _ := protocol.NewEnvelope(protocol.MsgStudentRegister, "stu-mon-1", core.StudentInfo{
+			ID:          "stu-mon-1",
+			StudentNo:   "202601",
+			MachineName: "PC-MON",
+			Channel:     "Lab-MonErr",
+		})
+		_ = sess.SendEnvelope(env)
+	})
+	stTransport.OnEnvelope(func(_ core.Session, env protocol.Envelope) {
+		if env.Type == protocol.MsgMonitorControl {
+			var req struct {
+				Active bool `json:"active"`
+			}
+			if json.Unmarshal(env.Payload, &req) == nil {
+				select {
+				case monitorCtrlCh <- req.Active:
+				default:
+				}
+			}
+		}
+	})
+
+	if err := stTransport.StartStudent(ctx, "Lab-MonErr"); err != nil {
+		t.Fatalf("student StartStudent failed: %v", err)
+	}
+
+	deadline := time.Now().Add(4 * time.Second)
+	for time.Now().Before(deadline) && len(trRuntime.Classroom.ListStudents()) == 0 {
+		time.Sleep(25 * time.Millisecond)
+	}
+	if len(trRuntime.Classroom.ListStudents()) == 0 {
+		t.Fatalf("student failed to register on teacher")
+	}
+
+	// Enable monitoring on teacher app.
+	trRuntime.App.ToggleMonitor()
+	select {
+	case active := <-monitorCtrlCh:
+		if !active {
+			t.Fatalf("expected initial monitor control active=true")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("timed out waiting for initial MsgMonitorControl")
+	}
+
+	// Mark student offline first so we can verify TouchStudent brings it back online even on decode error.
+	if err := trRuntime.Classroom.SetStudentStatus("stu-mon-1", core.StatusOffline); err != nil {
+		t.Fatalf("SetStudentStatus offline failed: %v", err)
+	}
+
+	// Seed a decoder entry for stu-mon-1:monitor and send a corrupted/delta frame.
+	validCodec, err := media.NewHybridVideoCodec(false)
+	if err != nil {
+		t.Fatalf("NewHybridVideoCodec failed: %v", err)
+	}
+	trRuntime.decMu.Lock()
+	trRuntime.studentDecoders["stu-mon-1:monitor"] = validCodec
+	trRuntime.decMu.Unlock()
+
+	badEnv, err := protocol.NewEnvelope(protocol.MsgVideoFrame, "stu-mon-1", videoStreamPacket{
+		Kind: "monitor",
+		Data: []byte("corrupted-delta-frame"),
+	})
+	if err != nil {
+		t.Fatalf("NewEnvelope bad frame failed: %v", err)
+	}
+	badEnv.Channel = "Lab-MonErr"
+	if err := stTransport.BroadcastControl(badEnv, nil); err != nil {
+		t.Fatalf("BroadcastControl bad frame failed: %v", err)
+	}
+
+	// Expect teacher to send MsgMonitorControl(active=true) to restart stream/keyframe and mark student online.
+	select {
+	case active := <-monitorCtrlCh:
+		if !active {
+			t.Fatalf("expected recovery MsgMonitorControl active=true")
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatalf("timed out waiting for recovery MsgMonitorControl after decode error")
+	}
+
+	st, ok := trRuntime.Classroom.GetStudent("stu-mon-1")
+	if !ok {
+		t.Fatalf("student stu-mon-1 not found")
+	}
+	if st.Status != core.StatusOnline {
+		t.Fatalf("expected stu-mon-1 status online after MsgVideoFrame, got %v", st.Status)
+	}
+
+	trRuntime.decMu.Lock()
+	_, stillPresent := trRuntime.studentDecoders["stu-mon-1:monitor"]
+	trRuntime.decMu.Unlock()
+	if stillPresent {
+		t.Fatalf("expected stale decoder stu-mon-1:monitor to be reset/removed after decode error")
+	}
+
+	// Also verify re-registering resets any existing monitor decoder.
+	reCodec, err := media.NewHybridVideoCodec(false)
+	if err != nil {
+		t.Fatalf("NewHybridVideoCodec failed: %v", err)
+	}
+	trRuntime.decMu.Lock()
+	trRuntime.studentDecoders["stu-mon-1:monitor"] = reCodec
+	trRuntime.decMu.Unlock()
+
+	regEnv, _ := protocol.NewEnvelope(protocol.MsgStudentRegister, "stu-mon-1", core.StudentInfo{
+		ID:          "stu-mon-1",
+		StudentNo:   "202601",
+		MachineName: "PC-MON",
+		Channel:     "Lab-MonErr",
+	})
+	if err := stTransport.BroadcastControl(regEnv, nil); err != nil {
+		t.Fatalf("BroadcastControl re-register failed: %v", err)
+	}
+
+	deadline = time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		trRuntime.decMu.Lock()
+		_, exists := trRuntime.studentDecoders["stu-mon-1:monitor"]
+		trRuntime.decMu.Unlock()
+		if !exists {
+			return
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	t.Fatalf("expected stu-mon-1:monitor decoder to be reset on MsgStudentRegister")
+}

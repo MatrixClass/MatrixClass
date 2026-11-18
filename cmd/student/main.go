@@ -47,8 +47,16 @@ type Runtime struct {
 	remoteStop   context.CancelFunc
 	demoStop     context.CancelFunc
 	demoActive   bool
+	monitorCfg   monitorStreamConfig
 	ctx          context.Context
 	bcastDecodeCh chan []byte
+}
+
+type monitorStreamConfig struct {
+	maxW    int
+	maxH    int
+	fps     int
+	quality int
 }
 
 type videoStreamPacket struct {
@@ -234,7 +242,7 @@ func (rt *Runtime) wireHandlers() {
 				if len(req.TargetIDs) > 0 && !containsID(req.TargetIDs, rt.studentID) {
 					return
 				}
-				if req.FPS > 0 {
+				if req.Active && req.FPS > 0 {
 					w, h := req.Width, req.Height
 					if w <= 0 {
 						w = 320
@@ -335,7 +343,12 @@ func (rt *Runtime) wireHandlers() {
 }
 
 func (rt *Runtime) startMonitorStream(maxW, maxH, fps, quality int) {
-	rt.stopMonitorStream()
+	if maxW <= 0 {
+		maxW = 320
+	}
+	if maxH <= 0 {
+		maxH = 180
+	}
 	if fps <= 0 {
 		fps = 10
 	}
@@ -345,9 +358,25 @@ func (rt *Runtime) startMonitorStream(maxW, maxH, fps, quality int) {
 	if quality <= 0 {
 		quality = 65
 	}
-	ctx, cancel := context.WithCancel(rt.ctx)
+	cfg := monitorStreamConfig{maxW: maxW, maxH: maxH, fps: fps, quality: quality}
+
+	rt.streamMu.Lock()
+	if rt.monitorStop != nil && rt.monitorCfg == cfg {
+		rt.streamMu.Unlock()
+		return
+	}
+	parentCtx := rt.ctx
+	if parentCtx == nil {
+		parentCtx = context.Background()
+	}
+	rt.streamMu.Unlock()
+
+	rt.stopMonitorStream()
+
+	ctx, cancel := context.WithCancel(parentCtx)
 	rt.streamMu.Lock()
 	rt.monitorStop = cancel
+	rt.monitorCfg = cfg
 	rt.streamMu.Unlock()
 	go rt.runScreenStream(ctx, "monitor", maxW, maxH, fps, quality)
 }
@@ -356,6 +385,7 @@ func (rt *Runtime) stopMonitorStream() {
 	rt.streamMu.Lock()
 	cancel := rt.monitorStop
 	rt.monitorStop = nil
+	rt.monitorCfg = monitorStreamConfig{}
 	rt.streamMu.Unlock()
 	if cancel != nil {
 		cancel()
@@ -417,9 +447,10 @@ func (rt *Runtime) runScreenStream(ctx context.Context, kind string, maxW, maxH,
 	defer ticker.Stop()
 
 	var seq uint64
+	forceKeyFrame := true
 	kfInterval := uint64(60)
 	if kind == "monitor" {
-		kfInterval = 15
+		kfInterval = 5
 	}
 	for {
 		select {
@@ -428,17 +459,20 @@ func (rt *Runtime) runScreenStream(ctx context.Context, kind string, maxW, maxH,
 		case <-ticker.C:
 			if len(rt.Transport.Sessions()) == 0 {
 				seq = 0
+				forceKeyFrame = true
 				continue
 			}
 			frame, err := rt.Media.CaptureScreenMax(maxW, maxH)
 			if err != nil || frame == nil {
+				forceKeyFrame = true
 				continue
 			}
 			seq++
 			frame.Seq = seq
-			frame.KeyFrame = seq == 1 || seq%kfInterval == 0
+			frame.KeyFrame = forceKeyFrame || seq == 1 || seq%kfInterval == 0
 			encoded, err := codec.Encode(frame, quality)
 			if err != nil {
+				forceKeyFrame = true
 				continue
 			}
 			env, err := protocol.NewEnvelope(protocol.MsgVideoFrame, rt.studentID, videoStreamPacket{
@@ -446,11 +480,16 @@ func (rt *Runtime) runScreenStream(ctx context.Context, kind string, maxW, maxH,
 				Data: encoded,
 			})
 			if err != nil {
+				forceKeyFrame = true
 				continue
 			}
 			env.Channel = rt.channel
 			env.Timestamp = time.Now().UnixMilli()
-			_ = rt.Transport.BroadcastControl(env, nil)
+			if err := rt.Transport.BroadcastControl(env, nil); err != nil {
+				forceKeyFrame = true
+				continue
+			}
+			forceKeyFrame = false
 		}
 	}
 }

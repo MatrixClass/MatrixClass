@@ -3,6 +3,7 @@ package teacher
 import (
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -511,4 +512,54 @@ func TestTeacherSQLitePersistenceAndChannelPrompt(t *testing.T) {
 	if !app2.SubmitStartupLogin() || app2.channelModal || app2.loginError != "" {
 		t.Fatalf("expected correct password to succeed")
 	}
+}
+
+func TestUpdateMonitorFrameResizeAndConcurrency(t *testing.T) {
+	app, _, _, _ := newTestTeacherApp()
+	tester := ui.NewTester(app.View, 1280, 820)
+	tester.Frame()
+
+	if err := tester.Click("屏幕监控"); err != nil {
+		t.Fatalf("click 屏幕监控 failed: %v", err)
+	}
+	tester.Frame()
+
+	students := app.listStudents()
+	if len(students) == 0 {
+		t.Fatalf("expected demo students")
+	}
+	sid := students[0].ID
+
+	rgba320 := make([]byte, 320*180*4)
+	for i := 0; i < len(rgba320); i += 4 {
+		rgba320[i] = 10
+		rgba320[i+1] = 180
+		rgba320[i+2] = 90
+		rgba320[i+3] = 255
+	}
+	app.UpdateMonitorFrame(sid, &core.VideoFrame{
+		Width:  320,
+		Height: 180,
+		Data:   rgba320,
+	})
+	tester.Frame()
+
+	bmp := app.monitorTiles[sid]
+	if bmp == nil {
+		t.Fatalf("expected tile bitmap for %s", sid)
+	}
+	if w, h := bmp.Size(); w != 320 || h != 180 {
+		t.Fatalf("expected bitmap resized from placeholder 240x135 to 320x180, got %dx%d", w, h)
+	}
+
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			app.UpdateMonitorFrame(sid, &core.VideoFrame{Width: 320, Height: 180, Data: rgba320})
+		}()
+	}
+	wg.Wait()
+	tester.Frame()
 }

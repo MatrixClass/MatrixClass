@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/rand"
 	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -26,8 +27,8 @@ const (
 	streamTagEnvelope  = byte(0xFE)
 	streamTagMediaEnv  = byte(0xFD)
 	ctrlWriteTimeout   = 1500 * time.Millisecond
-	mediaWriteTimeout  = 400 * time.Millisecond
-	mediaQueueCapacity = 2
+	mediaWriteTimeout  = 3 * time.Second
+	mediaQueueCapacity = 8
 	audioQueueCapacity = 4
 )
 
@@ -434,6 +435,7 @@ func (l *KCPListener) readLoop() {
 				if conn.kcp.PeekSize() >= 0 {
 					signalChan(conn.chReadEvent)
 				}
+				signalChan(conn.chWriteEvent)
 				signalChan(conn.chUpdate)
 			} else {
 				_ = conn.input(pkt)
@@ -540,6 +542,11 @@ type IncomingStream struct {
 	Stream io.ReadWriteCloser
 }
 
+type videoMediaItem struct {
+	pkt      []byte
+	keyFrame bool
+}
+
 var sessionSeq atomic.Uint64
 
 // SmuxSession wraps a KCPConn (or any net.Conn) with github.com/xtaci/smux and implements core.Session.
@@ -555,7 +562,7 @@ type SmuxSession struct {
 	ctrlStream  *smux.Stream
 	mediaStream *smux.Stream
 
-	videoMediaCh chan []byte
+	videoMediaCh chan videoMediaItem
 	audioMediaCh chan []byte
 
 	incomingCh chan IncomingStream
@@ -586,7 +593,7 @@ func NewSmuxSession(conn net.Conn, isServer bool, onEnvelope func(core.Session, 
 		conn:         conn,
 		mux:          mux,
 		onEnvelope:   onEnvelope,
-		videoMediaCh: make(chan []byte, mediaQueueCapacity),
+		videoMediaCh: make(chan videoMediaItem, mediaQueueCapacity),
 		audioMediaCh: make(chan []byte, audioQueueCapacity),
 		incomingCh:   make(chan IncomingStream, 64),
 		done:         make(chan struct{}),
@@ -650,7 +657,7 @@ func (s *SmuxSession) SendEnvelope(env protocol.Envelope) error {
 		return err
 	}
 	if isMediaEnvelope(env) {
-		return s.enqueueMediaFrame(env.Type, raw)
+		return s.enqueueMediaFrame(env.Type, raw, isVideoKeyFrame(env))
 	}
 	s.ctrlMu.Lock()
 	defer s.ctrlMu.Unlock()
@@ -687,7 +694,20 @@ func isMediaEnvelope(env protocol.Envelope) bool {
 	return env.Type == protocol.MsgVideoFrame || env.Type == protocol.MsgAudioFrame
 }
 
-func (s *SmuxSession) enqueueMediaFrame(msgType protocol.MsgType, raw []byte) error {
+func isVideoKeyFrame(env protocol.Envelope) bool {
+	if env.Type != protocol.MsgVideoFrame || len(env.Payload) == 0 {
+		return false
+	}
+	var pkt struct {
+		Data []byte `json:"data"`
+	}
+	if err := json.Unmarshal(env.Payload, &pkt); err != nil {
+		return false
+	}
+	return len(pkt.Data) >= 7 && pkt.Data[0] == 'N' && pkt.Data[1] == 'X' && pkt.Data[2] == 'V' && pkt.Data[3] == 'F' && (pkt.Data[6]&0x01) != 0
+}
+
+func (s *SmuxSession) enqueueMediaFrame(msgType protocol.MsgType, raw []byte, keyFrame bool) error {
 	select {
 	case <-s.done:
 		return ErrConnClosed
@@ -713,26 +733,26 @@ func (s *SmuxSession) enqueueMediaFrame(msgType protocol.MsgType, raw []byte) er
 		}
 		return nil
 	}
-	// Keep only the latest queued video frame to avoid stale frame buildup.
-	for {
-		select {
-		case <-s.videoMediaCh:
-		default:
-			goto enqueueVideo
+	item := videoMediaItem{pkt: pkt, keyFrame: keyFrame}
+	if keyFrame {
+		// A fresh keyframe supersedes all older queued frames.
+		for {
+			select {
+			case <-s.videoMediaCh:
+			default:
+				goto enqueueKeyframe
+			}
 		}
+	enqueueKeyframe:
+		select {
+		case s.videoMediaCh <- item:
+		default:
+		}
+		return nil
 	}
-enqueueVideo:
 	select {
-	case s.videoMediaCh <- pkt:
+	case s.videoMediaCh <- item:
 	default:
-		select {
-		case <-s.videoMediaCh:
-		default:
-		}
-		select {
-		case s.videoMediaCh <- pkt:
-		default:
-		}
 	}
 	return nil
 }
@@ -744,19 +764,19 @@ func (s *SmuxSession) mediaWriteLoop() {
 			s.mediaStream = nil
 		}
 	}()
-	writePacket := func(pkt []byte) {
+	writePacket := func(pkt []byte) bool {
 		if len(pkt) == 0 {
-			return
+			return true
 		}
 		if s.mediaStream == nil {
 			st, err := s.mux.OpenStream()
 			if err != nil {
-				return
+				return false
 			}
 			_ = st.SetWriteDeadline(time.Now().Add(mediaWriteTimeout))
 			if _, err := st.Write([]byte{streamTagMediaEnv}); err != nil {
 				_ = st.Close()
-				return
+				return false
 			}
 			s.mediaStream = st
 		}
@@ -764,19 +784,10 @@ func (s *SmuxSession) mediaWriteLoop() {
 		if _, err := s.mediaStream.Write(pkt); err != nil {
 			_ = s.mediaStream.Close()
 			s.mediaStream = nil
-			return
+			return false
 		}
 		_ = s.mediaStream.SetWriteDeadline(time.Time{})
-	}
-	drainLatestVideo := func(pkt []byte) []byte {
-		for {
-			select {
-			case newer := <-s.videoMediaCh:
-				pkt = newer
-			default:
-				return pkt
-			}
-		}
+		return true
 	}
 	for {
 		select {
@@ -784,8 +795,10 @@ func (s *SmuxSession) mediaWriteLoop() {
 			return
 		case pkt := <-s.audioMediaCh:
 			writePacket(pkt)
-		case pkt := <-s.videoMediaCh:
-			writePacket(drainLatestVideo(pkt))
+		case item := <-s.videoMediaCh:
+			if !writePacket(item.pkt) && item.keyFrame && !s.mux.IsClosed() {
+				writePacket(item.pkt)
+			}
 		}
 	}
 }

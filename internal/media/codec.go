@@ -301,9 +301,13 @@ type ZstdVideoCodec struct {
 	prevRGBA   []byte
 	prevW      int
 	prevH      int
+	prevEncSeq uint64
+	hasEncSeq  bool
 	decRGBA    []byte
 	decW       int
 	decH       int
+	decSeq     uint64
+	hasDecSeq  bool
 	scratch    []byte
 	compBuf    []byte
 	nv12RawBuf []byte
@@ -417,10 +421,15 @@ func (c *ZstdVideoCodec) Encode(frame *core.VideoFrame, quality int) ([]byte, er
 	rgba := frame.Data[:expectedRGBA]
 
 	if canDelta {
+		if c.hasEncSeq && frame.Seq != 0 && frame.Seq <= c.prevEncSeq {
+			c.hasEncSeq = false
+		}
 		deltaBuf, changedTiles, totalTiles := c.buildTileDelta(rgba, c.prevRGBA, w, h)
 		if changedTiles == 0 || changedTiles*100 <= totalTiles*65 {
 			c.compBuf = c.selectEncoder(quality).EncodeAll(deltaBuf, c.compBuf[:0])
 			copy(c.prevRGBA, rgba)
+			c.prevEncSeq = frame.Seq
+			c.hasEncSeq = true
 			return packVideoHeader(codecIDFrameZstd, videoFlagDelta, uint8(quality), w, h, frame.Seq, frame.Timestamp, c.compBuf), nil
 		}
 	}
@@ -432,6 +441,8 @@ func (c *ZstdVideoCodec) Encode(frame *core.VideoFrame, quality int) ([]byte, er
 	copy(c.prevRGBA, rgba)
 	c.prevW = w
 	c.prevH = h
+	c.prevEncSeq = frame.Seq
+	c.hasEncSeq = true
 
 	c.compBuf = c.selectEncoder(quality).EncodeAll(rgba, c.compBuf[:0])
 	return packVideoHeader(codecIDFrameZstd, videoFlagKeyFrame, uint8(quality), w, h, frame.Seq, frame.Timestamp, c.compBuf), nil
@@ -569,6 +580,8 @@ func (c *ZstdVideoCodec) Decode(data []byte) (*core.VideoFrame, error) {
 		c.decRGBA = c.decRGBA[:len(rgba)]
 		copy(c.decRGBA, rgba)
 		c.decW, c.decH = w, h
+		c.decSeq = seq
+		c.hasDecSeq = true
 		return &core.VideoFrame{
 			Seq:       seq,
 			Codec:     core.CodecFrameZstd,
@@ -588,6 +601,11 @@ func (c *ZstdVideoCodec) Decode(data []byte) (*core.VideoFrame, error) {
 	if flags&videoFlagDelta != 0 {
 		if c.decW != w || c.decH != h || len(c.decRGBA) != expectedRGBA {
 			return nil, fmt.Errorf("%w: missing reference frame for delta", ErrInvalidFrameData)
+		}
+		if c.hasDecSeq && seq != 0 && seq != c.decSeq+1 {
+			c.hasDecSeq = false
+			c.decW, c.decH = 0, 0
+			return nil, fmt.Errorf("%w: delta seq gap (%d -> %d)", ErrInvalidFrameData, c.decSeq, seq)
 		}
 		if len(raw) < 4 {
 			return nil, ErrInvalidFrameData
@@ -619,6 +637,8 @@ func (c *ZstdVideoCodec) Decode(data []byte) (*core.VideoFrame, error) {
 				pos += span
 			}
 		}
+		c.decSeq = seq
+		c.hasDecSeq = true
 	} else {
 		if len(raw) < expectedRGBA {
 			return nil, ErrInvalidFrameData
@@ -629,6 +649,8 @@ func (c *ZstdVideoCodec) Decode(data []byte) (*core.VideoFrame, error) {
 		c.decRGBA = c.decRGBA[:expectedRGBA]
 		copy(c.decRGBA, raw[:expectedRGBA])
 		c.decW, c.decH = w, h
+		c.decSeq = seq
+		c.hasDecSeq = true
 	}
 
 	outRGBA := make([]byte, expectedRGBA)

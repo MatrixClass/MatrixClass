@@ -417,3 +417,65 @@ func TestDownscaleFrameAndCaptureMax(t *testing.T) {
 		t.Fatalf("CaptureScreenMax failed: err=%v frame=%+v", err, thumb)
 	}
 }
+
+func TestZstdCodecRejectsDeltaSeqGapAndRecoversOnKeyframe(t *testing.T) {
+	codec, err := NewZstdVideoCodec()
+	if err != nil {
+		t.Fatalf("NewZstdVideoCodec: %v", err)
+	}
+	defer codec.Close()
+
+	const w, h = 160, 96
+	f1 := &core.VideoFrame{
+		Seq:       1,
+		Codec:     core.CodecFrameZstd,
+		Width:     w,
+		Height:    h,
+		KeyFrame:  true,
+		Timestamp: 1000,
+		Data:      renderSyntheticRGBA(nil, w, h, 1),
+	}
+	enc1, err := codec.Encode(f1, 85)
+	if err != nil {
+		t.Fatalf("Encode keyframe 1: %v", err)
+	}
+	if _, err := codec.Decode(enc1); err != nil {
+		t.Fatalf("Decode keyframe 1: %v", err)
+	}
+
+	// Encode seq 2 and seq 3 as deltas, then drop seq 2 on decode.
+	rgba2 := make([]byte, w*h*4)
+	copy(rgba2, f1.Data)
+	rgba2[0] ^= 0x55
+	f2 := &core.VideoFrame{Seq: 2, Codec: core.CodecFrameZstd, Width: w, Height: h, Timestamp: 1033, Data: rgba2}
+	if _, err := codec.Encode(f2, 85); err != nil {
+		t.Fatalf("Encode delta 2: %v", err)
+	}
+
+	rgba3 := make([]byte, w*h*4)
+	copy(rgba3, rgba2)
+	rgba3[4] ^= 0x55
+	f3 := &core.VideoFrame{Seq: 3, Codec: core.CodecFrameZstd, Width: w, Height: h, Timestamp: 1066, Data: rgba3}
+	enc3, err := codec.Encode(f3, 85)
+	if err != nil {
+		t.Fatalf("Encode delta 3: %v", err)
+	}
+
+	if _, err := codec.Decode(enc3); err == nil {
+		t.Fatalf("expected error decoding delta frame with seq gap 1 -> 3")
+	}
+
+	// Subsequent keyframe must resync cleanly.
+	f4 := &core.VideoFrame{Seq: 4, Codec: core.CodecFrameZstd, Width: w, Height: h, KeyFrame: true, Timestamp: 1100, Data: renderSyntheticRGBA(nil, w, h, 4)}
+	enc4, err := codec.Encode(f4, 85)
+	if err != nil {
+		t.Fatalf("Encode keyframe 4: %v", err)
+	}
+	dec4, err := codec.Decode(enc4)
+	if err != nil {
+		t.Fatalf("Decode keyframe 4 after seq gap: %v", err)
+	}
+	if !bytes.Equal(dec4.Data, f4.Data) {
+		t.Fatalf("keyframe 4 data mismatch after recovery")
+	}
+}

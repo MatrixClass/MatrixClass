@@ -208,6 +208,7 @@ func (rt *Runtime) wireHandlers() {
 					}
 				}
 				if rt.App.Monitoring() {
+					rt.resetStudentDecoder(st.ID + ":monitor")
 					if mEnv, err := protocol.NewEnvelope(protocol.MsgMonitorControl, rt.teacherID, struct {
 						Active bool `json:"active"`
 						core.MonitorConfig
@@ -224,6 +225,8 @@ func (rt *Runtime) wireHandlers() {
 						mEnv.Timestamp = time.Now().UnixMilli()
 						_ = sess.SendEnvelope(mEnv)
 					}
+				} else {
+					rt.resetStudentDecoder(st.ID + ":monitor")
 				}
 			}
 		case protocol.MsgCheckInSubmit:
@@ -275,13 +278,35 @@ func (rt *Runtime) wireHandlers() {
 		case protocol.MsgVideoFrame:
 			var pkt videoStreamPacket
 			if err := json.Unmarshal(env.Payload, &pkt); err == nil && len(pkt.Data) > 0 {
+				rt.Classroom.TouchStudent(senderID)
 				kind := pkt.Kind
 				if kind == "" {
 					kind = "monitor"
 				}
-				frame, err := rt.decodeStudentFrame(senderID+":"+kind, pkt.Data)
+				decKey := senderID + ":" + kind
+				frame, err := rt.decodeStudentFrame(decKey, pkt.Data)
+				if err != nil {
+					rt.resetStudentDecoder(decKey)
+					if kind == "monitor" && rt.App.Monitoring() && sess != nil {
+						if mEnv, mErr := protocol.NewEnvelope(protocol.MsgMonitorControl, rt.teacherID, struct {
+							Active bool `json:"active"`
+							core.MonitorConfig
+						}{
+							Active: true,
+							MonitorConfig: core.MonitorConfig{
+								Width:   320,
+								Height:  180,
+								FPS:     int(rt.App.MonitorFPS()),
+								Quality: int(rt.App.MonitorQual()),
+							},
+						}); mErr == nil {
+							mEnv.Channel = rt.channel
+							mEnv.Timestamp = time.Now().UnixMilli()
+							_ = sess.SendEnvelope(mEnv)
+						}
+					}
+				}
 				if err == nil && frame != nil {
-					rt.Classroom.TouchStudent(senderID)
 					switch kind {
 					case "remote":
 						rt.App.UpdateRemoteFrame(senderID, frame)
@@ -298,6 +323,17 @@ func (rt *Runtime) wireHandlers() {
 		}
 		rt.App.Invalidate()
 	})
+}
+
+func (rt *Runtime) resetStudentDecoder(key string) {
+	rt.decMu.Lock()
+	if dec, ok := rt.studentDecoders[key]; ok {
+		if dec != nil {
+			_ = dec.Close()
+		}
+		delete(rt.studentDecoders, key)
+	}
+	rt.decMu.Unlock()
 }
 
 func (rt *Runtime) nextFreeSeat() core.SeatPos {

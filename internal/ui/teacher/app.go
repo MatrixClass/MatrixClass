@@ -466,6 +466,10 @@ func (a *App) AttachWindow(w *mygo.Window) {
 		_ = w.SetIcon(theme.AppIconPNG(true))
 		w.OnClosed(func() {
 			a.mu.Lock()
+			if a.win == w {
+				a.win = nil
+				a.videoUpdateScheduled.Store(false)
+			}
 			fw := a.fileDistWin
 			a.fileDistWin = nil
 			a.mu.Unlock()
@@ -549,8 +553,8 @@ func (a *App) UpdateMonitorFrame(studentID string, frame *core.VideoFrame) {
 	w := a.win
 	if w == nil {
 		bmp := a.ensureTileBitmap(studentID, frame.Width, frame.Height)
-		a.mu.Unlock()
 		updateBitmapFromFrame(bmp, frame)
+		a.mu.Unlock()
 		return
 	}
 	a.pendingMonitor[studentID] = frame
@@ -570,8 +574,8 @@ func (a *App) UpdateRemoteFrame(studentID string, frame *core.VideoFrame) {
 			a.remoteBitmap = ui.NewBitmap(image.NewRGBA(image.Rect(0, 0, frame.Width, frame.Height)))
 		}
 		bmp := a.remoteBitmap
-		a.mu.Unlock()
 		updateBitmapFromFrame(bmp, frame)
+		a.mu.Unlock()
 		return
 	}
 	a.pendingRemote = frame
@@ -591,8 +595,8 @@ func (a *App) UpdateDemoFrame(studentID string, frame *core.VideoFrame) {
 			a.demoBitmap = ui.NewBitmap(image.NewRGBA(image.Rect(0, 0, frame.Width, frame.Height)))
 		}
 		bmp := a.demoBitmap
-		a.mu.Unlock()
 		updateBitmapFromFrame(bmp, frame)
+		a.mu.Unlock()
 		return
 	}
 	a.pendingDemo = frame
@@ -605,35 +609,43 @@ func (a *App) scheduleVideoFramesUpdate(w *mygo.Window) {
 		return
 	}
 	w.Update(func() {
-		a.videoUpdateScheduled.Store(false)
-		a.mu.Lock()
-		var monBatch map[string]*core.VideoFrame
-		if len(a.pendingMonitor) > 0 {
-			monBatch = a.pendingMonitor
-			a.pendingMonitor = make(map[string]*core.VideoFrame, len(monBatch))
-		}
-		remFrame := a.pendingRemote
-		a.pendingRemote = nil
-		demoFrame := a.pendingDemo
-		a.pendingDemo = nil
+		for {
+			a.mu.Lock()
+			var monBatch map[string]*core.VideoFrame
+			if len(a.pendingMonitor) > 0 {
+				monBatch = a.pendingMonitor
+				a.pendingMonitor = make(map[string]*core.VideoFrame, len(monBatch))
+			}
+			remFrame := a.pendingRemote
+			a.pendingRemote = nil
+			demoFrame := a.pendingDemo
+			a.pendingDemo = nil
 
-		for id, f := range monBatch {
-			bmp := a.ensureTileBitmap(id, f.Width, f.Height)
-			updateBitmapFromFrame(bmp, f)
-		}
-		if remFrame != nil {
-			if a.remoteBitmap == nil {
-				a.remoteBitmap = ui.NewBitmap(image.NewRGBA(image.Rect(0, 0, remFrame.Width, remFrame.Height)))
+			for id, f := range monBatch {
+				bmp := a.ensureTileBitmap(id, f.Width, f.Height)
+				updateBitmapFromFrame(bmp, f)
 			}
-			updateBitmapFromFrame(a.remoteBitmap, remFrame)
-		}
-		if demoFrame != nil {
-			if a.demoBitmap == nil {
-				a.demoBitmap = ui.NewBitmap(image.NewRGBA(image.Rect(0, 0, demoFrame.Width, demoFrame.Height)))
+			if remFrame != nil {
+				if a.remoteBitmap == nil {
+					a.remoteBitmap = ui.NewBitmap(image.NewRGBA(image.Rect(0, 0, remFrame.Width, remFrame.Height)))
+				}
+				updateBitmapFromFrame(a.remoteBitmap, remFrame)
 			}
-			updateBitmapFromFrame(a.demoBitmap, demoFrame)
+			if demoFrame != nil {
+				if a.demoBitmap == nil {
+					a.demoBitmap = ui.NewBitmap(image.NewRGBA(image.Rect(0, 0, demoFrame.Width, demoFrame.Height)))
+				}
+				updateBitmapFromFrame(a.demoBitmap, demoFrame)
+			}
+			hasMore := len(a.pendingMonitor) > 0 || a.pendingRemote != nil || a.pendingDemo != nil
+			if !hasMore {
+				a.videoUpdateScheduled.Store(false)
+			}
+			a.mu.Unlock()
+			if !hasMore {
+				break
+			}
 		}
-		a.mu.Unlock()
 	})
 }
 
@@ -642,15 +654,20 @@ func updateBitmapFromFrame(bmp *ui.Bitmap, frame *core.VideoFrame) {
 		return
 	}
 	if len(frame.NV12Y) > 0 && len(frame.NV12UV) > 0 && frame.StrideY > 0 && frame.StrideUV > 0 {
-		bmp.UpdateYUV(&ui.YUVImage{
-			Format:  ui.NV12,
-			Width:   frame.Width,
-			Height:  frame.Height,
-			Planes:  [3][]byte{frame.NV12Y, frame.NV12UV},
-			Strides: [3]int{frame.StrideY, frame.StrideUV},
-			Matrix:  ui.BT709,
-		})
-		return
+		cw, ch := (frame.Width+1)/2, (frame.Height+1)/2
+		minY := frame.StrideY*(frame.Height-1) + frame.Width
+		minUV := frame.StrideUV*(ch-1) + 2*cw
+		if frame.StrideY >= frame.Width && frame.StrideUV >= 2*cw && frame.StrideUV%2 == 0 && len(frame.NV12Y) >= minY && len(frame.NV12UV) >= minUV {
+			bmp.UpdateYUV(&ui.YUVImage{
+				Format:  ui.NV12,
+				Width:   frame.Width,
+				Height:  frame.Height,
+				Planes:  [3][]byte{frame.NV12Y, frame.NV12UV},
+				Strides: [3]int{frame.StrideY, frame.StrideUV},
+				Matrix:  ui.BT709,
+			})
+			return
+		}
 	}
 	if len(frame.Data) >= frame.Width*frame.Height*4 {
 		img := &image.RGBA{
