@@ -667,7 +667,7 @@ func (a *App) syncWindowOnMain(w *mygo.Window, show, focus bool) {
 			w.SetMinimumSize(520, 8)
 			wa := mygo.Screen.PrimaryDisplay().WorkArea
 			if docked {
-				w.SetSize(640, 8)
+				w.SetSize(640, 10)
 				curX, _ := w.Position()
 				if firstSync || prevMode != ModeBar {
 					curX = wa.X + (wa.Width-640)/2
@@ -708,7 +708,9 @@ func (a *App) View(c *ui.Context) {
 
 	pal := theme.GetPalette(dark)
 	c.SetTheme(theme.Theme(dark))
-	c.Root().Background(pal.Canvas)
+	if mode != ModeBar {
+		c.Root().Background(pal.Canvas)
+	}
 	switch mode {
 	case ModeLock:
 		a.buildLockView(c, pal)
@@ -738,13 +740,13 @@ func (a *App) buildFloatingBarView(c *ui.Context, pal theme.Palette) {
 	}
 
 	if docked {
-		root.Padding(2, 0).Center().Border(1, pal.CardBorder).Children(func() {
+		root.Radius(5).Padding(2, 0).Center().Border(1, pal.CardBorder).Children(func() {
 			ui.Box(c).Width(72).Height(3).Radius(2).Background(pal.Accent)
 		})
 		return
 	}
 
-	root.Padding(6, 10).Gap(6).Children(func() {
+	root.Radius(12).Border(1, pal.CardBorder).Padding(6, 10).Gap(6).Children(func() {
 		// Top draggable floating bar
 		ui.Row(c).FillWidth().Gap(8).AlignItems(ui.Center).DragWindow().Children(func() {
 			ui.Badge(c, a.channel).Background(pal.Selection).TextColor(pal.Text)
