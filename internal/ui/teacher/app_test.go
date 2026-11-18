@@ -644,3 +644,44 @@ func TestUpdateMonitorFrameResizeAndConcurrency(t *testing.T) {
 	wg.Wait()
 	tester.Frame()
 }
+
+func TestRevokeClassroomPolicy(t *testing.T) {
+	app, _, _, ctrl := newTestTeacherApp()
+	app.blockedAppsInput = "WeChat.exe, steam.exe"
+	app.blockedSitesInput = "bilibili.com"
+
+	tester := ui.NewTester(app.View, 1280, 820)
+	tester.Frame()
+	if err := tester.Click("管控策略"); err != nil {
+		t.Fatalf("failed to switch to policy tab: %v", err)
+	}
+	tester.Frame()
+
+	if err := tester.Click("下发管控策略"); err != nil {
+		t.Fatalf("failed to click apply policy button: %v", err)
+	}
+	tester.Frame()
+	if !app.policyActive {
+		t.Fatalf("expected policyActive=true after apply")
+	}
+	if ctrl.Policy.Mode != "blacklist" || len(ctrl.Policy.BlockedApps) != 2 {
+		t.Fatalf("unexpected applied policy: %+v", ctrl.Policy)
+	}
+
+	if err := tester.Click("撤销管控策略"); err != nil {
+		t.Fatalf("failed to click revoke policy button: %v", err)
+	}
+	tester.Frame()
+	if app.policyActive {
+		t.Fatalf("expected policyActive=false after revoke")
+	}
+	if ctrl.Policy.Mode != "off" {
+		t.Fatalf("expected revoked policy mode=off, got %q", ctrl.Policy.Mode)
+	}
+	if len(ctrl.Policy.BlockedApps) != 0 || len(ctrl.Policy.BlockedDomains) != 0 {
+		t.Fatalf("expected empty blocklists after revoke, got %+v", ctrl.Policy)
+	}
+	if app.blockedAppsInput != "WeChat.exe, steam.exe" || app.blockedSitesInput != "bilibili.com" {
+		t.Fatalf("expected input fields preserved after revoke")
+	}
+}

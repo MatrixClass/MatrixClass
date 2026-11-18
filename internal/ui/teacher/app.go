@@ -162,6 +162,7 @@ type App struct {
 	// Chat & Policy state
 	chatInput         string
 	policyMode        string
+	policyActive      bool
 	blockedAppsInput  string
 	allowedAppsInput  string
 	blockedSitesInput string
@@ -310,7 +311,7 @@ func (a *App) loadPersistedState() {
 		}
 		a.speakerMuted = cfg.SpeakerMuted
 		a.micMuted = cfg.MicMuted
-		if cfg.PolicyMode != "" {
+		if cfg.PolicyMode == "blacklist" || cfg.PolicyMode == "whitelist" {
 			a.policyMode = cfg.PolicyMode
 		}
 		if cfg.BlockedApps != "" {
@@ -1544,7 +1545,15 @@ func (a *App) buildSideChatQueue(c *ui.Context, pal theme.Palette, students []co
 
 func (a *App) buildSidePolicy(c *ui.Context, pal theme.Palette) {
 	ui.Scroll(c).Grow(1).Gap(8).Children(func() {
-		ui.Text(c, "课堂管控策略").FontSize(13).Bold()
+		ui.Row(c).AlignItems(ui.Center).Gap(6).Children(func() {
+			ui.Text(c, "课堂管控策略").FontSize(13).Bold()
+			ui.Spacer(c)
+			if a.policyActive {
+				ui.Badge(c, "已生效").Background(pal.Selection).TextColor(pal.Accent)
+			} else {
+				ui.Badge(c, "未生效")
+			}
+		})
 		policyDisplay := "黑名单模式"
 		if a.policyMode == "whitelist" {
 			policyDisplay = "白名单模式"
@@ -1564,9 +1573,14 @@ func (a *App) buildSidePolicy(c *ui.Context, pal theme.Palette) {
 		ui.TextInput(c, &a.blockedSitesInput)
 		ui.Text(c, "黑屏锁定提示语").FontSize(11).TextColor(pal.TextMuted)
 		ui.TextInput(c, &a.lockMessage)
-		if ui.PrimaryButton(c, "下发管控策略").FillWidth().Clicked() {
-			a.ApplyClassroomPolicy()
-		}
+		ui.Row(c).Gap(6).Children(func() {
+			if ui.PrimaryButton(c, "下发管控策略").Grow(1).Clicked() {
+				a.ApplyClassroomPolicy()
+			}
+			if ui.Button(c, "撤销管控策略").Grow(1).Clicked() {
+				a.RevokeClassroomPolicy()
+			}
+		})
 	})
 }
 
@@ -1987,6 +2001,7 @@ func (a *App) SendChatMessage() {
 }
 
 func (a *App) ApplyClassroomPolicy() {
+	a.policyActive = true
 	rule := core.PolicyRule{
 		Mode:           a.policyMode,
 		BlockedApps:    splitCSV(a.blockedAppsInput),
@@ -2002,6 +2017,21 @@ func (a *App) ApplyClassroomPolicy() {
 	a.savePersistedSettings()
 	a.sendControlEnvelope(protocol.MsgPolicySync, rule, nil)
 	a.statusNote = "管控策略已同步至学生端 (" + a.policyMode + ")"
+}
+
+func (a *App) RevokeClassroomPolicy() {
+	a.policyActive = false
+	rule := core.PolicyRule{
+		Mode:        "off",
+		LockScreen:  a.screenLocked,
+		LockMessage: a.lockMessage,
+	}
+	if a.opts.Control != nil {
+		_ = a.opts.Control.ApplyPolicy(rule)
+	}
+	a.savePersistedSettings()
+	a.sendControlEnvelope(protocol.MsgPolicySync, rule, nil)
+	a.statusNote = "已撤销管控策略，学生端限制已解除"
 }
 
 func (a *App) ExecutePower(action core.PowerAction) {
