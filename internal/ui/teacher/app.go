@@ -39,6 +39,7 @@ type Options struct {
 	TeacherID   string
 	TeacherName string
 	Channel     string
+	ArchiveDir  string
 	Dark        bool
 	Services    Services
 }
@@ -176,6 +177,10 @@ func New(opts Options) *App {
 	if opts.Channel == "" {
 		opts.Channel = "301机房"
 	}
+	archiveDir := strings.TrimSpace(opts.ArchiveDir)
+	if archiveDir == "" {
+		archiveDir = defaultDownloadsDir()
+	}
 	app := &App{
 		opts:              opts.Services,
 		teacherID:         opts.TeacherID,
@@ -209,7 +214,7 @@ func New(opts Options) *App {
 		examPointsInput:   100,
 		distributePath:    "D:\\Teaching\\Lab03_PacketGuide.pdf",
 		remoteDir:         "",
-		collectSaveDir:    "D:\\Submissions\\Class301",
+		collectSaveDir:    archiveDir,
 		autoOpenFile:      false,
 		fileTargetAll:     true,
 		policyMode:        "blacklist",
@@ -1316,10 +1321,17 @@ func (a *App) buildStatusBar(c *ui.Context, pal theme.Palette) {
 }
 
 func (a *App) buildSettingsModal(c *ui.Context, pal theme.Palette) {
-	ui.Column(c).Width(420).Background(pal.Canvas).Border(1, pal.CardBorder).Radius(4).Padding(16).Gap(10).Children(func() {
+	ui.Column(c).Width(460).Background(pal.Canvas).Border(1, pal.CardBorder).Radius(4).Padding(16).Gap(10).Children(func() {
 		ui.Text(c, "教师端课堂设置").FontSize(16).Bold()
 		ui.Text(c, "教室频道名").FontSize(12).TextColor(pal.TextMuted)
 		ui.TextInput(c, &a.channel)
+		ui.Text(c, "默认作业存放目录").FontSize(12).TextColor(pal.TextMuted)
+		ui.Row(c).FillWidth().Gap(8).AlignItems(ui.Center).Children(func() {
+			ui.TextInput(c, &a.collectSaveDir).Placeholder("默认: 系统下载目录 (Downloads)").Grow(1)
+			if ui.Button(c, "浏览...").Padding(4, 10).Clicked() {
+				a.openCollectDirPicker()
+			}
+		})
 		ui.Checkbox(c, &a.useMulticast, "优先使用 UDP 组播 + FEC 广播画面")
 		ui.Checkbox(c, &a.dark, "深色主题")
 		ui.Row(c).Gap(8).Justify(ui.End).Children(func() {
@@ -1329,6 +1341,7 @@ func (a *App) buildSettingsModal(c *ui.Context, pal theme.Palette) {
 			if ui.PrimaryButton(c, "保存并应用").Clicked() {
 				a.settingsOpen = false
 				a.syncRuntimeFlags()
+				a.applyArchiveDir(a.collectSaveDir)
 				a.statusNote = "课堂通道设置已更新: " + a.channel
 			}
 		})
@@ -2145,11 +2158,60 @@ func (a *App) CollectHomework() {
 		a.EndCollectHomework()
 		return
 	}
+	a.mu.Lock()
+	w := a.win
+	defaultDir := strings.TrimSpace(a.collectSaveDir)
+	a.mu.Unlock()
+	if defaultDir == "" {
+		defaultDir = defaultDownloadsDir()
+	}
+	if w == nil {
+		a.startCollectHomework(defaultDir)
+		return
+	}
+	go func() {
+		paths, err := mygo.Dialog.Open(mygo.OpenDialogOptions{
+			Title:       "选择作业保存目录（取消则保存到默认作业存放目录）",
+			DefaultPath: defaultDir,
+			Directory:   true,
+		})
+		chosen := defaultDir
+		if err == nil && len(paths) > 0 && strings.TrimSpace(paths[0]) != "" {
+			chosen = strings.TrimSpace(paths[0])
+		}
+		w.Update(func() {
+			a.startCollectHomework(chosen)
+		})
+	}()
+}
+
+func (a *App) startCollectHomework(saveDir string) {
+	if strings.TrimSpace(saveDir) == "" {
+		saveDir = defaultDownloadsDir()
+	}
+	a.applyArchiveDir(saveDir)
 	a.collectingHomework = true
-	a.statusNote = "已发起作业收取，等待学生提交..."
+	a.statusNote = fmt.Sprintf("已发起作业收取，保存目录: %s", saveDir)
 	a.sendControlEnvelope(protocol.MsgHomeworkCollectStart, map[string]any{
 		"channel": a.channel,
 	}, nil)
+}
+
+func (a *App) applyArchiveDir(dir string) {
+	dir = strings.TrimSpace(dir)
+	if dir == "" || a.opts.Files == nil {
+		return
+	}
+	if setter, ok := a.opts.Files.(interface{ SetArchiveDir(string) }); ok {
+		setter.SetArchiveDir(dir)
+	}
+}
+
+func defaultDownloadsDir() string {
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		return filepath.Join(home, "Downloads")
+	}
+	return "submissions"
 }
 
 func (a *App) EndCollectHomework() {

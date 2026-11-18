@@ -157,6 +157,22 @@ func (s *Service) SetProgressCallback(fn func(task core.TransferTask)) {
 	s.onProgress = fn
 }
 
+func (s *Service) SetArchiveDir(dir string) {
+	dir = strings.TrimSpace(dir)
+	if dir == "" {
+		return
+	}
+	s.mu.Lock()
+	s.archiveDir = dir
+	s.mu.Unlock()
+}
+
+func (s *Service) ArchiveDir() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.archiveDir
+}
+
 func (s *Service) SetAutoOpenCallback(fn func(path string)) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -991,7 +1007,7 @@ func (s *Service) resolveReceivePath(offer FileOffer) string {
 	fileName := sanitizeFileName(offer.FileName)
 	if offer.Direction == core.TransferSubmit {
 		folder := formatStudentFolder(offer.StudentNo, offer.StudentName, offer.StudentID)
-		return filepath.Join(s.archiveDir, folder, fileName)
+		return filepath.Join(s.ArchiveDir(), folder, fileName)
 	}
 	if strings.TrimSpace(offer.RemoteDir) != "" {
 		if err := os.MkdirAll(offer.RemoteDir, 0o755); err == nil {

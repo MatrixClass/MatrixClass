@@ -6,6 +6,8 @@ import (
 	"flag"
 	"io"
 	"log"
+	"os"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -96,6 +98,7 @@ func NewRuntime(channel, teacherID, teacherName, archiveDir string) (*Runtime, e
 		TeacherID:   teacherID,
 		TeacherName: teacherName,
 		Channel:     channel,
+		ArchiveDir:  archiveDir,
 		Services: teacher.Services{
 			Transport: tr,
 			Media:     md,
@@ -458,8 +461,16 @@ func main() {
 	channel := flag.String("channel", "301机房", "classroom channel name")
 	listenAddr := flag.String("listen", ":39100", "KCP listen address")
 	teacherLabel := "教师端"
-	archiveDir := flag.String("archive", "submissions", "homework archive directory")
+	archiveDir := flag.String("archive", "", "homework archive directory (defaults to Downloads)")
 	flag.Parse()
+
+	if *archiveDir == "" {
+		if home, err := os.UserHomeDir(); err == nil && home != "" {
+			*archiveDir = filepath.Join(home, "Downloads")
+		} else {
+			*archiveDir = "submissions"
+		}
+	}
 
 	if !mygo.App.RequestSingleInstanceLock() {
 		return

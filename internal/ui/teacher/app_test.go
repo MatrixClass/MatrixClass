@@ -380,3 +380,25 @@ func TestExpandQueueEntriesFolder(t *testing.T) {
 		t.Fatalf("unexpected expanded folder remoteDirs: %+v", got)
 	}
 }
+
+func TestCollectHomeworkDefaultDownloadsDir(t *testing.T) {
+	app, _, _, _ := newTestTeacherApp()
+	if app.collectSaveDir == "" {
+		t.Fatalf("expected non-empty default collectSaveDir")
+	}
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		want := filepath.Join(home, "Downloads")
+		if app.collectSaveDir != want {
+			t.Fatalf("expected default collectSaveDir=%q, got %q", want, app.collectSaveDir)
+		}
+	}
+
+	app.CollectHomework()
+	if !app.CollectingHomework() {
+		t.Fatalf("expected CollectingHomework=true after CollectHomework")
+	}
+	app.EndCollectHomework()
+	if app.CollectingHomework() {
+		t.Fatalf("expected CollectingHomework=false after EndCollectHomework")
+	}
+}
