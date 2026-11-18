@@ -402,3 +402,22 @@ func TestCollectHomeworkDefaultDownloadsDir(t *testing.T) {
 		t.Fatalf("expected CollectingHomework=false after EndCollectHomework")
 	}
 }
+
+func TestTeacherMicVolumeAndSettingsMonitorSliders(t *testing.T) {
+	app, _, _, _ := newTestTeacherApp()
+	tester := ui.NewTester(app.View, 1280, 820)
+	tester.Frame()
+
+	if !tester.HasText("麦克风音量") {
+		t.Fatalf("expected 麦克风音量 in bottom-right panel")
+	}
+	if tester.HasText("监控画质") || tester.HasText("监控帧率") {
+		t.Fatalf("expected monitor quality/FPS moved out of main sidebar into settings modal")
+	}
+
+	app.settingsOpen = true
+	tester.Frame()
+	if !tester.HasText("监控画质") || !tester.HasText("监控帧率") {
+		t.Fatalf("expected 监控画质 and 监控帧率 inside settings modal")
+	}
+}

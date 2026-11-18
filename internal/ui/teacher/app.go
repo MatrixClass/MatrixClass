@@ -1176,11 +1176,11 @@ func (a *App) buildRightSidebar(c *ui.Context, pal theme.Palette, students []cor
 		// Fixed bottom volume sliders for the right panel
 		ui.Column(c).Background(pal.ChromeBar).Padding(10).Gap(8).Children(func() {
 			ui.Row(c).AlignItems(ui.Center).Children(func() {
-				ui.Text(c, "广播/影院音量").FontSize(12).Bold()
+				ui.Text(c, "麦克风音量").FontSize(12).Bold()
 				ui.Spacer(c)
 				ui.Text(c, fmt.Sprintf("%d%%", int(a.volume))).FontSize(12).TextColor(pal.Accent)
 			})
-			if ui.Slider(c, &a.volume, 0, 100).Label("音量滑块").Changed() {
+			if ui.Slider(c, &a.volume, 0, 100).Label("麦克风音量滑块").Changed() {
 				if a.opts.Media != nil {
 					a.opts.Media.SetVolume(float32(a.volume / 100.0))
 				}
@@ -1188,18 +1188,6 @@ func (a *App) buildRightSidebar(c *ui.Context, pal theme.Palette, students []cor
 					a.theatrePlayer.SetVolume(a.volume / 100.0)
 				}
 				a.theatre.Volume = float32(a.volume / 100.0)
-			}
-
-			ui.Row(c).AlignItems(ui.Center).Children(func() {
-				ui.Text(c, "监控画质 / 帧率").FontSize(12).Bold()
-				ui.Spacer(c)
-				ui.Text(c, fmt.Sprintf("%d%% · %d FPS", int(a.monitorQual), int(a.monitorFPS))).FontSize(11).TextColor(pal.Accent)
-			})
-			if ui.Slider(c, &a.monitorQual, 30, 95).Label("监控画质滑块").Changed() && a.monitoring {
-				a.sendMonitorConfig()
-			}
-			if ui.Slider(c, &a.monitorFPS, 5, 30).Label("监控帧率滑块").Changed() && a.monitoring {
-				a.sendMonitorConfig()
 			}
 		})
 	})
@@ -1334,6 +1322,23 @@ func (a *App) buildSettingsModal(c *ui.Context, pal theme.Palette) {
 		})
 		ui.Checkbox(c, &a.useMulticast, "优先使用 UDP 组播 + FEC 广播画面")
 		ui.Checkbox(c, &a.dark, "深色主题")
+		ui.Divider(c)
+		ui.Row(c).AlignItems(ui.Center).Children(func() {
+			ui.Text(c, "监控画质").FontSize(12).Bold()
+			ui.Spacer(c)
+			ui.Text(c, fmt.Sprintf("%d%%", int(a.monitorQual))).FontSize(12).TextColor(pal.Accent)
+		})
+		if ui.Slider(c, &a.monitorQual, 30, 95).Label("监控画质滑块").Changed() && a.monitoring {
+			a.sendMonitorConfig()
+		}
+		ui.Row(c).AlignItems(ui.Center).Children(func() {
+			ui.Text(c, "监控帧率").FontSize(12).Bold()
+			ui.Spacer(c)
+			ui.Text(c, fmt.Sprintf("%d FPS", int(a.monitorFPS))).FontSize(12).TextColor(pal.Accent)
+		})
+		if ui.Slider(c, &a.monitorFPS, 5, 30).Label("监控帧率滑块").Changed() && a.monitoring {
+			a.sendMonitorConfig()
+		}
 		ui.Row(c).Gap(8).Justify(ui.End).Children(func() {
 			if ui.Button(c, "关闭").Clicked() {
 				a.settingsOpen = false
@@ -1342,6 +1347,9 @@ func (a *App) buildSettingsModal(c *ui.Context, pal theme.Palette) {
 				a.settingsOpen = false
 				a.syncRuntimeFlags()
 				a.applyArchiveDir(a.collectSaveDir)
+				if a.monitoring {
+					a.sendMonitorConfig()
+				}
 				a.statusNote = "课堂通道设置已更新: " + a.channel
 			}
 		})
