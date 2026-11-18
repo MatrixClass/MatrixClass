@@ -902,7 +902,7 @@ func (a *App) buildLockView(c *ui.Context, pal theme.Palette) {
 
 func (a *App) buildCheckInView(c *ui.Context, pal theme.Palette) {
 	ui.Column(c).Fill().Padding(18).Gap(12).Background(pal.Canvas).Children(func() {
-		ui.Row(c).FillWidth().AlignItems(ui.Center).Children(func() {
+		ui.Row(c).FillWidth().AlignItems(ui.Center).DragWindow().Children(func() {
 			ui.Text(c, "课堂电子点名签到").FontSize(16).Bold().TextColor(pal.Accent)
 			ui.Spacer(c)
 			if ui.Button(c, "返回").Padding(4, 10).Clicked() {
@@ -931,7 +931,7 @@ func (a *App) buildCheckInView(c *ui.Context, pal theme.Palette) {
 func (a *App) buildExamView(c *ui.Context, pal theme.Palette) {
 	a.loadActivePaper()
 	ui.Column(c).Fill().Padding(16).Gap(10).Background(pal.Canvas).Children(func() {
-		ui.Row(c).FillWidth().AlignItems(ui.Center).Children(func() {
+		ui.Row(c).FillWidth().AlignItems(ui.Center).DragWindow().Children(func() {
 			title := "随堂测验答题卡"
 			if a.activePaper != nil {
 				title = a.activePaper.Title
@@ -1001,7 +1001,7 @@ func (a *App) buildExamView(c *ui.Context, pal theme.Palette) {
 
 func (a *App) buildChatView(c *ui.Context, pal theme.Palette) {
 	ui.Column(c).Fill().Padding(16).Gap(10).Background(pal.Canvas).Children(func() {
-		ui.Row(c).FillWidth().AlignItems(ui.Center).Children(func() {
+		ui.Row(c).FillWidth().AlignItems(ui.Center).DragWindow().Children(func() {
 			ui.Text(c, "课堂消息").FontSize(16).Bold().TextColor(pal.Accent)
 			ui.Spacer(c)
 			if ui.Button(c, "返回").Padding(4, 10).Clicked() {
@@ -1037,7 +1037,7 @@ func (a *App) buildHomeworkView(c *ui.Context, pal theme.Palette) {
 		fileTasks = a.opts.Files.ListTasks()
 	}
 	ui.Column(c).Fill().Padding(16).Gap(10).Background(pal.Canvas).Children(func() {
-		ui.Row(c).FillWidth().AlignItems(ui.Center).Children(func() {
+		ui.Row(c).FillWidth().AlignItems(ui.Center).DragWindow().Children(func() {
 			ui.Text(c, "作业提交").FontSize(16).Bold().TextColor(pal.Accent)
 			ui.Spacer(c)
 			if ui.Button(c, "返回").Padding(4, 10).Clicked() {
