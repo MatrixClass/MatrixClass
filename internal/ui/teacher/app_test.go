@@ -287,6 +287,9 @@ func TestTeacherFileDistributeQueueWindow(t *testing.T) {
 	if app.remoteDir != "" {
 		t.Fatalf("expected empty default remoteDir (student Desktop), got %q", app.remoteDir)
 	}
+	if app.autoOpenFile {
+		t.Fatalf("expected autoOpenFile=false by default")
+	}
 
 	app.OpenFileDistributeWindow()
 	tester.Frame()
@@ -323,9 +326,17 @@ func TestTeacherFileDistributeQueueWindow(t *testing.T) {
 	seen := map[string]string{}
 	for _, tk := range tasks[:2] {
 		seen[tk.FileName] = tk.RemotePath
+		if tk.AutoOpen {
+			t.Fatalf("expected task AutoOpen=false by default, got true for %s", tk.FileName)
+		}
 	}
 	if seen["lesson1.pdf"] != "lesson1.pdf" || seen["slides.pptx"] != "slides.pptx" {
 		t.Fatalf("expected empty remoteDir to yield relative desktop filenames, got %+v", seen)
+	}
+
+	tester.Frame()
+	if !tester.HasText("上传到学生机进度") {
+		t.Fatalf("expected upload progress section in file distribution view")
 	}
 
 	// Removing a queued file should update queue length

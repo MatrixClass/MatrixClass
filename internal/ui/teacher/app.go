@@ -128,6 +128,7 @@ type App struct {
 	distributePath string
 	fileQueue      []string
 	fileDistModal  bool
+	fileSending    bool
 	remoteDir      string
 	collectSaveDir string
 	autoOpenFile   bool
@@ -207,7 +208,7 @@ func New(opts Options) *App {
 		distributePath:    "D:\\Teaching\\Lab03_PacketGuide.pdf",
 		remoteDir:         "",
 		collectSaveDir:    "D:\\Submissions\\Class301",
-		autoOpenFile:      true,
+		autoOpenFile:      false,
 		fileTargetAll:     true,
 		policyMode:        "blacklist",
 		blockedAppsInput:  "steam.exe, wechat.exe, chrome.exe",
@@ -257,9 +258,13 @@ func (a *App) AttachWindow(w *mygo.Window) {
 func (a *App) Invalidate() {
 	a.mu.Lock()
 	w := a.win
+	fw := a.fileDistWin
 	a.mu.Unlock()
 	if w != nil {
 		w.Invalidate()
+	}
+	if fw != nil {
+		fw.Invalidate()
 	}
 }
 
@@ -1753,10 +1758,19 @@ func (a *App) OpenFileDistributeWindow() {
 	fw = mygo.NewWindow(mygo.WindowOptions{
 		Title:     "文件分发 - 上传队列",
 		Width:     560,
-		Height:    440,
+		Height:    500,
 		MinWidth:  460,
-		MinHeight: 360,
+		MinHeight: 400,
 		Content:   ui.View(a.FileDistributeView),
+	})
+	fw.OnFileDrop(func(e *mygo.FileDropEvent) {
+		if e == nil || len(e.Paths) == 0 {
+			return
+		}
+		fw.Update(func() {
+			a.AddQueuedFiles(e.Paths)
+			a.statusNote = fmt.Sprintf("已拖入 %d 个文件到分发队列", len(e.Paths))
+		})
 	})
 	fw.OnClosed(func() {
 		a.mu.Lock()
@@ -1813,10 +1827,20 @@ func (a *App) buildFileDistributeContent(c *ui.Context, pal theme.Palette) {
 			}
 		})
 
-		ui.Scroll(c.Key("file-dist-queue")).Grow(1).FillWidth().Background(pal.Card).Border(1, pal.CardBorder).Radius(3).Padding(8).Gap(6).Children(func() {
+		queueScroll := ui.Scroll(c.Key("file-dist-queue")).Grow(1).FillWidth().Background(pal.Card).Radius(3).Padding(8).Gap(6)
+		if queueScroll.FileDragOver() {
+			queueScroll.Border(2, pal.Accent)
+		} else {
+			queueScroll.Border(1, pal.CardBorder)
+		}
+		if dropped := queueScroll.DroppedFiles(); len(dropped) > 0 {
+			a.AddQueuedFiles(dropped)
+			a.statusNote = fmt.Sprintf("已拖入 %d 个文件到分发队列", len(dropped))
+		}
+		queueScroll.Children(func() {
 			if len(a.fileQueue) == 0 {
 				ui.Box(c).Fill().Center().Padding(20).Children(func() {
-					ui.Text(c, "请点击“添加文件...”将需要分发的文件加入上传队列").FontSize(12).TextColor(pal.TextMuted)
+					ui.Text(c, "将文件拖入此处，或点击“添加文件...”加入上传队列").FontSize(12).TextColor(pal.TextMuted)
 				})
 				return
 			}
@@ -1832,6 +1856,8 @@ func (a *App) buildFileDistributeContent(c *ui.Context, pal theme.Palette) {
 			}
 		})
 
+		a.buildFileDistributeProgress(c, pal)
+
 		ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(8).Children(func() {
 			ui.Text(c, a.statusNote).FontSize(11).TextColor(pal.TextMuted).Grow(1).SingleLine()
 			if ui.Button(c, "关闭").Padding(5, 14).Clicked() {
@@ -1842,6 +1868,75 @@ func (a *App) buildFileDistributeContent(c *ui.Context, pal theme.Palette) {
 				a.DistributeQueue()
 			}
 		})
+	})
+}
+
+func (a *App) buildFileDistributeProgress(c *ui.Context, pal theme.Palette) {
+	if a.opts.Files == nil {
+		return
+	}
+	var sendTasks []*core.TransferTask
+	var totalBytes, doneBytes int64
+	var completedCount int
+	for _, tk := range a.opts.Files.ListTasks() {
+		if tk.Direction != core.TransferSend {
+			continue
+		}
+		sendTasks = append(sendTasks, tk)
+		totalBytes += tk.TotalBytes
+		doneBytes += tk.DoneBytes
+		if tk.Status == "completed" {
+			completedCount++
+		}
+	}
+	if len(sendTasks) == 0 && !a.fileSending {
+		return
+	}
+	overallRatio := 0.0
+	if totalBytes > 0 {
+		overallRatio = float64(doneBytes) / float64(totalBytes)
+	} else if len(sendTasks) > 0 && completedCount == len(sendTasks) {
+		overallRatio = 1.0
+	}
+	if overallRatio > 1 {
+		overallRatio = 1
+	}
+	ui.Column(c).FillWidth().Padding(10).Radius(3).Background(pal.Card).Border(1, pal.CardBorder).Gap(6).Children(func() {
+		ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(8).Children(func() {
+			ui.Text(c, "上传到学生机进度").FontSize(12).Bold()
+			ui.Spacer(c)
+			ui.Text(c, fmt.Sprintf("已完成 %d/%d · %.0f%%", completedCount, len(sendTasks), overallRatio*100)).FontSize(11).TextColor(pal.TextMuted)
+		})
+		ui.Progress(c, overallRatio).Height(6)
+		maxShow := len(sendTasks)
+		if maxShow > 4 {
+			maxShow = 4
+		}
+		for _, tk := range sendTasks[:maxShow] {
+			ratio := 0.0
+			if tk.TotalBytes > 0 {
+				ratio = float64(tk.DoneBytes) / float64(tk.TotalBytes)
+			} else if tk.Status == "completed" {
+				ratio = 1.0
+			}
+			if ratio > 1 {
+				ratio = 1
+			}
+			statusText := "发送中"
+			switch tk.Status {
+			case "completed":
+				statusText = "已完成"
+			case "failed":
+				statusText = "失败"
+			}
+			ui.Column(c).Key("fprog-"+tk.ID).FillWidth().Gap(3).Children(func() {
+				ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(6).Children(func() {
+					ui.Text(c, tk.FileName).FontSize(11).Grow(1).SingleLine()
+					ui.Text(c, fmt.Sprintf("%s · %.0f%%", statusText, ratio*100)).FontSize(11).TextColor(pal.TextMuted)
+				})
+				ui.Progress(c, ratio).Height(4)
+			})
+		}
 	})
 }
 
@@ -1925,6 +2020,7 @@ func (a *App) DistributeQueue() {
 	}
 	remoteDir := strings.TrimSpace(a.remoteDir)
 	autoOpen := a.autoOpenFile
+	a.fileSending = true
 	a.statusNote = fmt.Sprintf("正在向 %d 台学生分发 %d 个文件...", len(targets), len(queue))
 	go func() {
 		sent := 0
@@ -1937,6 +2033,7 @@ func (a *App) DistributeQueue() {
 			}
 		}
 		a.mu.Lock()
+		a.fileSending = false
 		if lastErr != nil {
 			a.statusNote = fmt.Sprintf("分发完成 %d/%d（部分失败: %v）", sent, len(queue), lastErr)
 		} else {
