@@ -1236,7 +1236,8 @@ func (a *App) buildMyTheatreTab(c *ui.Context, pal theme.Palette) {
 				if a.theatre.Playing {
 					playLabel = "暂停同步"
 				}
-				if ui.PrimaryButton(c, playLabel).Clicked() {
+				playButton := ui.PrimaryButton(c, playLabel).Disabled(a.theatrePlayer == nil)
+				if playButton.Clicked() {
 					a.toggleTheatrePlayback()
 				}
 				if ui.Button(c, "停止").Clicked() {
@@ -3258,6 +3259,11 @@ func (a *App) exportExamCSV(paperID string) {
 }
 
 func (a *App) toggleTheatrePlayback() {
+	if a.theatrePlayer == nil || strings.TrimSpace(a.theatre.Media) == "" {
+		a.theatre.Playing = false
+		a.statusNote = "请先选择本地视频，再播放并分发"
+		return
+	}
 	a.theatre.Playing = !a.theatre.Playing
 	if a.theatrePlayer != nil {
 		if a.theatre.Playing {

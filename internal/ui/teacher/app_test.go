@@ -693,3 +693,16 @@ func TestTeacherTrayMenu(t *testing.T) {
 		t.Fatalf("expected non-nil tray menu")
 	}
 }
+
+func TestTheatrePlaybackRequiresVideo(t *testing.T) {
+	app, _, _, _ := newTestTeacherApp()
+	app.theatre.Media = ""
+	app.theatrePlayer = nil
+	app.toggleTheatrePlayback()
+	if app.theatre.Playing {
+		t.Fatalf("expected playback to remain stopped without a local video")
+	}
+	if app.statusNote == "" {
+		t.Fatalf("expected actionable status note when playback is attempted without a video")
+	}
+}

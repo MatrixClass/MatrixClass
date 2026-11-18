@@ -30,6 +30,13 @@ func newTestStudentApp() *App {
 	})
 }
 
+func TestStudentHomeworkPathStartsEmpty(t *testing.T) {
+	app := newTestStudentApp()
+	if app.homeworkPath != "" {
+		t.Fatalf("expected homework path to start empty, got %q", app.homeworkPath)
+	}
+}
+
 func TestStudentBarCheckInExamAndLockViews(t *testing.T) {
 	app := newTestStudentApp()
 	tester := ui.NewTester(app.View, 920, 560)

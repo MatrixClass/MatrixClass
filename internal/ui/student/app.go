@@ -145,7 +145,7 @@ func New(opts Options) *App {
 		connected:     true,
 		lockMessage:   "课堂黑屏安静模式：请注意前方黑板或教师讲解。",
 		checkInNo:     opts.StudentNo,
-		homeworkPath:  "D:\\Homework\\Lab03_Report.docx",
+		homeworkPath:  "",
 		statusNote:    "已连接频道: " + opts.Channel,
 		volume:        80,
 		examAnswers:   make(map[string]string),
