@@ -9,6 +9,7 @@ import (
 	"github.com/egoist/mygo/ui"
 
 	"nexlab/internal/core"
+	"nexlab/internal/store"
 	"nexlab/internal/ui/demo"
 )
 
@@ -434,5 +435,64 @@ func TestTeacherMicVolumeAndSettingsMonitorSliders(t *testing.T) {
 	tester.Frame()
 	if !tester.HasText("监控画质") || !tester.HasText("监控帧率") {
 		t.Fatalf("expected 监控画质 and 监控帧率 inside settings modal")
+	}
+}
+
+func TestTeacherSQLitePersistenceAndChannelPrompt(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "nexlab-teacher.db")
+	st, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	defer st.Close()
+
+	var selectedCh string
+	app := New(Options{
+		TeacherID:     "teacher-db",
+		TeacherName:   "教师端",
+		Channel:       "301机房",
+		Store:         st,
+		PromptChannel: true,
+		OnChannelSelected: func(ch string) {
+			selectedCh = ch
+		},
+		Services: Services{
+			Transport: demo.NewTransport("301机房", 2),
+			Media:     demo.NewMedia(),
+			Control:   demo.NewControl(),
+			Classroom: demo.NewClassroom(),
+			Files:     demo.NewFileTransfer(),
+			Exam:      demo.NewExam(),
+		},
+	})
+	tester := ui.NewTester(app.View, 1280, 820)
+	tester.Frame()
+	if !app.channelModal || !tester.HasText("选择课堂频道 ID") {
+		t.Fatalf("expected startup channel selection modal")
+	}
+
+	app.ConfirmChannel("502机房")
+	if selectedCh != "502机房" || app.channel != "502机房" || app.channelModal {
+		t.Fatalf("unexpected channel confirmation state: selected=%q app.channel=%q modal=%v", selectedCh, app.channel, app.channelModal)
+	}
+
+	// Re-open App with the same SQLite store and verify persisted channel + recent history
+	app2 := New(Options{
+		TeacherID:     "teacher-db",
+		TeacherName:   "教师端",
+		Channel:       "301机房",
+		Store:         st,
+		PromptChannel: true,
+		Services: Services{
+			Transport: demo.NewTransport("301机房", 2),
+			Media:     demo.NewMedia(),
+			Control:   demo.NewControl(),
+			Classroom: demo.NewClassroom(),
+			Files:     demo.NewFileTransfer(),
+			Exam:      demo.NewExam(),
+		},
+	})
+	if app2.channel != "502机房" || len(app2.recentChannels) == 0 || app2.recentChannels[0] != "502机房" {
+		t.Fatalf("expected persisted channel 502机房, got channel=%q recent=%v", app2.channel, app2.recentChannels)
 	}
 }

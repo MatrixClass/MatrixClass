@@ -574,9 +574,21 @@ func main() {
 		if err != nil {
 			log.Fatalf("init student runtime: %v", err)
 		}
-		if err := rt.Start(ctx); err != nil {
-			log.Fatalf("start student transport: %v", err)
-		}
+		rt.App.SetStatusNote("正在搜索频道 ID: " + *channel + " ...")
+		go func() {
+			for ctx.Err() == nil {
+				if err := rt.Start(ctx); err == nil {
+					return
+				}
+				timer := time.NewTimer(1 * time.Second)
+				select {
+				case <-ctx.Done():
+					timer.Stop()
+					return
+				case <-timer.C:
+				}
+			}
+		}()
 		app = rt.App
 		cleanup = func() { _ = rt.Close() }
 	}

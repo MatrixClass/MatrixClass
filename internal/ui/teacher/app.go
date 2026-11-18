@@ -21,6 +21,7 @@ import (
 
 	"nexlab/internal/core"
 	"nexlab/internal/protocol"
+	"nexlab/internal/store"
 	"nexlab/internal/ui/theme"
 )
 
@@ -36,12 +37,15 @@ type Services struct {
 
 // Options configures the Teacher Console window and identity.
 type Options struct {
-	TeacherID   string
-	TeacherName string
-	Channel     string
-	ArchiveDir  string
-	Dark        bool
-	Services    Services
+	TeacherID         string
+	TeacherName       string
+	Channel           string
+	ArchiveDir        string
+	Dark              bool
+	Store             *store.Store
+	PromptChannel     bool
+	OnChannelSelected func(channel string)
+	Services          Services
 }
 
 const (
@@ -149,7 +153,12 @@ type App struct {
 	allowedSitesInput string
 
 	// Widget states
-	settingsOpen bool
+	settingsOpen      bool
+	channelModal      bool
+	channelInput      string
+	recentChannels    []string
+	store             *store.Store
+	onChannelSelected func(string)
 
 	// Lock-free snapshots for background media/transport goroutines
 	broadcastFlag         atomic.Bool
@@ -187,10 +196,14 @@ func New(opts Options) *App {
 	}
 	app := &App{
 		opts:              opts.Services,
+		store:             opts.Store,
+		onChannelSelected: opts.OnChannelSelected,
 		teacherID:         opts.TeacherID,
 		teacherName:       opts.TeacherName,
 		channel:           opts.Channel,
 		dark:              opts.Dark,
+		channelModal:      opts.PromptChannel,
+		channelInput:      opts.Channel,
 		broadcastWindowed: true,
 		mainTab:           TabSeatMap,
 		sideTab:           SideTabChatQueue,
@@ -228,10 +241,130 @@ func New(opts Options) *App {
 		blockedSitesInput: "game.example.com, video.example.com",
 		allowedSitesInput: "lab.nexlab.local, docs.golang.org",
 	}
+	app.loadPersistedState()
 	app.syncRuntimeFlags()
 	app.ctrlCh = make(chan ctrlOutbound, 64)
 	go app.controlSendWorker()
 	return app
+}
+
+func (a *App) loadPersistedState() {
+	if a.store == nil {
+		return
+	}
+	if cfg, ok, err := a.store.LoadSettings(); err == nil && ok {
+		if strings.TrimSpace(cfg.Channel) != "" {
+			a.channel = cfg.Channel
+			a.channelInput = cfg.Channel
+		}
+		a.useMulticast = cfg.UseMulticast
+		a.dark = cfg.Dark
+		if strings.TrimSpace(cfg.CollectSaveDir) != "" {
+			a.collectSaveDir = cfg.CollectSaveDir
+			a.applyArchiveDir(cfg.CollectSaveDir)
+		}
+		if cfg.MonitorFPS >= 5 && cfg.MonitorFPS <= 30 {
+			a.monitorFPS = cfg.MonitorFPS
+		}
+		if cfg.MonitorQual >= 30 && cfg.MonitorQual <= 95 {
+			a.monitorQual = cfg.MonitorQual
+		}
+		if cfg.SpeakerVolume >= 0 && cfg.SpeakerVolume <= 100 {
+			a.volume = cfg.SpeakerVolume
+		}
+		if cfg.MicVolume >= 0 && cfg.MicVolume <= 100 {
+			a.micVolume = cfg.MicVolume
+		}
+		a.speakerMuted = cfg.SpeakerMuted
+		a.micMuted = cfg.MicMuted
+		if cfg.PolicyMode != "" {
+			a.policyMode = cfg.PolicyMode
+		}
+		if cfg.BlockedApps != "" {
+			a.blockedAppsInput = cfg.BlockedApps
+		}
+		if cfg.AllowedApps != "" {
+			a.allowedAppsInput = cfg.AllowedApps
+		}
+		if cfg.BlockedSites != "" {
+			a.blockedSitesInput = cfg.BlockedSites
+		}
+		if cfg.LockMessage != "" {
+			a.lockMessage = cfg.LockMessage
+		}
+	}
+	if recent, err := a.store.ListRecentChannels(8); err == nil {
+		a.recentChannels = recent
+	}
+	if a.opts.Classroom != nil {
+		if groups, err := a.store.LoadGroups(); err == nil && len(groups) > 0 {
+			a.opts.Classroom.SetGroups(groups)
+		}
+		if students, err := a.store.LoadStudents(); err == nil {
+			for _, st := range students {
+				a.opts.Classroom.UpsertStudent(st)
+			}
+		}
+		if chats, err := a.store.LoadChats(200); err == nil {
+			for _, m := range chats {
+				a.opts.Classroom.AddChat(m)
+			}
+		}
+	}
+	if a.opts.Exam != nil {
+		if paper, err := a.store.LoadLatestExamPaper(); err == nil && paper != nil {
+			a.opts.Exam.PublishPaper(*paper)
+			if subs, err := a.store.LoadExamSubmissions(paper.ID); err == nil {
+				for _, sub := range subs {
+					a.opts.Exam.SubmitAnswer(sub)
+				}
+			}
+		}
+	}
+}
+
+func (a *App) savePersistedSettings() {
+	if a.store == nil {
+		return
+	}
+	_ = a.store.SaveSettings(store.TeacherSettings{
+		Channel:        a.channel,
+		UseMulticast:   a.useMulticast,
+		Dark:           a.dark,
+		CollectSaveDir: a.collectSaveDir,
+		MonitorFPS:     a.monitorFPS,
+		MonitorQual:    a.monitorQual,
+		SpeakerVolume:  a.volume,
+		MicVolume:      a.micVolume,
+		SpeakerMuted:   a.speakerMuted,
+		MicMuted:       a.micMuted,
+		PolicyMode:     a.policyMode,
+		BlockedApps:    a.blockedAppsInput,
+		AllowedApps:    a.allowedAppsInput,
+		BlockedSites:   a.blockedSitesInput,
+		LockMessage:    a.lockMessage,
+	})
+}
+
+func (a *App) ConfirmChannel(ch string) {
+	ch = strings.TrimSpace(ch)
+	if ch == "" {
+		ch = "301机房"
+	}
+	a.channel = ch
+	a.channelInput = ch
+	a.channelModal = false
+	if a.store != nil {
+		_ = a.store.TouchChannel(ch)
+		if recent, err := a.store.ListRecentChannels(8); err == nil {
+			a.recentChannels = recent
+		}
+		a.savePersistedSettings()
+	}
+	a.statusNote = "当前课堂频道 ID: " + ch + " · 等待学生端加入"
+	if a.onChannelSelected != nil {
+		a.onChannelSelected(ch)
+	}
 }
 
 func (a *App) syncRuntimeFlags() {
@@ -547,7 +680,42 @@ func (a *App) View(c *ui.Context) {
 		})
 	})
 
+	ui.Modal(c, &a.channelModal, func() {
+		a.buildChannelSelectModal(c, pal)
+	})
+
 	a.syncRuntimeFlags()
+}
+
+func (a *App) buildChannelSelectModal(c *ui.Context, pal theme.Palette) {
+	ui.Column(c).Width(420).Background(pal.Canvas).Border(1, pal.CardBorder).Radius(4).Padding(18).Gap(12).Children(func() {
+		ui.Text(c, "选择课堂频道 ID").FontSize(16).Bold()
+		ui.Text(c, "学生端将根据此频道 ID 自动发现并连接教师端").FontSize(12).TextColor(pal.TextMuted)
+		inp := ui.TextInput(c, &a.channelInput).Placeholder("输入频道 ID（如 301机房、1001）")
+		if inp.Submitted() {
+			a.ConfirmChannel(a.channelInput)
+		}
+		if len(a.recentChannels) > 0 {
+			ui.Text(c, "历史频道").FontSize(11).TextColor(pal.TextMuted)
+			ui.Row(c).Wrap().Gap(6).Children(func() {
+				for _, ch := range a.recentChannels {
+					ch := ch
+					btn := ui.Button(c, ch).Key("rch-" + ch).Padding(3, 10).Radius(3)
+					if a.channelInput == ch {
+						btn.Background(pal.Selection).Border(1, pal.Accent)
+					}
+					if btn.Clicked() {
+						a.channelInput = ch
+					}
+				}
+			})
+		}
+		ui.Row(c).FillWidth().Justify(ui.End).Gap(8).Children(func() {
+			if ui.PrimaryButton(c, "进入课堂").Padding(5, 16).Clicked() {
+				a.ConfirmChannel(a.channelInput)
+			}
+		})
+	})
 }
 
 func (a *App) buildToolbar(c *ui.Context, pal theme.Palette) {
@@ -1387,6 +1555,7 @@ func (a *App) buildSettingsModal(c *ui.Context, pal theme.Palette) {
 				if a.monitoring {
 					a.sendMonitorConfig()
 				}
+				a.savePersistedSettings()
 				a.statusNote = "课堂通道设置已更新: " + a.channel
 			}
 		})
@@ -1708,12 +1877,17 @@ func (a *App) SendChatMessage() {
 		return
 	}
 	if a.opts.Classroom != nil {
-		a.opts.Classroom.AddChat(core.ChatMessage{
+		msg := core.ChatMessage{
+			ID:        fmt.Sprintf("chat-%d", time.Now().UnixNano()),
 			SenderID:  a.teacherID,
 			Sender:    a.teacherName,
 			Text:      text,
 			CreatedAt: time.Now(),
-		})
+		}
+		a.opts.Classroom.AddChat(msg)
+		if a.store != nil {
+			_ = a.store.SaveChat(msg)
+		}
 	}
 	a.sendControlEnvelope(protocol.MsgChat, core.ChatMessage{
 		SenderID: a.teacherID,
@@ -1737,6 +1911,7 @@ func (a *App) ApplyClassroomPolicy() {
 	if a.opts.Control != nil {
 		_ = a.opts.Control.ApplyPolicy(rule)
 	}
+	a.savePersistedSettings()
 	a.sendControlEnvelope(protocol.MsgPolicySync, rule, nil)
 	a.statusNote = "管控策略已同步至学生端 (" + a.policyMode + ")"
 }
@@ -2443,6 +2618,9 @@ func (a *App) createGroup(name string) {
 	if a.opts.Classroom != nil {
 		a.opts.Classroom.SetGroups(groups)
 	}
+	if a.store != nil {
+		_ = a.store.SaveGroups(groups)
+	}
 	a.selectedGroup = id
 	a.creatingGroup = false
 	a.newGroupInput = ""
@@ -2460,6 +2638,9 @@ func (a *App) assignTargetsToGroup(groupID string, targets []string) {
 	if adder, ok := a.opts.Classroom.(memberAdder); ok && groupID != "" && groupID != "all" {
 		for _, id := range targets {
 			_ = adder.AddGroupMember(groupID, id)
+		}
+		if a.store != nil {
+			_ = a.store.SaveGroups(a.opts.Classroom.ListGroups())
 		}
 		a.statusNote = fmt.Sprintf("已将 %d 台设备移入分组", len(targets))
 		return
@@ -2482,6 +2663,9 @@ func (a *App) assignTargetsToGroup(groupID string, targets []string) {
 		}
 	}
 	a.opts.Classroom.SetGroups(groups)
+	if a.store != nil {
+		_ = a.store.SaveGroups(groups)
+	}
 	if groupID == "" || groupID == "all" {
 		a.statusNote = fmt.Sprintf("已将 %d 台设备移回默认分组", len(targets))
 	} else {
@@ -2625,6 +2809,9 @@ func (a *App) publishExam() {
 		Questions:   questions,
 	}
 	a.opts.Exam.PublishPaper(paper)
+	if a.store != nil {
+		_ = a.store.SaveExamPaper(paper)
+	}
 	a.examPublished = true
 	a.sendControlEnvelope(protocol.MsgExamPublish, paper, nil)
 	a.statusNote = fmt.Sprintf("已发布随堂测验: %s (%d 题)", paper.Title, len(questions))

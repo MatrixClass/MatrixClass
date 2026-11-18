@@ -23,6 +23,7 @@ import (
 	"nexlab/internal/filetransfer"
 	"nexlab/internal/media"
 	"nexlab/internal/protocol"
+	"nexlab/internal/store"
 	"nexlab/internal/transport"
 	"nexlab/internal/ui/demo"
 	"nexlab/internal/ui/teacher"
@@ -42,6 +43,7 @@ type Runtime struct {
 	Classroom *classroom.Service
 	Files     *filetransfer.Service
 	Exam      *exam.Service
+	Store     *store.Store
 
 	channel   string
 	teacherID string
@@ -53,9 +55,14 @@ type Runtime struct {
 	audioMode string // "", "voice", "loopback"
 
 	forceKeyFrame atomic.Bool
+	startOnce     sync.Once
 }
 
 func NewRuntime(channel, teacherID, teacherName, archiveDir string) (*Runtime, error) {
+	return NewRuntimeWithStore(channel, teacherID, teacherName, archiveDir, nil, false, nil)
+}
+
+func NewRuntimeWithStore(channel, teacherID, teacherName, archiveDir string, dbStore *store.Store, promptChannel bool, onChannel func(string)) (*Runtime, error) {
 	tr := transport.NewManager()
 	md, err := media.NewManager(media.ManagerOptions{PreferH264MFT: false})
 	if err != nil {
@@ -96,10 +103,13 @@ func NewRuntime(channel, teacherID, teacherName, archiveDir string) (*Runtime, e
 	})
 
 	app := teacher.New(teacher.Options{
-		TeacherID:   teacherID,
-		TeacherName: teacherName,
-		Channel:     channel,
-		ArchiveDir:  archiveDir,
+		TeacherID:         teacherID,
+		TeacherName:       teacherName,
+		Channel:           channel,
+		ArchiveDir:        archiveDir,
+		Store:             dbStore,
+		PromptChannel:     promptChannel,
+		OnChannelSelected: onChannel,
 		Services: teacher.Services{
 			Transport: tr,
 			Media:     md,
@@ -119,6 +129,7 @@ func NewRuntime(channel, teacherID, teacherName, archiveDir string) (*Runtime, e
 		Classroom:       cr,
 		Files:           ft,
 		Exam:            ex,
+		Store:           dbStore,
 		channel:         channel,
 		teacherID:       teacherID,
 		studentDecoders: make(map[string]*media.HybridVideoCodec),
@@ -175,6 +186,9 @@ func (rt *Runtime) wireHandlers() {
 				st.Status = core.StatusOnline
 				st.LastSeen = time.Now()
 				rt.Classroom.UpsertStudent(st)
+				if rt.Store != nil {
+					_ = rt.Store.UpsertStudent(st)
+				}
 				if rt.App.Broadcasting() || rt.App.TheatrePlaying() {
 					rt.forceKeyFrame.Store(true)
 					if bEnv, err := protocol.NewEnvelope(protocol.MsgBroadcastStart, rt.teacherID, rt.App.CurrentBroadcastConfig()); err == nil {
@@ -222,6 +236,11 @@ func (rt *Runtime) wireHandlers() {
 					req.StudentID = senderID
 				}
 				rt.Classroom.SubmitCheckIn(req.StudentID, "", req.StudentNo)
+				if rt.Store != nil {
+					if st, ok := rt.Classroom.GetStudent(req.StudentID); ok {
+						_ = rt.Store.UpsertStudent(st)
+					}
+				}
 			}
 		case protocol.MsgHandRaise:
 			var req struct {
@@ -241,11 +260,17 @@ func (rt *Runtime) wireHandlers() {
 					msg.CreatedAt = time.Now()
 				}
 				rt.Classroom.AddChat(msg)
+				if rt.Store != nil {
+					_ = rt.Store.SaveChat(msg)
+				}
 			}
 		case protocol.MsgExamAnswer:
 			var sub core.ExamSubmission
 			if err := json.Unmarshal(env.Payload, &sub); err == nil {
 				rt.Exam.SubmitAnswer(sub)
+				if rt.Store != nil {
+					_ = rt.Store.SaveExamSubmission(sub)
+				}
 			}
 		case protocol.MsgVideoFrame:
 			var pkt videoStreamPacket
@@ -330,21 +355,29 @@ func (rt *Runtime) acceptFileStreams(sess core.Session) {
 }
 
 func (rt *Runtime) Start(ctx context.Context, listenAddr string, teacherName string) error {
-	beacon := protocol.DiscoveryBeacon{
-		Role:        string(core.RoleTeacher),
-		TeacherID:   rt.teacherID,
-		TeacherName: teacherName,
-		Channel:     rt.channel,
-		MulticastIP: "239.255.42.10",
-		McastPort:   39102,
-		Version:     "0.1.0",
-	}
-	if err := rt.Transport.StartTeacher(ctx, listenAddr, beacon); err != nil {
-		return err
-	}
-	go rt.broadcastLoop(ctx)
-	go rt.heartbeatLoop(ctx)
-	return nil
+	var startErr error
+	rt.startOnce.Do(func() {
+		beacon := protocol.DiscoveryBeacon{
+			Role:        string(core.RoleTeacher),
+			TeacherID:   rt.teacherID,
+			TeacherName: teacherName,
+			Channel:     rt.channel,
+			MulticastIP: "239.255.42.10",
+			McastPort:   39102,
+			Version:     "0.1.0",
+		}
+		if err := rt.Transport.StartTeacher(ctx, listenAddr, beacon); err != nil {
+			startErr = err
+			return
+		}
+		go rt.broadcastLoop(ctx)
+		go rt.heartbeatLoop(ctx)
+	})
+	return startErr
+}
+
+func (rt *Runtime) SetChannel(ch string) {
+	rt.channel = ch
 }
 
 func (rt *Runtime) heartbeatLoop(ctx context.Context) {
@@ -499,6 +532,9 @@ func (rt *Runtime) Close() error {
 	rt.studentDecoders = nil
 	rt.decMu.Unlock()
 	_ = rt.Control.Close()
+	if rt.Store != nil {
+		_ = rt.Store.Close()
+	}
 	return rt.Transport.Close()
 }
 
@@ -544,15 +580,53 @@ func main() {
 			},
 		})
 	} else {
-		rt, err := NewRuntime(*channel, "teacher-01", teacherLabel, *archiveDir)
+		exePath, exeErr := os.Executable()
+		dbDir := "."
+		if exeErr == nil && exePath != "" {
+			dbDir = filepath.Dir(exePath)
+		}
+		dbPath := filepath.Join(dbDir, "nexlab-teacher.db")
+		dbStore, dbErr := store.Open(dbPath)
+		if dbErr != nil {
+			log.Printf("open sqlite store %s failed: %v", dbPath, dbErr)
+		}
+
+		var rt *Runtime
+		var winRef *mygo.Window
+		rt, err := NewRuntimeWithStore(*channel, "teacher-01", teacherLabel, *archiveDir, dbStore, true, func(chosen string) {
+			rt.SetChannel(chosen)
+			if winRef != nil {
+				winRef.SetTitle("矩联电子教室 MatrixClass - 教师端 [" + chosen + "]")
+			}
+			if startErr := rt.Start(ctx, *listenAddr, teacherLabel); startErr != nil {
+				log.Printf("start teacher transport: %v", startErr)
+			}
+		})
 		if err != nil {
 			log.Fatalf("init teacher runtime: %v", err)
 		}
-		if err := rt.Start(ctx, *listenAddr, teacherLabel); err != nil {
-			log.Fatalf("start teacher transport: %v", err)
-		}
 		app = rt.App
 		cleanup = func() { _ = rt.Close() }
+		mygo.App.WhenReady(func() {
+			win := mygo.NewWindow(mygo.WindowOptions{
+				Title:     "矩联电子教室 MatrixClass - 教师端",
+				Width:     980,
+				Height:    640,
+				MinWidth:  800,
+				MinHeight: 540,
+				StateKey:  "nexlab-teacher-main-v2",
+				Content:   ui.View(app.View),
+			})
+			winRef = win
+			app.AttachWindow(win)
+			_, _ = mygo.NewTray(mygo.TrayOptions{
+				ID:      "nexlab-teacher-tray",
+				Icon:    theme.AppIconPNG(true),
+				ToolTip: "矩联电子教室 MatrixClass 教师端",
+			})
+		})
+		mygo.App.Run()
+		return
 	}
 	if cleanup != nil {
 		defer cleanup()
