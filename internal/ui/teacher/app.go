@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -156,6 +157,7 @@ type App struct {
 	settingsOpen      bool
 	channelModal      bool
 	channelInput      string
+	channelNum        float64
 	recentChannels    []string
 	store             *store.Store
 	onChannelSelected func(string)
@@ -188,7 +190,7 @@ func New(opts Options) *App {
 		opts.TeacherName = "教师端"
 	}
 	if opts.Channel == "" {
-		opts.Channel = "301机房"
+		opts.Channel = "1"
 	}
 	archiveDir := strings.TrimSpace(opts.ArchiveDir)
 	if archiveDir == "" {
@@ -204,6 +206,7 @@ func New(opts Options) *App {
 		dark:              opts.Dark,
 		channelModal:      opts.PromptChannel,
 		channelInput:      opts.Channel,
+		channelNum:        parseChannelNum(opts.Channel),
 		broadcastWindowed: true,
 		mainTab:           TabSeatMap,
 		sideTab:           SideTabChatQueue,
@@ -254,8 +257,10 @@ func (a *App) loadPersistedState() {
 	}
 	if cfg, ok, err := a.store.LoadSettings(); err == nil && ok {
 		if strings.TrimSpace(cfg.Channel) != "" {
-			a.channel = cfg.Channel
-			a.channelInput = cfg.Channel
+			norm := normalizeChannelID(cfg.Channel)
+			a.channel = norm
+			a.channelInput = norm
+			a.channelNum = parseChannelNum(norm)
 		}
 		a.useMulticast = cfg.UseMulticast
 		a.dark = cfg.Dark
@@ -347,12 +352,10 @@ func (a *App) savePersistedSettings() {
 }
 
 func (a *App) ConfirmChannel(ch string) {
-	ch = strings.TrimSpace(ch)
-	if ch == "" {
-		ch = "301机房"
-	}
+	ch = normalizeChannelID(ch)
 	a.channel = ch
 	a.channelInput = ch
+	a.channelNum = parseChannelNum(ch)
 	a.channelModal = false
 	if a.store != nil {
 		_ = a.store.TouchChannel(ch)
@@ -365,6 +368,21 @@ func (a *App) ConfirmChannel(ch string) {
 	if a.onChannelSelected != nil {
 		a.onChannelSelected(ch)
 	}
+}
+
+func normalizeChannelID(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if n, err := strconv.Atoi(raw); err == nil && n > 0 {
+		return strconv.Itoa(n)
+	}
+	return "1"
+}
+
+func parseChannelNum(raw string) float64 {
+	if n, err := strconv.Atoi(strings.TrimSpace(raw)); err == nil && n > 0 {
+		return float64(n)
+	}
+	return 1
 }
 
 func (a *App) syncRuntimeFlags() {
@@ -690,29 +708,29 @@ func (a *App) View(c *ui.Context) {
 func (a *App) buildChannelSelectModal(c *ui.Context, pal theme.Palette) {
 	ui.Column(c).Width(420).Background(pal.Canvas).Border(1, pal.CardBorder).Radius(4).Padding(18).Gap(12).Children(func() {
 		ui.Text(c, "选择课堂频道 ID").FontSize(16).Bold()
-		ui.Text(c, "学生端将根据此频道 ID 自动发现并连接教师端").FontSize(12).TextColor(pal.TextMuted)
-		inp := ui.TextInput(c, &a.channelInput).Placeholder("输入频道 ID（如 301机房、1001）")
-		if inp.Submitted() {
-			a.ConfirmChannel(a.channelInput)
-		}
-		if len(a.recentChannels) > 0 {
-			ui.Text(c, "历史频道").FontSize(11).TextColor(pal.TextMuted)
-			ui.Row(c).Wrap().Gap(6).Children(func() {
-				for _, ch := range a.recentChannels {
-					ch := ch
-					btn := ui.Button(c, ch).Key("rch-" + ch).Padding(3, 10).Radius(3)
-					if a.channelInput == ch {
-						btn.Background(pal.Selection).Border(1, pal.Accent)
-					}
-					if btn.Clicked() {
-						a.channelInput = ch
-					}
+		ui.Text(c, "请选择数字频道 ID（1 - 999），学生端将按此频道 ID 自动连接").FontSize(12).TextColor(pal.TextMuted)
+		ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(8).Children(func() {
+			ui.Text(c, "频道 ID").FontSize(12).Bold()
+			ui.NumberInput(c, &a.channelNum, 1, 999, 1).Grow(1)
+		})
+		ui.Text(c, "常用频道").FontSize(11).TextColor(pal.TextMuted)
+		ui.Row(c).Wrap().Gap(6).Children(func() {
+			for i := 1; i <= 10; i++ {
+				num := float64(i)
+				lbl := strconv.Itoa(i)
+				btn := ui.Button(c, lbl).Key("qch-" + lbl).Padding(4, 12).Radius(3)
+				if int(a.channelNum) == i {
+					btn.Background(pal.Selection).Border(1, pal.Accent)
 				}
-			})
-		}
+				if btn.Clicked() {
+					a.channelNum = num
+					a.channelInput = lbl
+				}
+			}
+		})
 		ui.Row(c).FillWidth().Justify(ui.End).Gap(8).Children(func() {
 			if ui.PrimaryButton(c, "进入课堂").Padding(5, 16).Clicked() {
-				a.ConfirmChannel(a.channelInput)
+				a.ConfirmChannel(strconv.Itoa(int(a.channelNum)))
 			}
 		})
 	})
@@ -1516,8 +1534,10 @@ func (a *App) buildStatusBar(c *ui.Context, pal theme.Palette) {
 func (a *App) buildSettingsModal(c *ui.Context, pal theme.Palette) {
 	ui.Column(c).Width(460).Background(pal.Canvas).Border(1, pal.CardBorder).Radius(4).Padding(16).Gap(10).Children(func() {
 		ui.Text(c, "教师端课堂设置").FontSize(16).Bold()
-		ui.Text(c, "教室频道名").FontSize(12).TextColor(pal.TextMuted)
-		ui.TextInput(c, &a.channel)
+		ui.Text(c, "频道 ID (数字)").FontSize(12).TextColor(pal.TextMuted)
+		if ui.NumberInput(c, &a.channelNum, 1, 999, 1).Changed() {
+			a.channel = strconv.Itoa(int(a.channelNum))
+		}
 		ui.Text(c, "默认作业存放目录").FontSize(12).TextColor(pal.TextMuted)
 		ui.Row(c).FillWidth().Gap(8).AlignItems(ui.Center).Children(func() {
 			ui.TextInput(c, &a.collectSaveDir).Placeholder("默认: 系统下载目录 (Downloads)").Grow(1)

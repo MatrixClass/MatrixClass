@@ -450,14 +450,14 @@ func TestTeacherSQLitePersistenceAndChannelPrompt(t *testing.T) {
 	app := New(Options{
 		TeacherID:     "teacher-db",
 		TeacherName:   "教师端",
-		Channel:       "301机房",
+		Channel:       "1",
 		Store:         st,
 		PromptChannel: true,
 		OnChannelSelected: func(ch string) {
 			selectedCh = ch
 		},
 		Services: Services{
-			Transport: demo.NewTransport("301机房", 2),
+			Transport: demo.NewTransport("1", 2),
 			Media:     demo.NewMedia(),
 			Control:   demo.NewControl(),
 			Classroom: demo.NewClassroom(),
@@ -471,8 +471,8 @@ func TestTeacherSQLitePersistenceAndChannelPrompt(t *testing.T) {
 		t.Fatalf("expected startup channel selection modal")
 	}
 
-	app.ConfirmChannel("502机房")
-	if selectedCh != "502机房" || app.channel != "502机房" || app.channelModal {
+	app.ConfirmChannel("5")
+	if selectedCh != "5" || app.channel != "5" || app.channelModal {
 		t.Fatalf("unexpected channel confirmation state: selected=%q app.channel=%q modal=%v", selectedCh, app.channel, app.channelModal)
 	}
 
@@ -480,11 +480,11 @@ func TestTeacherSQLitePersistenceAndChannelPrompt(t *testing.T) {
 	app2 := New(Options{
 		TeacherID:     "teacher-db",
 		TeacherName:   "教师端",
-		Channel:       "301机房",
+		Channel:       "1",
 		Store:         st,
 		PromptChannel: true,
 		Services: Services{
-			Transport: demo.NewTransport("301机房", 2),
+			Transport: demo.NewTransport("1", 2),
 			Media:     demo.NewMedia(),
 			Control:   demo.NewControl(),
 			Classroom: demo.NewClassroom(),
@@ -492,7 +492,7 @@ func TestTeacherSQLitePersistenceAndChannelPrompt(t *testing.T) {
 			Exam:      demo.NewExam(),
 		},
 	})
-	if app2.channel != "502机房" || len(app2.recentChannels) == 0 || app2.recentChannels[0] != "502机房" {
-		t.Fatalf("expected persisted channel 502机房, got channel=%q recent=%v", app2.channel, app2.recentChannels)
+	if app2.channel != "5" || len(app2.recentChannels) == 0 || app2.recentChannels[0] != "5" {
+		t.Fatalf("expected persisted channel 5, got channel=%q recent=%v", app2.channel, app2.recentChannels)
 	}
 }

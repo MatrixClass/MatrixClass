@@ -525,7 +525,7 @@ func (rt *Runtime) Close() error {
 
 func main() {
 	demoMode := flag.Bool("demo", false, "run student client with built-in demo data")
-	channel := flag.String("channel", "301机房", "classroom channel name")
+	channel := flag.String("channel", "1", "classroom numeric channel ID")
 	teacherAddr := flag.String("teacher", "", "optional explicit teacher KCP address (host:port)")
 	studentID := flag.String("id", "stu-01", "student ID")
 	studentNo := flag.String("no", "202601", "student number")

@@ -540,7 +540,7 @@ func (rt *Runtime) Close() error {
 
 func main() {
 	demoMode := flag.Bool("demo", false, "run teacher console with built-in demo classroom data")
-	channel := flag.String("channel", "301机房", "classroom channel name")
+	channel := flag.String("channel", "1", "classroom numeric channel ID")
 	listenAddr := flag.String("listen", ":39100", "KCP listen address")
 	teacherLabel := "教师端"
 	archiveDir := flag.String("archive", "", "homework archive directory (defaults to Downloads)")
