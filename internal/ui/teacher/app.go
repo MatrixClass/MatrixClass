@@ -97,6 +97,9 @@ type App struct {
 
 	// Bottom-right fixed volume sliders
 	volume       float64 // 0..100
+	speakerMuted bool
+	micVolume    float64 // 0..100
+	micMuted     bool
 	monitorFPS   float64 // 5..30
 	monitorQual  float64 // 30..95
 	useMulticast bool
@@ -155,6 +158,7 @@ type App struct {
 	theatreFlag           atomic.Bool
 	mcastFlag             atomic.Bool
 	qualValue             atomic.Int64
+	micGainBits           atomic.Uint32
 	demoIDMu              sync.RWMutex
 	demoIDAtomic          string
 
@@ -198,6 +202,7 @@ func New(opts Options) *App {
 		activeModeLabel:   "待机监听",
 		statusNote:        "就绪 · 局域网低延迟组播通道正常",
 		volume:            75,
+		micVolume:         80,
 		monitorFPS:        15,
 		monitorQual:       75,
 		useMulticast:      true,
@@ -236,6 +241,7 @@ func (a *App) syncRuntimeFlags() {
 	a.theatreFlag.Store(a.theatre.Playing)
 	a.mcastFlag.Store(a.useMulticast)
 	a.qualValue.Store(int64(a.monitorQual))
+	a.syncMicGain()
 	a.demoIDMu.Lock()
 	a.demoIDAtomic = a.studentDemoID
 	a.demoIDMu.Unlock()
@@ -1175,19 +1181,50 @@ func (a *App) buildRightSidebar(c *ui.Context, pal theme.Palette, students []cor
 		ui.Divider(c)
 		// Fixed bottom volume sliders for the right panel
 		ui.Column(c).Background(pal.ChromeBar).Padding(10).Gap(8).Children(func() {
-			ui.Row(c).AlignItems(ui.Center).Children(func() {
+			ui.Row(c).AlignItems(ui.Center).Gap(6).Children(func() {
+				ui.Text(c, "扬声器音量").FontSize(12).Bold()
+				ui.Spacer(c)
+				spkTxt := fmt.Sprintf("%d%%", int(a.volume))
+				if a.speakerMuted {
+					spkTxt = "已静音"
+				}
+				ui.Text(c, spkTxt).FontSize(11).TextColor(pal.Accent)
+				spkMuteLbl := "静音"
+				if a.speakerMuted {
+					spkMuteLbl = "取消静音"
+				}
+				if ui.Button(c, spkMuteLbl).Key("spk-mute").Padding(2, 8).Clicked() {
+					a.ToggleSpeakerMute()
+				}
+			})
+			if ui.Slider(c, &a.volume, 0, 100).Label("扬声器音量滑块").Changed() {
+				if a.volume > 0 && a.speakerMuted {
+					a.speakerMuted = false
+				}
+				a.applySpeakerVolume()
+			}
+
+			ui.Row(c).AlignItems(ui.Center).Gap(6).Children(func() {
 				ui.Text(c, "麦克风音量").FontSize(12).Bold()
 				ui.Spacer(c)
-				ui.Text(c, fmt.Sprintf("%d%%", int(a.volume))).FontSize(12).TextColor(pal.Accent)
+				micTxt := fmt.Sprintf("%d%%", int(a.micVolume))
+				if a.micMuted {
+					micTxt = "已静音"
+				}
+				ui.Text(c, micTxt).FontSize(11).TextColor(pal.Accent)
+				micMuteLbl := "静音"
+				if a.micMuted {
+					micMuteLbl = "取消静音"
+				}
+				if ui.Button(c, micMuteLbl).Key("mic-mute").Padding(2, 8).Clicked() {
+					a.ToggleMicMute()
+				}
 			})
-			if ui.Slider(c, &a.volume, 0, 100).Label("麦克风音量滑块").Changed() {
-				if a.opts.Media != nil {
-					a.opts.Media.SetVolume(float32(a.volume / 100.0))
+			if ui.Slider(c, &a.micVolume, 0, 100).Label("麦克风音量滑块").Changed() {
+				if a.micVolume > 0 && a.micMuted {
+					a.micMuted = false
 				}
-				if a.theatrePlayer != nil {
-					a.theatrePlayer.SetVolume(a.volume / 100.0)
-				}
-				a.theatre.Volume = float32(a.volume / 100.0)
+				a.syncMicGain()
 			}
 		})
 	})
@@ -3007,3 +3044,42 @@ func uiKeyToVK(k ui.Key) uint16 {
 		return 0
 	}
 }
+func (a *App) syncMicGain() {
+	gain := float32(a.micVolume / 100.0)
+	if a.micMuted || gain < 0 {
+		gain = 0
+	}
+	a.micGainBits.Store(uint32(gain * 1000))
+}
+
+func (a *App) applySpeakerVolume() {
+	vol := float32(a.volume / 100.0)
+	if a.speakerMuted {
+		vol = 0
+	}
+	if a.opts.Media != nil {
+		a.opts.Media.SetVolume(vol)
+	}
+	if a.theatrePlayer != nil {
+		a.theatrePlayer.SetVolume(float64(vol))
+	}
+	a.theatre.Volume = vol
+}
+
+func (a *App) EffectiveMicGain() float32 {
+	return float32(a.micGainBits.Load()) / 1000.0
+}
+
+func (a *App) ToggleSpeakerMute() {
+	a.speakerMuted = !a.speakerMuted
+	a.applySpeakerVolume()
+}
+
+func (a *App) ToggleMicMute() {
+	a.micMuted = !a.micMuted
+	a.syncMicGain()
+}
+
+func (a *App) SpeakerMuted() bool { return a.speakerMuted }
+func (a *App) MicMuted() bool     { return a.micMuted }
+

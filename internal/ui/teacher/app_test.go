@@ -411,6 +411,21 @@ func TestTeacherMicVolumeAndSettingsMonitorSliders(t *testing.T) {
 	if !tester.HasText("麦克风音量") {
 		t.Fatalf("expected 麦克风音量 in bottom-right panel")
 	}
+	if !tester.HasText("扬声器音量") {
+		t.Fatalf("expected 扬声器音量 in bottom-right panel")
+	}
+	app.ToggleSpeakerMute()
+	if !app.SpeakerMuted() {
+		t.Fatalf("expected SpeakerMuted=true after ToggleSpeakerMute")
+	}
+	app.ToggleMicMute()
+	if !app.MicMuted() || app.EffectiveMicGain() != 0 {
+		t.Fatalf("expected MicMuted=true and EffectiveMicGain=0 after ToggleMicMute")
+	}
+	tester.Frame()
+	if !tester.HasText("已静音") || !tester.HasText("取消静音") {
+		t.Fatalf("expected mute labels in UI after muting")
+	}
 	if tester.HasText("监控画质") || tester.HasText("监控帧率") {
 		t.Fatalf("expected monitor quality/FPS moved out of main sidebar into settings modal")
 	}

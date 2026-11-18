@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"flag"
 	"io"
@@ -456,6 +457,24 @@ func (rt *Runtime) syncAudioCapture() {
 	}
 	loopback := wantMode == "loopback"
 	_ = rt.Media.StartAudioCapture(loopback, func(af *core.AudioFrame) {
+		if wantMode == "voice" {
+			gain := rt.App.EffectiveMicGain()
+			if gain <= 0 {
+				return
+			}
+			if gain != 1.0 && len(af.Data) >= 2 {
+				for i := 0; i+1 < len(af.Data); i += 2 {
+					s := int16(binary.LittleEndian.Uint16(af.Data[i : i+2]))
+					v := float32(s) * gain
+					if v > 32767 {
+						v = 32767
+					} else if v < -32768 {
+						v = -32768
+					}
+					binary.LittleEndian.PutUint16(af.Data[i:i+2], uint16(int16(v)))
+				}
+			}
+		}
 		encoded, err := rt.Media.EncodeAudioFrame(af)
 		if err != nil || len(encoded) == 0 {
 			return
