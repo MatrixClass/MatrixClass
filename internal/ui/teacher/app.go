@@ -89,6 +89,18 @@ type App struct {
 	selectedIDs   map[string]bool
 	searchQuery   string
 
+	// Marquee (click-and-drag) multi-selection state
+	itemBounds      map[string]ui.Rect
+	marqueeActive   bool
+	marqueeMoved    bool
+	marqueeAdditive bool
+	marqueeStartX   float32
+	marqueeStartY   float32
+	marqueeCurX     float32
+	marqueeCurY     float32
+	marqueeBase     map[string]bool
+	suppressClear   bool
+
 	// Active classroom modes
 	broadcasting      bool
 	broadcastWindowed bool
@@ -223,6 +235,8 @@ func New(opts Options) *App {
 		mainSplitPct:      72,
 		selectedGroup:     "all",
 		selectedIDs:       make(map[string]bool),
+		itemBounds:        make(map[string]ui.Rect),
+		marqueeBase:       make(map[string]bool),
 		lockMessage:       "请注意听讲，教师已锁定屏幕。",
 		activeModeLabel:   "待机监听",
 		statusNote:        "就绪 · 局域网低延迟组播通道正常",
@@ -965,10 +979,10 @@ func (a *App) buildMainWorkspace(c *ui.Context, pal theme.Palette, students []co
 }
 
 func (a *App) buildSeatMapTab(c *ui.Context, pal theme.Palette, students []core.StudentInfo) {
-	var childClicked bool
 	ui.Column(c).Grow(1).FillWidth().Children(func() {
 		scroll := ui.Scroll(c).Grow(1).Padding(12).Gap(10)
 		a.attachBlankAreaContextMenu(scroll, students)
+		a.attachMarqueeElement(scroll, "", students)
 		scroll.Children(func() {
 			ui.Row(c).AlignItems(ui.Center).Gap(8).Children(func() {
 				ui.Text(c, "设备视图").FontSize(15).Bold()
@@ -977,13 +991,11 @@ func (a *App) buildSeatMapTab(c *ui.Context, pal theme.Palette, students []core.
 					ui.Badge(c, fmt.Sprintf("已选 %d 台", selCount)).Background(pal.Selection).TextColor(pal.Accent)
 				}
 				if len(students) > 0 {
-					if ui.Button(c, "全选 (Ctrl+A)").Padding(3, 10).Clicked() {
-						childClicked = true
+					if ui.Button(c, "全选 (Ctrl+A)").Padding(3, 10).HandleInput(func(ui.InputEvent) bool { return false }).Clicked() {
 						a.selectAllStudents(students)
 					}
 				}
-				if ui.Button(c, "自动排座").Padding(3, 10).Clicked() {
-					childClicked = true
+				if ui.Button(c, "自动排座").Padding(3, 10).HandleInput(func(ui.InputEvent) bool { return false }).Clicked() {
 					a.autoLayoutSeats()
 				}
 				ui.Spacer(c)
@@ -999,20 +1011,17 @@ func (a *App) buildSeatMapTab(c *ui.Context, pal theme.Palette, students []core.
 
 			ui.Row(c).Wrap().Gap(12).Children(func() {
 				for _, st := range students {
-					if a.buildSeatCard(c, pal, st) {
-						childClicked = true
-					}
+					a.buildSeatCard(c, pal, st, students)
 				}
 			})
+			a.drawMarqueeOverlay(c, pal, scroll.Bounds())
 		})
-		if scroll.Clicked() && !childClicked {
-			a.clearSelection()
-		}
+		a.suppressClear = false
 		a.buildGroupBottomBar(c, pal)
 	})
 }
 
-func (a *App) buildSeatCard(c *ui.Context, pal theme.Palette, st core.StudentInfo) bool {
+func (a *App) buildSeatCard(c *ui.Context, pal theme.Palette, st core.StudentInfo, students []core.StudentInfo) {
 	selected := a.isSelected(st.ID)
 	bg := pal.Card
 	border := pal.CardBorder
@@ -1025,18 +1034,12 @@ func (a *App) buildSeatCard(c *ui.Context, pal theme.Palette, st core.StudentInf
 
 	card := ui.Column(c).Key("seat-" + st.ID).Width(178).Padding(9).Gap(5).Radius(3).
 		Background(bg).Border(1.5, border).Focusable().
-		Drag(st.ID).
 		Label(fmt.Sprintf("%s %s", st.MachineName, st.StudentNo))
-
-	if draggedID, over := ui.DragOver[string](card); over && draggedID != st.ID {
-		card.Border(2, pal.Warning)
+	if b := card.Bounds(); b.W > 0 && b.H > 0 {
+		a.itemBounds = ensureBoundsMap(a.itemBounds)
+		a.itemBounds[st.ID] = b
 	}
-	if draggedID, ok := ui.Drop[string](card); ok && draggedID != "" && draggedID != st.ID {
-		a.swapStudentSeats(draggedID, st.ID)
-	}
-	if card.Dragging() {
-		card.Opacity(0.55)
-	}
+	a.attachMarqueeElement(card, st.ID, students)
 
 	a.attachStudentContextMenu(card, st)
 
@@ -1066,21 +1069,9 @@ func (a *App) buildSeatCard(c *ui.Context, pal theme.Palette, st core.StudentInf
 
 		ui.Text(c, fmt.Sprintf("%s · %dms", st.IP, st.RTTMs)).FontSize(10).TextColor(pal.TextMuted).SingleLine()
 	})
-
-	interacted := false
-	if card.Clicked() {
-		interacted = true
-		if (card.ClickModifiers() & (ui.Ctrl | ui.Cmd)) != 0 {
-			a.toggleSelect(st.ID)
-		} else {
-			a.selectSingle(st.ID)
-		}
-	}
-	return interacted
 }
 
 func (a *App) buildMonitorWallTab(c *ui.Context, pal theme.Palette, students []core.StudentInfo) {
-	var childClicked bool
 	ui.Column(c).Grow(1).Padding(12).Gap(10).Children(func() {
 		ui.Row(c).AlignItems(ui.Center).Gap(8).Children(func() {
 			ui.Text(c, "屏幕监控").FontSize(15).Bold()
@@ -1090,20 +1081,17 @@ func (a *App) buildMonitorWallTab(c *ui.Context, pal theme.Palette, students []c
 			}
 			if len(students) > 0 {
 				if ui.Button(c, "全选 (Ctrl+A)").Padding(3, 10).Clicked() {
-					childClicked = true
 					a.selectAllStudents(students)
 				}
 			}
 			ui.Spacer(c)
 			if a.monitoring {
 				if ui.Button(c, "停止监控").Clicked() {
-					childClicked = true
 					a.monitoring = false
 					a.applyMonitorState()
 				}
 			} else {
 				if ui.PrimaryButton(c, "开启监控轮询").Clicked() {
-					childClicked = true
 					a.monitoring = true
 					a.applyMonitorState()
 				}
@@ -1112,6 +1100,7 @@ func (a *App) buildMonitorWallTab(c *ui.Context, pal theme.Palette, students []c
 
 		scroll := ui.Scroll(c).Grow(1)
 		a.attachBlankAreaContextMenu(scroll, students)
+		a.attachMarqueeElement(scroll, "", students)
 		scroll.Children(func() {
 			if len(students) == 0 {
 				ui.Box(c).Fill().Center().Padding(24).Children(func() {
@@ -1132,31 +1121,27 @@ func (a *App) buildMonitorWallTab(c *ui.Context, pal theme.Palette, students []c
 					}
 					tile := ui.Column(c).Key("mon-" + st.ID).Width(256).Padding(8).Gap(6).Radius(3).
 						Background(bg).Border(1.5, border).Focusable()
+					if b := tile.Bounds(); b.W > 0 && b.H > 0 {
+						a.itemBounds = ensureBoundsMap(a.itemBounds)
+						a.itemBounds[st.ID] = b
+					}
+					a.attachMarqueeElement(tile, st.ID, students)
 					a.attachStudentContextMenu(tile, st)
 					tile.Children(func() {
 						ui.Image(c, bmp).Size(240, 135).Fit(ui.Contain).Radius(2)
 						ui.Row(c).AlignItems(ui.Center).Gap(6).Children(func() {
 							ui.Text(c, st.MachineName).FontSize(12).Bold().Grow(1).SingleLine()
-							if ui.Button(c, "远控").Padding(2, 6).Clicked() {
-								childClicked = true
+							remoteBtn := ui.Button(c, "远控").Padding(2, 6).HandleInput(func(ui.InputEvent) bool { return false })
+							if remoteBtn.Clicked() {
 								a.StartRemoteControl(st.ID)
 							}
 						})
 					})
-					if tile.Clicked() {
-						childClicked = true
-						if (tile.ClickModifiers() & (ui.Ctrl | ui.Cmd)) != 0 {
-							a.toggleSelect(st.ID)
-						} else {
-							a.selectSingle(st.ID)
-						}
-					}
 				}
 			})
+			a.drawMarqueeOverlay(c, pal, scroll.Bounds())
 		})
-		if scroll.Clicked() && !childClicked {
-			a.clearSelection()
-		}
+		a.suppressClear = false
 		a.buildGroupBottomBar(c, pal)
 	})
 }
@@ -2802,6 +2787,146 @@ func (a *App) attachBlankAreaContextMenu(elem ui.Element, students []core.Studen
 			}
 		}
 	})
+}
+
+func (a *App) attachMarqueeElement(elem ui.Element, itemID string, students []core.StudentInfo) {
+	a.itemBounds = ensureBoundsMap(a.itemBounds)
+	eb := elem.Bounds()
+	elem.HandleInput(func(ev ui.InputEvent) bool {
+		wx := eb.X + ev.X
+		wy := eb.Y + ev.Y
+		switch ev.Kind {
+		case ui.InputPointerDown:
+			if ev.Button != 0 {
+				return false
+			}
+			a.marqueeActive = true
+			a.marqueeMoved = false
+			a.marqueeAdditive = (ev.Mods & (ui.Ctrl | ui.Cmd)) != 0
+			a.marqueeStartX = wx
+			a.marqueeStartY = wy
+			a.marqueeCurX = wx
+			a.marqueeCurY = wy
+			clear(a.marqueeBase)
+			if a.marqueeAdditive {
+				for k, v := range a.selectedIDs {
+					if v {
+						a.marqueeBase[k] = true
+					}
+				}
+				if a.selectedID != "" {
+					a.marqueeBase[a.selectedID] = true
+				}
+			}
+			return true
+		case ui.InputPointerMove:
+			if !a.marqueeActive {
+				return false
+			}
+			a.marqueeCurX = wx
+			a.marqueeCurY = wy
+			dx := a.marqueeCurX - a.marqueeStartX
+			dy := a.marqueeCurY - a.marqueeStartY
+			if dx*dx+dy*dy >= 36 {
+				a.marqueeMoved = true
+				a.applyMarqueeSelection(students)
+				return true
+			}
+			return true
+		case ui.InputPointerUp:
+			if !a.marqueeActive {
+				return false
+			}
+			wasMoved := a.marqueeMoved
+			if wasMoved && !ev.Canceled {
+				a.marqueeCurX = wx
+				a.marqueeCurY = wy
+				a.applyMarqueeSelection(students)
+				a.suppressClear = true
+			}
+			additive := a.marqueeAdditive || (ev.Mods&(ui.Ctrl|ui.Cmd)) != 0
+			a.marqueeActive = false
+			a.marqueeMoved = false
+			if !wasMoved && !ev.Canceled {
+				if itemID != "" {
+					if additive {
+						a.toggleSelect(itemID)
+					} else {
+						a.selectSingle(itemID)
+					}
+				} else if !additive {
+					a.clearSelection()
+				}
+			}
+			return true
+		}
+		return false
+	})
+}
+
+func ensureBoundsMap(m map[string]ui.Rect) map[string]ui.Rect {
+	if m == nil {
+		return make(map[string]ui.Rect)
+	}
+	return m
+}
+
+func (a *App) applyMarqueeSelection(students []core.StudentInfo) {
+	minX, maxX := a.marqueeStartX, a.marqueeCurX
+	if minX > maxX {
+		minX, maxX = maxX, minX
+	}
+	minY, maxY := a.marqueeStartY, a.marqueeCurY
+	if minY > maxY {
+		minY, maxY = maxY, minY
+	}
+	if a.selectedIDs == nil {
+		a.selectedIDs = make(map[string]bool)
+	} else {
+		clear(a.selectedIDs)
+	}
+	if a.marqueeAdditive {
+		for k, v := range a.marqueeBase {
+			if v {
+				a.selectedIDs[k] = true
+			}
+		}
+	}
+	a.selectedID = ""
+	for _, st := range students {
+		b, ok := a.itemBounds[st.ID]
+		if !ok || b.W <= 0 || b.H <= 0 {
+			continue
+		}
+		if b.X < maxX && b.X+b.W > minX && b.Y < maxY && b.Y+b.H > minY {
+			a.selectedIDs[st.ID] = true
+		}
+	}
+	for _, st := range students {
+		if a.selectedIDs[st.ID] {
+			a.selectedID = st.ID
+			break
+		}
+	}
+}
+
+func (a *App) drawMarqueeOverlay(c *ui.Context, pal theme.Palette, scrollBounds ui.Rect) {
+	if !a.marqueeActive || !a.marqueeMoved || scrollBounds.W <= 0 || scrollBounds.H <= 0 {
+		return
+	}
+	minX, maxX := a.marqueeStartX, a.marqueeCurX
+	if minX > maxX {
+		minX, maxX = maxX, minX
+	}
+	minY, maxY := a.marqueeStartY, a.marqueeCurY
+	if minY > maxY {
+		minY, maxY = maxY, minY
+	}
+	ui.Box(c).Absolute().
+		Left(minX-scrollBounds.X).Top(minY-scrollBounds.Y).
+		Width(maxX-minX).Height(maxY-minY).
+		Background(ui.RGBA(0, 0, 0, 0.08)).
+		Border(1, pal.Accent).Radius(2)
 }
 
 func (a *App) ClearOfflineStudents() {

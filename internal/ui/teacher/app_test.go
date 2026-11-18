@@ -549,6 +549,52 @@ func TestClearOfflineStudents(t *testing.T) {
 	}
 }
 
+func TestMarqueeDragMultiSelect(t *testing.T) {
+	app, _, cr, _ := newTestTeacherApp()
+	tester := ui.NewTester(app.View, 1280, 820)
+	tester.Frame()
+	tester.Frame() // populate Bounds()
+
+	students := cr.ListStudents()
+	if len(students) < 2 {
+		t.Fatalf("expected >= 2 demo students")
+	}
+	r0, ok0 := tester.Find(students[0].MachineName + " " + students[0].StudentNo)
+	r1, ok1 := tester.Find(students[1].MachineName + " " + students[1].StudentNo)
+	if !ok0 || !ok1 {
+		t.Fatalf("expected seat cards in Device View")
+	}
+
+	// Press slightly above-left of card 0 and drag across to card 1
+	tester.Press(r0.X-10, r0.Y-10)
+	tester.Move(r1.X+10, r1.Y+10)
+	tester.Frame()
+	tester.Release(r1.X+10, r1.Y+10)
+	tester.Frame()
+	if got := len(app.targetStudentIDs()); got < 2 {
+		t.Fatalf("expected >= 2 selected students after marquee drag in Device View, got %d", got)
+	}
+
+	// Switch to Monitor Wall and verify marquee drag multi-select
+	app.clearSelection()
+	app.SetMainTab(TabMonitorWall)
+	tester.Frame()
+	tester.Frame() // populate tile Bounds()
+	m0 := app.itemBounds[students[0].ID]
+	m1 := app.itemBounds[students[1].ID]
+	if m0.W <= 0 || m1.W <= 0 {
+		t.Fatalf("expected monitor tile bounds populated")
+	}
+	tester.Press(m0.X+5, m0.Y+5)
+	tester.Move(m1.X+20, m1.Y+20)
+	tester.Frame()
+	tester.Release(m1.X+20, m1.Y+20)
+	tester.Frame()
+	if got := len(app.targetStudentIDs()); got < 2 {
+		t.Fatalf("expected >= 2 selected students after marquee drag in Monitor Wall, got %d", got)
+	}
+}
+
 func TestUpdateMonitorFrameResizeAndConcurrency(t *testing.T) {
 	app, _, _, _ := newTestTeacherApp()
 	tester := ui.NewTester(app.View, 1280, 820)
