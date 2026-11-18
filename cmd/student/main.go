@@ -590,7 +590,7 @@ func main() {
 	if !mygo.App.RequestSingleInstanceLock() {
 		return
 	}
-	mygo.App.SetName("矩联电子教室 MatrixClass 学生端")
+	mygo.App.SetName("矩联电子教室 MatrixClass - 学生端")
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -647,7 +647,7 @@ func main() {
 			barX = wa.X
 		}
 		win := mygo.NewWindow(mygo.WindowOptions{
-			Title:       "矩联电子教室 MatrixClass 学生端",
+			Title:       "矩联电子教室 MatrixClass - 学生端",
 			Width:       barW,
 			Height:      92,
 			X:           barX,

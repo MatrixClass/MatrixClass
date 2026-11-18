@@ -39,7 +39,7 @@ func TestTeacherConsoleViewsAndTabs(t *testing.T) {
 	tester := ui.NewTester(app.View, 1280, 820)
 	tester.Frame()
 
-	if !tester.HasText("矩联电子教室 MatrixClass 教师端") {
+	if !tester.HasText("矩联电子教室 MatrixClass") {
 		t.Fatalf("expected teacher title in view")
 	}
 	if !tester.HasText("设备视图") || !tester.HasText("屏幕广播") || !tester.HasText("网络影院") || !tester.HasText("默认分组") {

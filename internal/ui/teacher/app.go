@@ -876,7 +876,7 @@ func (a *App) buildChannelSelectModal(c *ui.Context, pal theme.Palette) {
 func (a *App) buildToolbar(c *ui.Context, pal theme.Palette) {
 	ui.Column(c).Background(pal.ChromeBar).Padding(6, 10).Gap(4).Children(func() {
 		ui.Row(c).AlignItems(ui.Center).Gap(8).DragWindow().Children(func() {
-			ui.Text(c, "矩联电子教室 MatrixClass 教师端").FontSize(14).Bold().TextColor(pal.Accent)
+			ui.Text(c, "矩联电子教室 MatrixClass").FontSize(14).Bold().TextColor(pal.Accent)
 			ui.Badge(c, a.channel).Background(pal.Selection).TextColor(pal.Accent)
 			ui.Spacer(c)
 			ui.SearchField(c, &a.searchQuery).Placeholder("筛选机位 / 学号 / IP...").Width(220)

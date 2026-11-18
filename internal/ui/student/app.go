@@ -149,7 +149,7 @@ func New(opts Options) *App {
 		statusNote:    "已连接频道: " + opts.Channel,
 		volume:        80,
 		examAnswers:   make(map[string]string),
-		recentNotices: []string{"欢迎加入 NexLab 电子教室"},
+		recentNotices: []string{"欢迎加入 矩联电子教室 MatrixClass"},
 		lastWinMode:   -1,
 	}
 }

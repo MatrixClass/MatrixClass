@@ -611,7 +611,7 @@ func main() {
 	if !mygo.App.RequestSingleInstanceLock() {
 		return
 	}
-	mygo.App.SetName("矩联电子教室 MatrixClass 教师端")
+	mygo.App.SetName("矩联电子教室 MatrixClass - 教师端")
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
