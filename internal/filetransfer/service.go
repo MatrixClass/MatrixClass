@@ -584,7 +584,16 @@ func (s *Service) HandleStream(ctx context.Context, stream io.ReadWriteCloser) e
 }
 
 func (s *Service) handleCollectRequest(ctx context.Context, stream io.ReadWriteCloser, req CollectRequest) error {
-	files, err := listCollectableFiles(req.RemoteDir)
+	targetDir := strings.TrimSpace(req.RemoteDir)
+	if targetDir == "" {
+		targetDir = s.receiveDir
+	}
+	files, err := listCollectableFiles(targetDir)
+	if errors.Is(err, os.ErrNotExist) && s.receiveDir != "" && targetDir != s.receiveDir {
+		_ = os.MkdirAll(s.receiveDir, 0o755)
+		targetDir = s.receiveDir
+		files, err = listCollectableFiles(targetDir)
+	}
 	if err != nil {
 		errPayload, _ := json.Marshal(FileComplete{
 			TaskID:  req.TaskID,
@@ -934,8 +943,10 @@ func (s *Service) resolveReceivePath(offer FileOffer) string {
 		folder := formatStudentFolder(offer.StudentNo, offer.StudentName, offer.StudentID)
 		return filepath.Join(s.archiveDir, folder, fileName)
 	}
-	if offer.RemoteDir != "" {
-		return filepath.Join(offer.RemoteDir, fileName)
+	if strings.TrimSpace(offer.RemoteDir) != "" {
+		if err := os.MkdirAll(offer.RemoteDir, 0o755); err == nil {
+			return filepath.Join(offer.RemoteDir, fileName)
+		}
 	}
 	return filepath.Join(s.receiveDir, fileName)
 }

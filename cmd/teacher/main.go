@@ -6,6 +6,7 @@ import (
 	"flag"
 	"io"
 	"log"
+	"sync"
 	"time"
 
 	"github.com/egoist/mygo"
@@ -24,6 +25,11 @@ import (
 	"nexlab/internal/ui/theme"
 )
 
+type videoStreamPacket struct {
+	Kind string `json:"kind"`
+	Data []byte `json:"data"`
+}
+
 type Runtime struct {
 	App       *teacher.App
 	Transport *transport.Manager
@@ -35,6 +41,12 @@ type Runtime struct {
 
 	channel   string
 	teacherID string
+
+	decMu           sync.Mutex
+	studentDecoders map[string]*media.HybridVideoCodec
+
+	audioMu   sync.Mutex
+	audioMode string // "", "voice", "loopback"
 }
 
 func NewRuntime(channel, teacherID, teacherName, archiveDir string) (*Runtime, error) {
@@ -47,9 +59,15 @@ func NewRuntime(channel, teacherID, teacherName, archiveDir string) (*Runtime, e
 	cr := classroom.NewService()
 	ex := exam.NewService()
 
+	var appRef *teacher.App
 	ft := filetransfer.NewService(filetransfer.Config{
 		ArchiveDir: archiveDir,
 		ReceiveDir: archiveDir,
+		OnProgress: func(_ core.TransferTask) {
+			if appRef != nil {
+				appRef.Invalidate()
+			}
+		},
 		SessionLookup: func(peerID string) (core.Session, bool) {
 			for _, s := range tr.Sessions() {
 				if s.ID() == peerID {
@@ -64,7 +82,6 @@ func NewRuntime(channel, teacherID, teacherName, archiveDir string) (*Runtime, e
 					return filetransfer.StudentMeta{
 						ID:        st.ID,
 						StudentNo: st.StudentNo,
-						Name:      st.Name,
 					}, true
 				}
 			}
@@ -85,17 +102,19 @@ func NewRuntime(channel, teacherID, teacherName, archiveDir string) (*Runtime, e
 			Exam:      ex,
 		},
 	})
+	appRef = app
 
 	rt := &Runtime{
-		App:       app,
-		Transport: tr,
-		Media:     md,
-		Control:   ctrl,
-		Classroom: cr,
-		Files:     ft,
-		Exam:      ex,
-		channel:   channel,
-		teacherID: teacherID,
+		App:             app,
+		Transport:       tr,
+		Media:           md,
+		Control:         ctrl,
+		Classroom:       cr,
+		Files:           ft,
+		Exam:            ex,
+		channel:         channel,
+		teacherID:       teacherID,
+		studentDecoders: make(map[string]*media.HybridVideoCodec),
 	}
 	rt.wireHandlers()
 	return rt, nil
@@ -113,12 +132,37 @@ func (rt *Runtime) wireHandlers() {
 		go rt.acceptFileStreams(sess)
 	})
 	rt.Transport.OnEnvelope(func(sess core.Session, env protocol.Envelope) {
+		senderID := env.SenderID
+		if senderID == "" {
+			senderID = sess.ID()
+		}
 		switch env.Type {
+		case protocol.MsgPong:
+			var sentTs int64
+			if err := json.Unmarshal(env.Payload, &sentTs); err == nil && sentTs > 0 {
+				rtt := int(time.Now().UnixMilli() - sentTs)
+				if rtt < 0 {
+					rtt = 0
+				}
+				_ = rt.Classroom.UpdateTelemetry(senderID, rtt, rt.Transport.Stats().PacketLossRate)
+			}
 		case protocol.MsgStudentRegister:
 			var st core.StudentInfo
 			if err := json.Unmarshal(env.Payload, &st); err == nil {
 				if st.ID == "" {
 					st.ID = sess.ID()
+				}
+				rt.Files.RegisterSession(st.ID, sess)
+				rt.Files.RegisterStudentMeta(filetransfer.StudentMeta{
+					ID:        st.ID,
+					StudentNo: st.StudentNo,
+				})
+				if existing, ok := rt.Classroom.GetStudent(st.ID); ok {
+					st.Seat = existing.Seat
+					st.GroupID = existing.GroupID
+					st.CheckedIn = existing.CheckedIn
+				} else if st.Seat.Row == 0 && st.Seat.Col == 0 {
+					st.Seat = rt.nextFreeSeat()
 				}
 				st.IP = sess.RemoteAddr()
 				st.Status = core.StatusOnline
@@ -128,14 +172,13 @@ func (rt *Runtime) wireHandlers() {
 		case protocol.MsgCheckInSubmit:
 			var req struct {
 				StudentID string `json:"student_id"`
-				Name      string `json:"name"`
 				StudentNo string `json:"student_no"`
 			}
 			if err := json.Unmarshal(env.Payload, &req); err == nil {
 				if req.StudentID == "" {
-					req.StudentID = env.SenderID
+					req.StudentID = senderID
 				}
-				rt.Classroom.SubmitCheckIn(req.StudentID, req.Name, req.StudentNo)
+				rt.Classroom.SubmitCheckIn(req.StudentID, "", req.StudentNo)
 			}
 		case protocol.MsgHandRaise:
 			var req struct {
@@ -144,7 +187,7 @@ func (rt *Runtime) wireHandlers() {
 			}
 			if err := json.Unmarshal(env.Payload, &req); err == nil {
 				if req.StudentID == "" {
-					req.StudentID = env.SenderID
+					req.StudentID = senderID
 				}
 				rt.Classroom.RaiseHand(req.StudentID, req.Raised)
 			}
@@ -161,9 +204,57 @@ func (rt *Runtime) wireHandlers() {
 			if err := json.Unmarshal(env.Payload, &sub); err == nil {
 				rt.Exam.SubmitAnswer(sub)
 			}
+		case protocol.MsgVideoFrame:
+			var pkt videoStreamPacket
+			if err := json.Unmarshal(env.Payload, &pkt); err == nil && len(pkt.Data) > 0 {
+				frame, err := rt.decodeStudentFrame(senderID, pkt.Data)
+				if err == nil && frame != nil {
+					switch pkt.Kind {
+					case "remote":
+						rt.App.UpdateRemoteFrame(senderID, frame)
+					case "demo":
+						rt.App.UpdateDemoFrame(senderID, frame)
+						if rt.App.StudentDemoID() == senderID {
+							_ = rt.Transport.BroadcastMulticast(pkt.Data)
+						}
+					default:
+						rt.App.UpdateMonitorFrame(senderID, frame)
+					}
+				}
+			}
 		}
 		rt.App.Invalidate()
 	})
+}
+
+func (rt *Runtime) nextFreeSeat() core.SeatPos {
+	used := make(map[core.SeatPos]bool)
+	for _, st := range rt.Classroom.ListStudents() {
+		used[st.Seat] = true
+	}
+	for idx := 0; idx < 256; idx++ {
+		pos := core.SeatPos{Row: idx / 4, Col: idx % 4}
+		if !used[pos] {
+			return pos
+		}
+	}
+	return core.SeatPos{}
+}
+
+func (rt *Runtime) decodeStudentFrame(studentID string, data []byte) (*core.VideoFrame, error) {
+	rt.decMu.Lock()
+	dec, ok := rt.studentDecoders[studentID]
+	if !ok {
+		var err error
+		dec, err = media.NewHybridVideoCodec(false)
+		if err != nil {
+			rt.decMu.Unlock()
+			return nil, err
+		}
+		rt.studentDecoders[studentID] = dec
+	}
+	rt.decMu.Unlock()
+	return dec.Decode(data)
 }
 
 func (rt *Runtime) acceptFileStreams(sess core.Session) {
@@ -204,7 +295,27 @@ func (rt *Runtime) Start(ctx context.Context, listenAddr string, teacherName str
 		return err
 	}
 	go rt.broadcastLoop(ctx)
+	go rt.heartbeatLoop(ctx)
 	return nil
+}
+
+func (rt *Runtime) heartbeatLoop(ctx context.Context) {
+	ticker := time.NewTicker(3 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			env, err := protocol.NewEnvelope(protocol.MsgPing, rt.teacherID, time.Now().UnixMilli())
+			if err == nil {
+				env.Channel = rt.channel
+				env.Timestamp = time.Now().UnixMilli()
+				_ = rt.Transport.BroadcastControl(env, nil)
+			}
+			rt.Classroom.MarkOfflineStale(15 * time.Second)
+		}
+	}
 }
 
 func (rt *Runtime) broadcastLoop(ctx context.Context) {
@@ -215,10 +326,11 @@ func (rt *Runtime) broadcastLoop(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			if !rt.App.Broadcasting() {
+			rt.syncAudioCapture()
+			if !rt.App.Broadcasting() && !rt.App.TheatrePlaying() {
 				continue
 			}
-			frame, err := rt.Media.CaptureScreen()
+			frame, err := rt.Media.CaptureScreenMax(1280, 720)
 			if err != nil {
 				continue
 			}
@@ -231,7 +343,52 @@ func (rt *Runtime) broadcastLoop(ctx context.Context) {
 	}
 }
 
+func (rt *Runtime) syncAudioCapture() {
+	wantMode := ""
+	if rt.App.VoiceActive() {
+		wantMode = "voice"
+	} else if rt.App.Broadcasting() || rt.App.TheatrePlaying() {
+		wantMode = "loopback"
+	}
+
+	rt.audioMu.Lock()
+	curMode := rt.audioMode
+	if curMode == wantMode {
+		rt.audioMu.Unlock()
+		return
+	}
+	rt.audioMode = wantMode
+	rt.audioMu.Unlock()
+
+	if wantMode == "" {
+		_ = rt.Media.StopAudioCapture()
+		return
+	}
+	loopback := wantMode == "loopback"
+	_ = rt.Media.StartAudioCapture(loopback, func(af *core.AudioFrame) {
+		encoded, err := rt.Media.EncodeAudioFrame(af)
+		if err != nil || len(encoded) == 0 {
+			return
+		}
+		env, err := protocol.NewEnvelope(protocol.MsgAudioFrame, rt.teacherID, encoded)
+		if err != nil {
+			return
+		}
+		env.Channel = rt.channel
+		env.Timestamp = time.Now().UnixMilli()
+		_ = rt.Transport.BroadcastControl(env, nil)
+	})
+}
+
 func (rt *Runtime) Close() error {
+	_ = rt.Media.StopAudioCapture()
+	_ = rt.Media.Close()
+	rt.decMu.Lock()
+	for _, dec := range rt.studentDecoders {
+		_ = dec.Close()
+	}
+	rt.studentDecoders = nil
+	rt.decMu.Unlock()
 	_ = rt.Control.Close()
 	return rt.Transport.Close()
 }

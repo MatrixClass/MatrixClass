@@ -2,14 +2,20 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"io"
 	"net"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
 	"nexlab/internal/control"
 	"nexlab/internal/core"
 	"nexlab/internal/exam"
+	"nexlab/internal/filetransfer"
 	"nexlab/internal/media"
 	"nexlab/internal/protocol"
 	"nexlab/internal/transport"
@@ -174,5 +180,77 @@ func TestEndToEndTeacherStudentKCPIntegration(t *testing.T) {
 	decoded, err := stMedia.DecodeFrame(pkt)
 	if err != nil || decoded.Width != frame.Width || decoded.Height != frame.Height {
 		t.Fatalf("student DecodeFrame failed: err=%v decoded=%+v", err, decoded)
+	}
+
+	// Monitor frame round-trip from student to teacher over KCP
+	monFrame, err := stMedia.CaptureScreenMax(320, 180)
+	if err != nil {
+		t.Fatalf("student CaptureScreenMax failed: %v", err)
+	}
+	monBytes, err := stMedia.EncodeFrame(monFrame, 70)
+	if err != nil {
+		t.Fatalf("student EncodeFrame failed: %v", err)
+	}
+	monEnv, err := protocol.NewEnvelope(protocol.MsgVideoFrame, "stu-e2e-1", videoStreamPacket{
+		Kind: "monitor",
+		Data: monBytes,
+	})
+	if err != nil {
+		t.Fatalf("NewEnvelope MsgVideoFrame failed: %v", err)
+	}
+	if err := stTransport.BroadcastControl(monEnv, nil); err != nil {
+		t.Fatalf("BroadcastControl MsgVideoFrame failed: %v", err)
+	}
+
+	// File distribution over real KCP StreamFile
+	srcDir := t.TempDir()
+	dstDir := t.TempDir()
+	srcFile := filepath.Join(srcDir, "lab_handout.txt")
+	fileBytes := []byte("NexLab KCP real file transfer verification payload\n")
+	if err := os.WriteFile(srcFile, fileBytes, 0o644); err != nil {
+		t.Fatalf("write srcFile: %v", err)
+	}
+	stFiles := filetransfer.NewService(filetransfer.Config{
+		ReceiveDir: dstDir,
+		ArchiveDir: dstDir,
+	})
+	stSess := stTransport.Sessions()[0]
+	stFiles.SetTeacherSession(stSess)
+	go func() {
+		type accepter interface {
+			AcceptStream() (protocol.StreamKind, io.ReadWriteCloser, error)
+		}
+		ac, ok := stSess.(accepter)
+		if !ok {
+			return
+		}
+		for {
+			kind, stream, err := ac.AcceptStream()
+			if err != nil {
+				return
+			}
+			if kind == protocol.StreamFile {
+				go func() { _ = stFiles.HandleStream(ctx, stream) }()
+			} else {
+				_ = stream.Close()
+			}
+		}
+	}()
+
+	task, err := trRuntime.Files.DistributeFile(ctx, srcFile, "", []string{"stu-e2e-1"}, false)
+	if err != nil {
+		t.Fatalf("DistributeFile over KCP failed: %v", err)
+	}
+	if task.Status != "completed" {
+		t.Fatalf("expected completed task, got %+v", task)
+	}
+	gotFile, err := os.ReadFile(filepath.Join(dstDir, "lab_handout.txt"))
+	if err != nil {
+		t.Fatalf("read received file: %v", err)
+	}
+	sumA := sha256.Sum256(fileBytes)
+	sumB := sha256.Sum256(gotFile)
+	if hex.EncodeToString(sumA[:]) != hex.EncodeToString(sumB[:]) {
+		t.Fatalf("received file SHA-256 mismatch")
 	}
 }
