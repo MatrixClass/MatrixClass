@@ -159,7 +159,6 @@ func (a *App) InstallTray() {
 	menu := mygo.NewMenu([]*mygo.MenuItem{
 		{Label: "显示/隐藏悬浮条", Click: func(_ *mygo.MenuItem, _ *mygo.Window) { a.ShowFloatingBar() }},
 		{Label: "举手提问", Click: func(_ *mygo.MenuItem, _ *mygo.Window) { a.ToggleHandRaise() }},
-		{Label: "打开点名签到", Click: func(_ *mygo.MenuItem, _ *mygo.Window) { a.OpenMode(ModeCheckIn) }},
 		{Label: "提交作业 / 消息", Click: func(_ *mygo.MenuItem, _ *mygo.Window) { a.OpenMode(ModeChat) }},
 		mygo.Separator(),
 		{Role: mygo.RoleQuit, Label: "退出学生端"},
@@ -263,6 +262,8 @@ func (a *App) OpenMode(m int) {
 	a.mode = m
 	if m == ModeExam {
 		a.loadActivePaper()
+	} else if m == ModeCheckIn {
+		a.checkInSubmitted = false
 	}
 	w := a.win
 	a.mu.Unlock()
@@ -595,12 +596,6 @@ func (a *App) buildFloatingBarView(c *ui.Context, pal theme.Palette) {
 			}
 			if ui.Button(c, handLabel).Padding(4, 10).Radius(3).Clicked() {
 				a.ToggleHandRaise()
-			}
-			if ui.Button(c, "点名签到").Padding(4, 10).Radius(3).Clicked() {
-				a.mu.Lock()
-				a.mode = ModeCheckIn
-				a.mu.Unlock()
-				a.syncWindow()
 			}
 			if ui.Button(c, "随堂测验").Padding(4, 10).Radius(3).Clicked() {
 				a.loadActivePaper()

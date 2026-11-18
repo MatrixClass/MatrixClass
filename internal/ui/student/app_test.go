@@ -33,8 +33,8 @@ func TestStudentBarCheckInExamAndLockViews(t *testing.T) {
 	tester := ui.NewTester(app.View, 920, 560)
 	tester.Frame()
 
-	if !tester.HasText("举手提问") || !tester.HasText("点名签到") {
-		t.Fatalf("expected floating bar controls")
+	if !tester.HasText("举手提问") || tester.HasText("点名签到") {
+		t.Fatalf("expected floating bar without manual 点名签到 button")
 	}
 
 	if err := tester.Click("举手提问"); err != nil {
@@ -45,10 +45,8 @@ func TestStudentBarCheckInExamAndLockViews(t *testing.T) {
 		t.Fatalf("expected handRaised=true")
 	}
 
-	// Check-in flow
-	if err := tester.Click("点名签到"); err != nil {
-		t.Fatalf("click 点名签到 failed: %v", err)
-	}
+	// Check-in flow triggered by teacher MsgCheckInStart -> OpenMode(ModeCheckIn)
+	app.OpenMode(ModeCheckIn)
 	tester.Frame()
 	if err := tester.Click("确认签到"); err != nil {
 		t.Fatalf("click 确认签到 failed: %v", err)
