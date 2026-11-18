@@ -530,7 +530,7 @@ func (a *App) View(c *ui.Context) {
 	})
 
 	ui.Modal(c, &a.fileDistModal, func() {
-		ui.Column(c).Width(560).Height(440).Background(pal.Canvas).Border(1, pal.CardBorder).Radius(4).Children(func() {
+		ui.Column(c).Width(560).Height(500).Background(pal.Canvas).Border(1, pal.CardBorder).Radius(4).Children(func() {
 			a.buildFileDistributeContent(c, pal)
 		})
 	})
@@ -645,50 +645,11 @@ func (a *App) toolbarToggle(c *ui.Context, pal theme.Palette, label string, icon
 }
 
 func (a *App) buildBody(c *ui.Context, pal theme.Palette, students []core.StudentInfo) {
-	ui.Split(c, &a.leftPaneSize, func() {
-		a.buildLeftSidebar(c, pal)
+	ui.SplitPercent(c, &a.mainSplitPct, func() {
+		a.buildMainWorkspace(c, pal, students)
 	}, func() {
-		ui.SplitPercent(c, &a.mainSplitPct, func() {
-			a.buildMainWorkspace(c, pal, students)
-		}, func() {
-			a.buildRightSidebar(c, pal, students)
-		}).SplitReset(72).Grow(1)
-	}).SplitReset(185).Grow(1)
-}
-
-func (a *App) buildLeftSidebar(c *ui.Context, pal theme.Palette) {
-	ui.Column(c).Fill().Background(pal.ChromeRail).BorderWidth(0, 1, 0, 0).BorderColor(pal.CardBorder).Children(func() {
-		// Quick vertical navigation rail
-		ui.Column(c).Grow(1).Padding(8).Gap(4).Children(func() {
-			ui.Text(c, "课堂导航").FontSize(11).Bold().TextColor(pal.TextMuted)
-			navItems := []struct {
-				tab   int
-				label string
-				icon  *ui.SVG
-			}{
-				{TabSeatMap, "设备视图", theme.IconSeat},
-				{TabMonitorWall, "屏幕监控", theme.IconMonitor},
-				{TabMyTheatre, "网络影院", theme.IconMyTheatre},
-				{TabExamStats, "随堂测验", theme.IconExam},
-				{TabFiles, "文件与作业", theme.IconFileDistribute},
-			}
-			for _, item := range navItems {
-				btn := ui.Button(c, "").Label(item.label).FillWidth().Padding(5, 8).Radius(3).Justify(ui.Start)
-				if a.mainTab == item.tab {
-					btn.Background(pal.Selection).Border(1, pal.Accent)
-				}
-				btn.Children(func() {
-					ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
-						ui.Image(c, item.icon).Size(16, 16)
-						ui.Text(c, item.label).FontSize(12).SingleLine()
-					})
-				})
-				if btn.Clicked() {
-					a.mainTab = item.tab
-				}
-			}
-		})
-	})
+		a.buildRightSidebar(c, pal, students)
+	}).SplitReset(75).Grow(1)
 }
 
 func (a *App) buildMainWorkspace(c *ui.Context, pal theme.Palette, students []core.StudentInfo) {
@@ -836,14 +797,6 @@ func (a *App) buildSeatCard(c *ui.Context, pal theme.Palette, st core.StudentInf
 			a.selectSingle(st.ID)
 		}
 	}
-	if card.DoubleClicked() {
-		interacted = true
-		a.selectSingle(st.ID)
-		a.monitoring = true
-		a.mainTab = TabMonitorWall
-		a.statusNote = fmt.Sprintf("正在重点监控 %s", st.MachineName)
-		a.applyMonitorState()
-	}
 	return interacted
 }
 
@@ -851,7 +804,7 @@ func (a *App) buildMonitorWallTab(c *ui.Context, pal theme.Palette, students []c
 	var childClicked bool
 	ui.Column(c).Grow(1).Padding(12).Gap(10).Children(func() {
 		ui.Row(c).AlignItems(ui.Center).Gap(8).Children(func() {
-			ui.Text(c, "多画面屏幕监控墙").FontSize(15).Bold()
+			ui.Text(c, "屏幕监控").FontSize(15).Bold()
 			ui.Badge(c, fmt.Sprintf("%d FPS · 画质 %d%%", int(a.monitorFPS), int(a.monitorQual)))
 			if selCount := a.selectedCount(); selCount > 0 {
 				ui.Badge(c, fmt.Sprintf("已选 %d 台", selCount)).Background(pal.Selection).TextColor(pal.Accent)
@@ -880,6 +833,12 @@ func (a *App) buildMonitorWallTab(c *ui.Context, pal theme.Palette, students []c
 
 		scroll := ui.Scroll(c).Grow(1)
 		scroll.Children(func() {
+			if len(students) == 0 {
+				ui.Box(c).Fill().Center().Padding(24).Children(func() {
+					ui.Text(c, "暂无学生机在线").FontSize(13).TextColor(pal.TextMuted)
+				})
+				return
+			}
 			ui.Row(c).Wrap().Gap(12).Children(func() {
 				for _, st := range students {
 					a.mu.Lock()
@@ -1100,8 +1059,18 @@ func (a *App) buildExamStatsTab(c *ui.Context, pal theme.Palette) {
 				if len(subs) > 0 {
 					ui.Text(c, "学生答卷明细").FontSize(12).Bold()
 					for _, sub := range subs {
+					subLabel := sub.StudentID
+					for _, st := range a.listStudents() {
+						if st.ID == sub.StudentID {
+							subLabel = st.MachineName
+							if st.StudentNo != "" {
+								subLabel += " (" + st.StudentNo + ")"
+							}
+							break
+						}
+					}
 						ui.Row(c).Key("sub-" + sub.StudentID).Padding(4, 8).Background(pal.Canvas).Border(1, pal.CardBorder).Radius(2).AlignItems(ui.Center).Children(func() {
-							ui.Text(c, sub.StudentID).FontSize(12).Grow(1)
+						ui.Text(c, subLabel).FontSize(12).Grow(1)
 							ui.Text(c, fmt.Sprintf("%d / %d 分", sub.Score, sub.MaxScore)).FontSize(12).Bold()
 						})
 					}
@@ -1118,49 +1087,57 @@ func (a *App) buildFilesTab(c *ui.Context, pal theme.Palette) {
 	}
 
 	ui.Column(c).Grow(1).Padding(12).Gap(10).Children(func() {
-		ui.Column(c).Background(pal.Card).Border(1, pal.CardBorder).Radius(3).Padding(12).Gap(8).Children(func() {
-			ui.Row(c).AlignItems(ui.Center).Children(func() {
-				ui.Text(c, "文件分发与作业收集").FontSize(14).Bold()
-				ui.Spacer(c)
-				ui.Checkbox(c, &a.fileTargetAll, "发送/收取全部在线学生 (取消则仅选中学生)")
-			})
-			ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
-				ui.TextInput(c, &a.distributePath).Placeholder("本地分发文件路径").Grow(1)
-				if ui.Button(c, "选择文件").Clicked() {
-					a.openDistributeFilePicker()
-				}
-				ui.TextInput(c, &a.remoteDir).Placeholder("学生机接收目录").Width(180)
-				ui.Checkbox(c, &a.autoOpenFile, "到达后自动打开")
-				if ui.PrimaryButton(c, "发送文件").Clicked() {
-					a.DistributeFile()
-				}
-			})
-			ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
-				ui.TextInput(c, &a.collectSaveDir).Placeholder("作业回收保存目录").Grow(1)
-				if ui.Button(c, "选择目录").Clicked() {
-					a.openCollectDirPicker()
-				}
-				if ui.Button(c, "一键收取全班作业").Clicked() {
-					a.CollectHomework()
-				}
-			})
+		ui.Row(c).AlignItems(ui.Center).Gap(8).Children(func() {
+			ui.Text(c, "文件传输记录").FontSize(15).Bold()
+			ui.Spacer(c)
+			if ui.PrimaryButton(c, "打开文件分发窗口").Padding(5, 14).Clicked() {
+				a.OpenFileDistributeWindow()
+			}
+			if ui.Button(c, "收取作业").Padding(5, 12).Clicked() {
+				a.CollectHomework()
+			}
 		})
 
-		ui.Text(c, fmt.Sprintf("传输任务队列 (%d)", len(tasks))).FontSize(13).Bold()
+		if len(tasks) == 0 {
+			ui.Box(c).Grow(1).Center().Children(func() {
+				ui.Text(c, "暂无传输记录").FontSize(13).TextColor(pal.TextMuted)
+			})
+			return
+		}
+
 		ui.Scroll(c).Grow(1).Gap(6).Children(func() {
 			for _, tk := range tasks {
 				ratio := 0.0
 				if tk.TotalBytes > 0 {
 					ratio = float64(tk.DoneBytes) / float64(tk.TotalBytes)
 				}
+				statusLabel := tk.Status
+				switch tk.Status {
+				case "completed":
+					statusLabel = "已完成"
+				case "running":
+					statusLabel = "传输中"
+				case "failed":
+					statusLabel = "失败"
+				}
+				dirLabel := "发送"
+				if tk.Direction == core.TransferSubmit {
+					dirLabel = "提交"
+				} else if tk.Direction == core.TransferCollect {
+					dirLabel = "收取"
+				}
 				ui.Column(c).Key("task-" + tk.ID).Background(pal.Card).Border(1, pal.CardBorder).Radius(3).Padding(10).Gap(6).Children(func() {
 					ui.Row(c).AlignItems(ui.Center).Gap(8).Children(func() {
-						ui.Badge(c, string(tk.Direction))
+						ui.Badge(c, dirLabel)
 						ui.Text(c, tk.FileName).FontSize(13).Bold().Grow(1).SingleLine()
-						ui.Text(c, fmt.Sprintf("%s · %.0f%%", tk.Status, ratio*100)).FontSize(11).TextColor(pal.TextMuted)
+						ui.Text(c, fmt.Sprintf("%s · %.0f%%", statusLabel, ratio*100)).FontSize(11).TextColor(pal.TextMuted)
 					})
 					ui.Progress(c, ratio).Height(6)
-					ui.Text(c, fmt.Sprintf("%s -> %s", tk.LocalPath, tk.RemotePath)).FontSize(11).TextColor(pal.TextMuted).SingleLine()
+					if tk.RemotePath != "" {
+						ui.Text(c, fmt.Sprintf("%s → %s", tk.LocalPath, tk.RemotePath)).FontSize(11).TextColor(pal.TextMuted).SingleLine()
+					} else {
+						ui.Text(c, tk.LocalPath).FontSize(11).TextColor(pal.TextMuted).SingleLine()
+					}
 				})
 			}
 		})
@@ -1251,7 +1228,11 @@ func (a *App) buildSideChatQueue(c *ui.Context, pal theme.Palette, students []co
 
 	ui.Scroll(c).Grow(1).Gap(6).Children(func() {
 		for _, msg := range chats {
-			ui.Column(c).Key("chat-" + msg.ID).Background(pal.Card).Border(1, pal.CardBorder).Radius(3).Padding(8).Gap(2).Children(func() {
+		chatKey := msg.ID
+		if chatKey == "" {
+			chatKey = fmt.Sprintf("chat-%s-%d", msg.SenderID, msg.CreatedAt.UnixMilli())
+		}
+		ui.Column(c).Key(chatKey).Background(pal.Card).Border(1, pal.CardBorder).Radius(3).Padding(8).Gap(2).Children(func() {
 				ui.Row(c).AlignItems(ui.Center).Children(func() {
 					ui.Text(c, msg.Sender).FontSize(11).Bold().TextColor(pal.Accent)
 					ui.Spacer(c)
@@ -1273,7 +1254,17 @@ func (a *App) buildSideChatQueue(c *ui.Context, pal theme.Palette, students []co
 func (a *App) buildSidePolicy(c *ui.Context, pal theme.Palette) {
 	ui.Scroll(c).Grow(1).Gap(8).Children(func() {
 		ui.Text(c, "课堂管控策略").FontSize(13).Bold()
-		ui.Select(c, &a.policyMode, []string{"blacklist", "whitelist"})
+		policyDisplay := "黑名单模式"
+		if a.policyMode == "whitelist" {
+			policyDisplay = "白名单模式"
+		}
+		if ui.Select(c, &policyDisplay, []string{"黑名单模式", "白名单模式"}).Changed() {
+			if policyDisplay == "白名单模式" {
+				a.policyMode = "whitelist"
+			} else {
+				a.policyMode = "blacklist"
+			}
+		}
 		ui.Text(c, "禁止运行进程 (逗号分隔)").FontSize(11).TextColor(pal.TextMuted)
 		ui.TextInput(c, &a.blockedAppsInput)
 		ui.Text(c, "允许运行进程 (白名单模式)").FontSize(11).TextColor(pal.TextMuted)
@@ -1322,12 +1313,14 @@ func (a *App) buildSettingsModal(c *ui.Context, pal theme.Palette) {
 		ui.Text(c, "教室频道名").FontSize(12).TextColor(pal.TextMuted)
 		ui.TextInput(c, &a.channel)
 		ui.Checkbox(c, &a.useMulticast, "优先使用 UDP 组播 + FEC 广播画面")
+		ui.Checkbox(c, &a.dark, "深色主题")
 		ui.Row(c).Gap(8).Justify(ui.End).Children(func() {
 			if ui.Button(c, "关闭").Clicked() {
 				a.settingsOpen = false
 			}
 			if ui.PrimaryButton(c, "保存并应用").Clicked() {
 				a.settingsOpen = false
+				a.syncRuntimeFlags()
 				a.statusNote = "课堂通道设置已更新: " + a.channel
 			}
 		})
