@@ -1,0 +1,705 @@
+package media
+
+import (
+	"encoding/binary"
+	"errors"
+	"fmt"
+	"sync"
+
+	"github.com/klauspost/compress/zstd"
+	"nexlab/internal/core"
+)
+
+const (
+	videoMagic   = "NXVF"
+	videoVersion = 1
+	videoHdrSize = 36
+	tileSize     = 32
+
+	codecIDFrameZstd uint8 = 1
+	codecIDH264MFT   uint8 = 2
+
+	videoFlagKeyFrame uint8 = 1 << 0
+	videoFlagNV12     uint8 = 1 << 1
+	videoFlagDelta    uint8 = 1 << 2
+)
+
+var (
+	ErrInvalidFrameData = errors.New("media: invalid encoded video frame")
+	ErrInvalidDimension = errors.New("media: invalid frame dimensions")
+	ErrBufferTooSmall   = errors.New("media: input buffer too small")
+	ErrMFTUnavailable   = errors.New("media: Media Foundation H.264 MFT unavailable")
+)
+
+// RGBAToNV12 converts tightly packed RGBA (4*width*height) to BT.709 full-range NV12 planes.
+func RGBAToNV12(rgba []byte, width, height int) (yPlane, uvPlane []byte, strideY, strideUV int, err error) {
+	if width <= 0 || height <= 0 {
+		return nil, nil, 0, 0, ErrInvalidDimension
+	}
+	if len(rgba) < width*height*4 {
+		return nil, nil, 0, 0, ErrBufferTooSmall
+	}
+
+	strideY = width
+	cw := (width + 1) / 2
+	ch := (height + 1) / 2
+	strideUV = cw * 2
+
+	yPlane = make([]byte, strideY*height)
+	uvPlane = make([]byte, strideUV*ch)
+
+	for y := 0; y < height; y++ {
+		rowOff := y * width * 4
+		yRow := y * strideY
+		for x := 0; x < width; x++ {
+			px := rowOff + x*4
+			r := int32(rgba[px])
+			g := int32(rgba[px+1])
+			b := int32(rgba[px+2])
+			// BT.709 full-range Y: 0.2126*R + 0.7152*G + 0.0722*B
+			yv := (13933*r + 46871*g + 4732*b + 32768) >> 16
+			yPlane[yRow+x] = clampByte(yv)
+		}
+	}
+
+	for cy := 0; cy < ch; cy++ {
+		y0 := cy * 2
+		y1 := y0 + 1
+		if y1 >= height {
+			y1 = y0
+		}
+		uvRow := cy * strideUV
+		for cx := 0; cx < cw; cx++ {
+			x0 := cx * 2
+			x1 := x0 + 1
+			if x1 >= width {
+				x1 = x0
+			}
+			p00 := (y0*width + x0) * 4
+			p01 := (y0*width + x1) * 4
+			p10 := (y1*width + x0) * 4
+			p11 := (y1*width + x1) * 4
+
+			r := (int32(rgba[p00]) + int32(rgba[p01]) + int32(rgba[p10]) + int32(rgba[p11]) + 2) >> 2
+			g := (int32(rgba[p00+1]) + int32(rgba[p01+1]) + int32(rgba[p10+1]) + int32(rgba[p11+1]) + 2) >> 2
+			b := (int32(rgba[p00+2]) + int32(rgba[p01+2]) + int32(rgba[p10+2]) + int32(rgba[p11+2]) + 2) >> 2
+
+			// BT.709 full-range Cb/Cr:
+			// Cb = 128 - 0.11457*R - 0.38543*G + 0.5*B
+			// Cr = 128 + 0.5*R - 0.45415*G - 0.04585*B
+			cb := 128 + ((-7509*r - 25259*g + 32768*b + 32768) >> 16)
+			cr := 128 + ((32768*r - 29763*g - 3005*b + 32768) >> 16)
+			uvPlane[uvRow+cx*2] = clampByte(cb)
+			uvPlane[uvRow+cx*2+1] = clampByte(cr)
+		}
+	}
+
+	return yPlane, uvPlane, strideY, strideUV, nil
+}
+
+// NV12ToRGBA converts BT.709 full-range NV12 planes to tightly packed RGBA (4*width*height).
+func NV12ToRGBA(yPlane, uvPlane []byte, width, height, strideY, strideUV int) ([]byte, error) {
+	if width <= 0 || height <= 0 {
+		return nil, ErrInvalidDimension
+	}
+	if strideY <= 0 {
+		strideY = width
+	}
+	cw := (width + 1) / 2
+	ch := (height + 1) / 2
+	if strideUV <= 0 {
+		strideUV = cw * 2
+	}
+	if strideY < width || len(yPlane) < strideY*(height-1)+width {
+		return nil, ErrBufferTooSmall
+	}
+	if strideUV < cw*2 || len(uvPlane) < strideUV*(ch-1)+cw*2 {
+		return nil, ErrBufferTooSmall
+	}
+
+	rgba := make([]byte, width*height*4)
+	for y := 0; y < height; y++ {
+		yRow := y * strideY
+		uvRow := (y >> 1) * strideUV
+		outRow := y * width * 4
+		for x := 0; x < width; x++ {
+			yv := int32(yPlane[yRow+x]) << 16
+			uvIdx := uvRow + (x>>1)*2
+			cb := int32(uvPlane[uvIdx]) - 128
+			cr := int32(uvPlane[uvIdx+1]) - 128
+
+			// Inverse BT.709 full-range:
+			// R = Y + 1.5748*Cr
+			// G = Y - 0.187324*Cb - 0.468124*Cr
+			// B = Y + 1.8556*Cb
+			r := (yv + 103206*cr + 32768) >> 16
+			g := (yv - 12276*cb - 30679*cr + 32768) >> 16
+			b := (yv + 121609*cb + 32768) >> 16
+
+			px := outRow + x*4
+			rgba[px] = clampByte(r)
+			rgba[px+1] = clampByte(g)
+			rgba[px+2] = clampByte(b)
+			rgba[px+3] = 255
+		}
+	}
+	return rgba, nil
+}
+
+// EnsureNV12 populates NV12Y, NV12UV, StrideY, and StrideUV on frame when Data is RGBA.
+func EnsureNV12(frame *core.VideoFrame) error {
+	if frame == nil {
+		return ErrInvalidFrameData
+	}
+	if len(frame.NV12Y) > 0 && len(frame.NV12UV) > 0 && frame.StrideY >= frame.Width {
+		return nil
+	}
+	y, uv, sy, suv, err := RGBAToNV12(frame.Data, frame.Width, frame.Height)
+	if err != nil {
+		return err
+	}
+	frame.NV12Y = y
+	frame.NV12UV = uv
+	frame.StrideY = sy
+	frame.StrideUV = suv
+	return nil
+}
+
+func bgraToRGBA(bgra, dst []byte, width, height, stride int) []byte {
+	need := width * height * 4
+	if cap(dst) < need {
+		dst = make([]byte, need)
+	}
+	dst = dst[:need]
+	for y := 0; y < height; y++ {
+		srcRow := bgra[y*stride : y*stride+width*4]
+		dstRow := dst[y*width*4 : (y+1)*width*4]
+		for x := 0; x < width*4; x += 4 {
+			dstRow[x] = srcRow[x+2]
+			dstRow[x+1] = srcRow[x+1]
+			dstRow[x+2] = srcRow[x]
+			dstRow[x+3] = 255
+		}
+	}
+	return dst
+}
+
+func clampByte(v int32) byte {
+	if v < 0 {
+		return 0
+	}
+	if v > 255 {
+		return 255
+	}
+	return byte(v)
+}
+
+// ZstdVideoCodec implements fast tile-delta + Zstd encoding and decoding.
+type ZstdVideoCodec struct {
+	mu        sync.Mutex
+	encFast   *zstd.Encoder
+	encDef    *zstd.Encoder
+	dec       *zstd.Decoder
+	prevRGBA  []byte
+	prevW     int
+	prevH     int
+	decRGBA   []byte
+	decW      int
+	decH      int
+	scratch   []byte
+}
+
+func NewZstdVideoCodec() (*ZstdVideoCodec, error) {
+	encFast, err := zstd.NewWriter(nil, zstd.WithEncoderLevel(zstd.SpeedFastest))
+	if err != nil {
+		return nil, fmt.Errorf("media: init zstd fast encoder: %w", err)
+	}
+	encDef, err := zstd.NewWriter(nil, zstd.WithEncoderLevel(zstd.SpeedDefault))
+	if err != nil {
+		encFast.Close()
+		return nil, fmt.Errorf("media: init zstd default encoder: %w", err)
+	}
+	dec, err := zstd.NewReader(nil)
+	if err != nil {
+		encFast.Close()
+		encDef.Close()
+		return nil, fmt.Errorf("media: init zstd decoder: %w", err)
+	}
+	return &ZstdVideoCodec{
+		encFast: encFast,
+		encDef:  encDef,
+		dec:     dec,
+	}, nil
+}
+
+func (c *ZstdVideoCodec) Close() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.encFast != nil {
+		_ = c.encFast.Close()
+		c.encFast = nil
+	}
+	if c.encDef != nil {
+		_ = c.encDef.Close()
+		c.encDef = nil
+	}
+	if c.dec != nil {
+		c.dec.Close()
+		c.dec = nil
+	}
+	return nil
+}
+
+func (c *ZstdVideoCodec) Encode(frame *core.VideoFrame, quality int) ([]byte, error) {
+	if frame == nil || frame.Width <= 0 || frame.Height <= 0 {
+		return nil, ErrInvalidDimension
+	}
+	if quality <= 0 {
+		quality = 80
+	}
+	if quality > 100 {
+		quality = 100
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	w, h := frame.Width, frame.Height
+	expectedRGBA := w * h * 4
+
+	// Low-quality path or NV12-only source uses compact NV12 payload.
+	if len(frame.Data) < expectedRGBA || (quality < 65 && !frame.KeyFrame) {
+		var yPlane, uvPlane []byte
+		var strideY, strideUV int
+		if len(frame.NV12Y) >= w*h && len(frame.NV12UV) >= ((w+1)/2)*2*((h+1)/2) {
+			yPlane, uvPlane = frame.NV12Y, frame.NV12UV
+			strideY, strideUV = frame.StrideY, frame.StrideUV
+			if strideY <= 0 {
+				strideY = w
+			}
+			if strideUV <= 0 {
+				strideUV = ((w + 1) / 2) * 2
+			}
+		} else {
+			var err error
+			yPlane, uvPlane, strideY, strideUV, err = RGBAToNV12(frame.Data, w, h)
+			if err != nil {
+				return nil, err
+			}
+		}
+		ch := (h + 1) / 2
+		cwBytes := ((w + 1) / 2) * 2
+		raw := make([]byte, w*h+cwBytes*ch)
+		for row := 0; row < h; row++ {
+			copy(raw[row*w:(row+1)*w], yPlane[row*strideY:row*strideY+w])
+		}
+		uvBase := w * h
+		for row := 0; row < ch; row++ {
+			copy(raw[uvBase+row*cwBytes:uvBase+(row+1)*cwBytes], uvPlane[row*strideUV:row*strideUV+cwBytes])
+		}
+		compressed := c.selectEncoder(quality).EncodeAll(raw, nil)
+		flags := videoFlagNV12
+		if frame.KeyFrame {
+			flags |= videoFlagKeyFrame
+		}
+		return packVideoHeader(codecIDFrameZstd, flags, uint8(quality), w, h, frame.Seq, frame.Timestamp, compressed), nil
+	}
+
+	rgba := frame.Data[:expectedRGBA]
+	canDelta := !frame.KeyFrame && c.prevW == w && c.prevH == h && len(c.prevRGBA) == expectedRGBA
+
+	if canDelta {
+		deltaBuf, changedTiles, totalTiles := c.buildTileDelta(rgba, c.prevRGBA, w, h)
+		if changedTiles == 0 || changedTiles*100 <= totalTiles*65 {
+			compressed := c.selectEncoder(quality).EncodeAll(deltaBuf, nil)
+			copy(c.prevRGBA, rgba)
+			return packVideoHeader(codecIDFrameZstd, videoFlagDelta, uint8(quality), w, h, frame.Seq, frame.Timestamp, compressed), nil
+		}
+	}
+
+	if cap(c.prevRGBA) < expectedRGBA {
+		c.prevRGBA = make([]byte, expectedRGBA)
+	}
+	c.prevRGBA = c.prevRGBA[:expectedRGBA]
+	copy(c.prevRGBA, rgba)
+	c.prevW = w
+	c.prevH = h
+
+	compressed := c.selectEncoder(quality).EncodeAll(rgba, nil)
+	return packVideoHeader(codecIDFrameZstd, videoFlagKeyFrame, uint8(quality), w, h, frame.Seq, frame.Timestamp, compressed), nil
+}
+
+func (c *ZstdVideoCodec) selectEncoder(quality int) *zstd.Encoder {
+	if quality >= 85 && c.encDef != nil {
+		return c.encDef
+	}
+	return c.encFast
+}
+
+func (c *ZstdVideoCodec) buildTileDelta(curr, prev []byte, width, height int) ([]byte, int, int) {
+	tilesX := (width + tileSize - 1) / tileSize
+	tilesY := (height + tileSize - 1) / tileSize
+	totalTiles := tilesX * tilesY
+
+	buf := c.scratch[:0]
+	var countBuf [4]byte
+	buf = append(buf, countBuf[:]...) // placeholder for tile count
+
+	changed := 0
+	rowBytes := width * 4
+	for ty := 0; ty < tilesY; ty++ {
+		y0 := ty * tileSize
+		th := tileSize
+		if y0+th > height {
+			th = height - y0
+		}
+		for tx := 0; tx < tilesX; tx++ {
+			x0 := tx * tileSize
+			tw := tileSize
+			if x0+tw > width {
+				tw = width - x0
+			}
+			if tileEqual(curr, prev, rowBytes, x0, y0, tw, th) {
+				continue
+			}
+			changed++
+			var hdr [8]byte
+			binary.LittleEndian.PutUint16(hdr[0:2], uint16(x0))
+			binary.LittleEndian.PutUint16(hdr[2:4], uint16(y0))
+			binary.LittleEndian.PutUint16(hdr[4:6], uint16(tw))
+			binary.LittleEndian.PutUint16(hdr[6:8], uint16(th))
+			buf = append(buf, hdr[:]...)
+
+			span := tw * 4
+			for dy := 0; dy < th; dy++ {
+				off := (y0+dy)*rowBytes + x0*4
+				for i := 0; i < span; i++ {
+					buf = append(buf, curr[off+i]^prev[off+i])
+				}
+			}
+		}
+	}
+	binary.LittleEndian.PutUint32(buf[0:4], uint32(changed))
+	c.scratch = buf
+	return buf, changed, totalTiles
+}
+
+func tileEqual(a, b []byte, rowBytes, x0, y0, tw, th int) bool {
+	span := tw * 4
+	for dy := 0; dy < th; dy++ {
+		off := (y0+dy)*rowBytes + x0*4
+		sa := a[off : off+span]
+		sb := b[off : off+span]
+		for i := 0; i < span; i++ {
+			if sa[i] != sb[i] {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func (c *ZstdVideoCodec) Decode(data []byte) (*core.VideoFrame, error) {
+	codecID, flags, _, w, h, seq, ts, payload, err := parseVideoHeader(data)
+	if err != nil {
+		return nil, err
+	}
+	if codecID != codecIDFrameZstd {
+		return nil, fmt.Errorf("%w: unexpected codec id %d", ErrInvalidFrameData, codecID)
+	}
+	if w <= 0 || h <= 0 {
+		return nil, ErrInvalidDimension
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	raw, err := c.dec.DecodeAll(payload, nil)
+	if err != nil {
+		return nil, fmt.Errorf("media: zstd decode failed: %w", err)
+	}
+
+	if flags&videoFlagNV12 != 0 {
+		cwBytes := ((w + 1) / 2) * 2
+		ch := (h + 1) / 2
+		need := w*h + cwBytes*ch
+		if len(raw) < need {
+			return nil, ErrInvalidFrameData
+		}
+		yPlane := make([]byte, w*h)
+		uvPlane := make([]byte, cwBytes*ch)
+		copy(yPlane, raw[:w*h])
+		copy(uvPlane, raw[w*h:need])
+		rgba, err := NV12ToRGBA(yPlane, uvPlane, w, h, w, cwBytes)
+		if err != nil {
+			return nil, err
+		}
+		if cap(c.decRGBA) < len(rgba) {
+			c.decRGBA = make([]byte, len(rgba))
+		}
+		c.decRGBA = c.decRGBA[:len(rgba)]
+		copy(c.decRGBA, rgba)
+		c.decW, c.decH = w, h
+		return &core.VideoFrame{
+			Seq:       seq,
+			Codec:     core.CodecFrameZstd,
+			Width:     w,
+			Height:    h,
+			KeyFrame:  flags&videoFlagKeyFrame != 0,
+			Timestamp: ts,
+			Data:      rgba,
+			NV12Y:     yPlane,
+			NV12UV:    uvPlane,
+			StrideY:   w,
+			StrideUV:  cwBytes,
+		}, nil
+	}
+
+	expectedRGBA := w * h * 4
+	if flags&videoFlagDelta != 0 {
+		if c.decW != w || c.decH != h || len(c.decRGBA) != expectedRGBA {
+			return nil, fmt.Errorf("%w: missing reference frame for delta", ErrInvalidFrameData)
+		}
+		if len(raw) < 4 {
+			return nil, ErrInvalidFrameData
+		}
+		tileCount := int(binary.LittleEndian.Uint32(raw[0:4]))
+		pos := 4
+		rowBytes := w * 4
+		for i := 0; i < tileCount; i++ {
+			if pos+8 > len(raw) {
+				return nil, ErrInvalidFrameData
+			}
+			x0 := int(binary.LittleEndian.Uint16(raw[pos : pos+2]))
+			y0 := int(binary.LittleEndian.Uint16(raw[pos+2 : pos+4]))
+			tw := int(binary.LittleEndian.Uint16(raw[pos+4 : pos+6]))
+			th := int(binary.LittleEndian.Uint16(raw[pos+6 : pos+8]))
+			pos += 8
+			if x0+tw > w || y0+th > h {
+				return nil, ErrInvalidFrameData
+			}
+			span := tw * 4
+			if pos+span*th > len(raw) {
+				return nil, ErrInvalidFrameData
+			}
+			for dy := 0; dy < th; dy++ {
+				off := (y0+dy)*rowBytes + x0*4
+				for k := 0; k < span; k++ {
+					c.decRGBA[off+k] ^= raw[pos+k]
+				}
+				pos += span
+			}
+		}
+	} else {
+		if len(raw) < expectedRGBA {
+			return nil, ErrInvalidFrameData
+		}
+		if cap(c.decRGBA) < expectedRGBA {
+			c.decRGBA = make([]byte, expectedRGBA)
+		}
+		c.decRGBA = c.decRGBA[:expectedRGBA]
+		copy(c.decRGBA, raw[:expectedRGBA])
+		c.decW, c.decH = w, h
+	}
+
+	outRGBA := make([]byte, expectedRGBA)
+	copy(outRGBA, c.decRGBA)
+	yPlane, uvPlane, sy, suv, err := RGBAToNV12(outRGBA, w, h)
+	if err != nil {
+		return nil, err
+	}
+
+	return &core.VideoFrame{
+		Seq:       seq,
+		Codec:     core.CodecFrameZstd,
+		Width:     w,
+		Height:    h,
+		KeyFrame:  flags&videoFlagKeyFrame != 0,
+		Timestamp: ts,
+		Data:      outRGBA,
+		NV12Y:     yPlane,
+		NV12UV:    uvPlane,
+		StrideY:   sy,
+		StrideUV:  suv,
+	}, nil
+}
+
+func packVideoHeader(codecID, flags, quality uint8, width, height int, seq uint64, ts int64, payload []byte) []byte {
+	out := make([]byte, videoHdrSize+len(payload))
+	copy(out[0:4], videoMagic)
+	out[4] = videoVersion
+	out[5] = codecID
+	out[6] = flags
+	out[7] = quality
+	binary.LittleEndian.PutUint32(out[8:12], uint32(width))
+	binary.LittleEndian.PutUint32(out[12:16], uint32(height))
+	binary.LittleEndian.PutUint64(out[16:24], seq)
+	binary.LittleEndian.PutUint64(out[24:32], uint64(ts))
+	binary.LittleEndian.PutUint32(out[32:36], uint32(len(payload)))
+	copy(out[videoHdrSize:], payload)
+	return out
+}
+
+func parseVideoHeader(data []byte) (codecID, flags, quality uint8, width, height int, seq uint64, ts int64, payload []byte, err error) {
+	if len(data) < videoHdrSize {
+		return 0, 0, 0, 0, 0, 0, 0, nil, ErrInvalidFrameData
+	}
+	if string(data[0:4]) != videoMagic {
+		return 0, 0, 0, 0, 0, 0, 0, nil, ErrInvalidFrameData
+	}
+	if data[4] != videoVersion {
+		return 0, 0, 0, 0, 0, 0, 0, nil, ErrInvalidFrameData
+	}
+	codecID = data[5]
+	flags = data[6]
+	quality = data[7]
+	width = int(binary.LittleEndian.Uint32(data[8:12]))
+	height = int(binary.LittleEndian.Uint32(data[12:16]))
+	seq = binary.LittleEndian.Uint64(data[16:24])
+	ts = int64(binary.LittleEndian.Uint64(data[24:32]))
+	pLen := int(binary.LittleEndian.Uint32(data[32:36]))
+	if pLen < 0 || len(data) < videoHdrSize+pLen {
+		return 0, 0, 0, 0, 0, 0, 0, nil, ErrInvalidFrameData
+	}
+	payload = data[videoHdrSize : videoHdrSize+pLen]
+	return codecID, flags, quality, width, height, seq, ts, payload, nil
+}
+
+// CaptureBackend identifies the active screen capture backend.
+type CaptureBackend string
+
+const (
+	CaptureBackendDXGI      CaptureBackend = "dxgi"
+	CaptureBackendGDI       CaptureBackend = "gdi"
+	CaptureBackendSynthetic CaptureBackend = "synthetic"
+)
+
+type CaptureOptions struct {
+	Width          int
+	Height         int
+	ForceSynthetic bool
+}
+
+func renderSyntheticRGBA(dst []byte, width, height int, seq uint64) []byte {
+	need := width * height * 4
+	if cap(dst) < need {
+		dst = make([]byte, need)
+	}
+	dst = dst[:need]
+
+	barOffset := int((seq * 11) % uint64(maxInt(1, width)))
+	for y := 0; y < height; y++ {
+		row := y * width * 4
+		topBar := y < 32
+		for x := 0; x < width; x++ {
+			px := row + x*4
+			if topBar {
+				dst[px] = 28
+				dst[px+1] = 56
+				dst[px+2] = 104
+				dst[px+3] = 255
+				continue
+			}
+			r := uint8(24 + (x*35)/maxInt(1, width))
+			g := uint8(42 + (y*60)/maxInt(1, height))
+			b := uint8(88 + ((x+y)*45)/maxInt(1, width+height))
+			if x >= barOffset && x < barOffset+48 && y >= 48 && y < height-24 {
+				r = 76
+				g = 175
+				b = 240
+			} else if x > 24 && x < width-24 && y > 48 && y < height-24 && ((x-24)%64 < 2 || (y-48)%64 < 2) {
+				r = 55
+				g = 90
+				b = 140
+			}
+			dst[px] = r
+			dst[px+1] = g
+			dst[px+2] = b
+			dst[px+3] = 255
+		}
+	}
+	return dst
+}
+
+func maxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+type videoMFTBackend interface {
+	Available() bool
+	Encode(frame *core.VideoFrame, quality int) ([]byte, error)
+	Decode(data []byte) (*core.VideoFrame, error)
+	Close() error
+}
+
+// HybridVideoCodec tries Windows Media Foundation H.264 MFT when enabled and available,
+// falling back transparently to ZstdVideoCodec on any unsupported format or runtime failure.
+type HybridVideoCodec struct {
+	zstd      *ZstdVideoCodec
+	mft       videoMFTBackend
+	preferMFT bool
+}
+
+func NewHybridVideoCodec(preferH264MFT bool) (*HybridVideoCodec, error) {
+	z, err := NewZstdVideoCodec()
+	if err != nil {
+		return nil, err
+	}
+	var mft videoMFTBackend
+	if preferH264MFT {
+		mft = newPlatformVideoMFT()
+	}
+	return &HybridVideoCodec{
+		zstd:      z,
+		mft:       mft,
+		preferMFT: preferH264MFT,
+	}, nil
+}
+
+func (h *HybridVideoCodec) MFTAvailable() bool {
+	return h.mft != nil && h.mft.Available()
+}
+
+func (h *HybridVideoCodec) Encode(frame *core.VideoFrame, quality int) ([]byte, error) {
+	if frame == nil {
+		return nil, ErrInvalidDimension
+	}
+	wantMFT := (h.preferMFT || frame.Codec == core.CodecH264MFT) && h.mft != nil && h.mft.Available()
+	if wantMFT {
+		if out, err := h.mft.Encode(frame, quality); err == nil {
+			return out, nil
+		}
+	}
+	return h.zstd.Encode(frame, quality)
+}
+
+func (h *HybridVideoCodec) Decode(data []byte) (*core.VideoFrame, error) {
+	codecID, _, _, _, _, _, _, _, err := parseVideoHeader(data)
+	if err != nil {
+		return nil, err
+	}
+	if codecID == codecIDH264MFT {
+		if h.mft == nil {
+			h.mft = newPlatformVideoMFT()
+		}
+		if h.mft != nil && h.mft.Available() {
+			return h.mft.Decode(data)
+		}
+		return nil, ErrMFTUnavailable
+	}
+	return h.zstd.Decode(data)
+}
+
+func (h *HybridVideoCodec) Close() error {
+	var firstErr error
+	if h.mft != nil {
+		firstErr = h.mft.Close()
+	}
+	if err := h.zstd.Close(); err != nil && firstErr == nil {
+		firstErr = err
+	}
+	return firstErr
+}
