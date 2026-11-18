@@ -1,6 +1,7 @@
 package media
 
 import (
+	"bytes"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -456,11 +457,18 @@ func (c *ZstdVideoCodec) buildTileDelta(curr, prev []byte, width, height int) ([
 			buf = append(buf, hdr[:]...)
 
 			span := tw * 4
+			prevLen := len(buf)
+			buf = append(buf, make([]byte, span*th)...)
+			dstPos := prevLen
 			for dy := 0; dy < th; dy++ {
 				off := (y0+dy)*rowBytes + x0*4
+				ca := curr[off : off+span]
+				pa := prev[off : off+span]
+				da := buf[dstPos : dstPos+span]
 				for i := 0; i < span; i++ {
-					buf = append(buf, curr[off+i]^prev[off+i])
+					da[i] = ca[i] ^ pa[i]
 				}
+				dstPos += span
 			}
 		}
 	}
@@ -473,12 +481,8 @@ func tileEqual(a, b []byte, rowBytes, x0, y0, tw, th int) bool {
 	span := tw * 4
 	for dy := 0; dy < th; dy++ {
 		off := (y0+dy)*rowBytes + x0*4
-		sa := a[off : off+span]
-		sb := b[off : off+span]
-		for i := 0; i < span; i++ {
-			if sa[i] != sb[i] {
-				return false
-			}
+		if !bytes.Equal(a[off:off+span], b[off:off+span]) {
+			return false
 		}
 	}
 	return true

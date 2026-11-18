@@ -107,6 +107,11 @@ type App struct {
 	theatre       core.TheatreState
 	theatreMedia  []string
 
+	pendingMonitor       map[string]*core.VideoFrame
+	pendingRemote        *core.VideoFrame
+	pendingDemo          *core.VideoFrame
+	videoUpdateScheduled atomic.Bool
+
 	// Exam builder / publisher state
 	examTitleInput     string
 	examDurInput       float64
@@ -147,6 +152,13 @@ type App struct {
 	qualValue             atomic.Int64
 	demoIDMu              sync.RWMutex
 	demoIDAtomic          string
+
+	ctrlCh chan ctrlOutbound
+}
+
+type ctrlOutbound struct {
+	env       protocol.Envelope
+	targetIDs []string
 }
 
 // New creates a Teacher Console App wired to core interfaces.
@@ -182,6 +194,7 @@ func New(opts Options) *App {
 		monitorQual:       75,
 		useMulticast:      true,
 		monitorTiles:      make(map[string]*ui.Bitmap),
+		pendingMonitor:    make(map[string]*core.VideoFrame),
 		theatreMedia:      []string{"01_计算机网络拓扑演示.mp4", "02_TCP三次握手动画.mkv", "03_局域网交换实验讲解.mp4"},
 		theatre:           core.TheatreState{Media: "01_计算机网络拓扑演示.mp4", Duration: 360, Volume: 0.75},
 		examTitleInput:    "随堂小测：计算机网络基础",
@@ -206,6 +219,8 @@ func New(opts Options) *App {
 	app.studentTable.Selected = &app.selectedRow
 	app.studentTable.RoundRows = true
 	app.syncRuntimeFlags()
+	app.ctrlCh = make(chan ctrlOutbound, 64)
+	go app.controlSendWorker()
 	return app
 }
 
@@ -238,9 +253,7 @@ func (a *App) Invalidate() {
 	w := a.win
 	a.mu.Unlock()
 	if w != nil {
-		mygo.RunOnMain(func() {
-			w.Invalidate()
-		})
+		w.Invalidate()
 	}
 }
 
@@ -307,13 +320,9 @@ func (a *App) UpdateMonitorFrame(studentID string, frame *core.VideoFrame) {
 		updateBitmapFromFrame(bmp, frame)
 		return
 	}
+	a.pendingMonitor[studentID] = frame
 	a.mu.Unlock()
-	w.Update(func() {
-		a.mu.Lock()
-		bmp := a.ensureTileBitmap(studentID, frame.Width, frame.Height)
-		a.mu.Unlock()
-		updateBitmapFromFrame(bmp, frame)
-	})
+	a.scheduleVideoFramesUpdate(w)
 }
 
 // UpdateRemoteFrame updates the live Remote Control interactive screen bitmap.
@@ -332,16 +341,9 @@ func (a *App) UpdateRemoteFrame(studentID string, frame *core.VideoFrame) {
 		updateBitmapFromFrame(bmp, frame)
 		return
 	}
+	a.pendingRemote = frame
 	a.mu.Unlock()
-	w.Update(func() {
-		a.mu.Lock()
-		if a.remoteBitmap == nil {
-			a.remoteBitmap = ui.NewBitmap(image.NewRGBA(image.Rect(0, 0, frame.Width, frame.Height)))
-		}
-		bmp := a.remoteBitmap
-		a.mu.Unlock()
-		updateBitmapFromFrame(bmp, frame)
-	})
+	a.scheduleVideoFramesUpdate(w)
 }
 
 // UpdateDemoFrame updates the Student Demo preview bitmap on the Teacher Console.
@@ -360,15 +362,45 @@ func (a *App) UpdateDemoFrame(studentID string, frame *core.VideoFrame) {
 		updateBitmapFromFrame(bmp, frame)
 		return
 	}
+	a.pendingDemo = frame
 	a.mu.Unlock()
+	a.scheduleVideoFramesUpdate(w)
+}
+
+func (a *App) scheduleVideoFramesUpdate(w *mygo.Window) {
+	if w == nil || !a.videoUpdateScheduled.CompareAndSwap(false, true) {
+		return
+	}
 	w.Update(func() {
+		a.videoUpdateScheduled.Store(false)
 		a.mu.Lock()
-		if a.demoBitmap == nil {
-			a.demoBitmap = ui.NewBitmap(image.NewRGBA(image.Rect(0, 0, frame.Width, frame.Height)))
+		var monBatch map[string]*core.VideoFrame
+		if len(a.pendingMonitor) > 0 {
+			monBatch = a.pendingMonitor
+			a.pendingMonitor = make(map[string]*core.VideoFrame, len(monBatch))
 		}
-		bmp := a.demoBitmap
+		remFrame := a.pendingRemote
+		a.pendingRemote = nil
+		demoFrame := a.pendingDemo
+		a.pendingDemo = nil
+
+		for id, f := range monBatch {
+			bmp := a.ensureTileBitmap(id, f.Width, f.Height)
+			updateBitmapFromFrame(bmp, f)
+		}
+		if remFrame != nil {
+			if a.remoteBitmap == nil {
+				a.remoteBitmap = ui.NewBitmap(image.NewRGBA(image.Rect(0, 0, remFrame.Width, remFrame.Height)))
+			}
+			updateBitmapFromFrame(a.remoteBitmap, remFrame)
+		}
+		if demoFrame != nil {
+			if a.demoBitmap == nil {
+				a.demoBitmap = ui.NewBitmap(image.NewRGBA(image.Rect(0, 0, demoFrame.Width, demoFrame.Height)))
+			}
+			updateBitmapFromFrame(a.demoBitmap, demoFrame)
+		}
 		a.mu.Unlock()
-		updateBitmapFromFrame(bmp, frame)
 	})
 }
 
@@ -1987,7 +2019,36 @@ func (a *App) sendControlEnvelope(msgType protocol.MsgType, payload any, targetI
 	}
 	env.Channel = a.channel
 	env.Timestamp = time.Now().UnixMilli()
-	_ = a.opts.Transport.BroadcastControl(env, targetIDs)
+	var targets []string
+	if len(targetIDs) > 0 {
+		targets = append([]string(nil), targetIDs...)
+	}
+	if msgType == protocol.MsgRemoteInputEvent {
+		select {
+		case a.ctrlCh <- ctrlOutbound{env: env, targetIDs: targets}:
+		default:
+		}
+		return
+	}
+	if a.ctrlCh == nil {
+		_ = a.opts.Transport.BroadcastControl(env, targets)
+		return
+	}
+	select {
+	case a.ctrlCh <- ctrlOutbound{env: env, targetIDs: targets}:
+	default:
+		go func() {
+			_ = a.opts.Transport.BroadcastControl(env, targets)
+		}()
+	}
+}
+
+func (a *App) controlSendWorker() {
+	for item := range a.ctrlCh {
+		if a.opts.Transport != nil {
+			_ = a.opts.Transport.BroadcastControl(item.env, item.targetIDs)
+		}
+	}
 }
 
 func (a *App) listStudents() []core.StudentInfo {

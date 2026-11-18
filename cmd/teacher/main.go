@@ -344,6 +344,7 @@ func (rt *Runtime) broadcastLoop(ctx context.Context) {
 	defer ticker.Stop()
 	wasActive := false
 	var bcastSeq uint64
+	var lastSentAt time.Time
 	for {
 		select {
 		case <-ctx.Done():
@@ -360,11 +361,16 @@ func (rt *Runtime) broadcastLoop(ctx context.Context) {
 			if err != nil {
 				continue
 			}
+			forceKF := !wasActive || rt.forceKeyFrame.Swap(false) || (bcastSeq > 0 && bcastSeq%150 == 0)
+			if !forceKF && !rt.Media.LastFrameChanged() && time.Since(lastSentAt) < 1000*time.Millisecond {
+				continue
+			}
 			bcastSeq++
-			if !wasActive || rt.forceKeyFrame.Swap(false) || bcastSeq%45 == 0 {
+			if forceKF {
 				frame.KeyFrame = true
 			}
 			wasActive = true
+			lastSentAt = time.Now()
 			encoded, err := rt.Media.EncodeFrame(frame, int(rt.App.MonitorQual()))
 			if err != nil {
 				continue

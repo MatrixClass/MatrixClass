@@ -170,26 +170,30 @@ func (a *AudioEngine) captureLoop(loopback bool, onFrame func(*core.AudioFrame),
 							if int32(hr) < 0 {
 								break
 							}
+							if numFrames == 0 {
+								comCall(capClient, 4, 0)
+								break
+							}
 							if numFrames > 0 {
-								var pcm []byte
-								if flags&audclntBufferSilent != 0 || dataPtr == 0 {
-									pcm = make([]byte, int(numFrames)*fmtInfo.Channels*2)
-								} else {
+								silentFrame := flags&audclntBufferSilent != 0 || dataPtr == 0
+								if !silentFrame {
 									frameBytes := int(numFrames) * fmtInfo.Channels * (fmtInfo.Bits / 8)
 									raw := unsafe.Slice((*byte)(unsafe.Pointer(dataPtr)), frameBytes)
-									pcm = convertToPCM16(raw, fmtInfo)
+									pcm := convertToPCM16(raw, fmtInfo)
+									if !isPCM16Silent(pcm) {
+										a.mu.Lock()
+										a.seq++
+										seq := a.seq
+										a.mu.Unlock()
+										onFrame(&core.AudioFrame{
+											Seq:        seq,
+											SampleRate: fmtInfo.SampleRate,
+											Channels:   fmtInfo.Channels,
+											Timestamp:  time.Now().UnixMilli(),
+											Data:       pcm,
+										})
+									}
 								}
-								a.mu.Lock()
-								a.seq++
-								seq := a.seq
-								a.mu.Unlock()
-								onFrame(&core.AudioFrame{
-									Seq:        seq,
-									SampleRate: fmtInfo.SampleRate,
-									Channels:   fmtInfo.Channels,
-									Timestamp:  time.Now().UnixMilli(),
-									Data:       pcm,
-								})
 							}
 							comCall(capClient, 4, uintptr(numFrames))
 						}
@@ -483,6 +487,15 @@ func parseWaveFormat(ptr uintptr) wasapiFormat {
 		info.Bits = 16
 	}
 	return info
+}
+
+func isPCM16Silent(pcm []byte) bool {
+	for i := 0; i+1 < len(pcm); i += 2 {
+		if pcm[i] != 0 || pcm[i+1] != 0 {
+			return false
+		}
+	}
+	return true
 }
 
 func convertToPCM16(raw []byte, fmtInfo wasapiFormat) []byte {

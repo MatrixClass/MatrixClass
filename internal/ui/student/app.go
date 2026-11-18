@@ -167,9 +167,7 @@ func (a *App) Invalidate() {
 	w := a.win
 	a.mu.Unlock()
 	if w != nil {
-		mygo.RunOnMain(func() {
-			w.Invalidate()
-		})
+		w.Invalidate()
 	}
 }
 
@@ -239,11 +237,7 @@ func (a *App) ShowFloatingBar() {
 	a.mu.Unlock()
 	if w != nil {
 		w.Update(func() {
-			a.mu.Lock()
-			a.syncWindowForModeLocked(w)
-			a.mu.Unlock()
-			w.Show()
-			w.Focus()
+			a.syncWindowOnMain(w, true, true)
 		})
 	}
 }
@@ -258,11 +252,7 @@ func (a *App) OpenMode(m int) {
 	a.mu.Unlock()
 	if w != nil {
 		w.Update(func() {
-			a.mu.Lock()
-			a.syncWindowForModeLocked(w)
-			a.mu.Unlock()
-			w.Show()
-			w.Focus()
+			a.syncWindowOnMain(w, true, true)
 		})
 	}
 }
@@ -276,11 +266,7 @@ func (a *App) StartBroadcast(windowed bool) {
 	a.mu.Unlock()
 	if w != nil {
 		w.Update(func() {
-			a.mu.Lock()
-			a.syncWindowForModeLocked(w)
-			a.mu.Unlock()
-			w.Show()
-			w.Focus()
+			a.syncWindowOnMain(w, true, true)
 		})
 	}
 }
@@ -292,9 +278,7 @@ func (a *App) SetBroadcastWindowed(windowed bool) {
 	a.mu.Unlock()
 	if w != nil {
 		w.Update(func() {
-			a.mu.Lock()
-			a.syncWindowForModeLocked(w)
-			a.mu.Unlock()
+			a.syncWindowOnMain(w, false, false)
 		})
 	}
 }
@@ -305,9 +289,7 @@ func (a *App) syncWindow() {
 	a.mu.Unlock()
 	if w != nil {
 		w.Update(func() {
-			a.mu.Lock()
-			a.syncWindowForModeLocked(w)
-			a.mu.Unlock()
+			a.syncWindowOnMain(w, false, false)
 		})
 	}
 }
@@ -323,7 +305,7 @@ func (a *App) SetRemoteControlled(active bool) {
 	w := a.win
 	a.mu.Unlock()
 	if w != nil {
-		mygo.RunOnMain(func() { w.Invalidate() })
+		w.Invalidate()
 	}
 }
 
@@ -333,7 +315,7 @@ func (a *App) SetMonitoring(active bool) {
 	w := a.win
 	a.mu.Unlock()
 	if w != nil {
-		mygo.RunOnMain(func() { w.Invalidate() })
+		w.Invalidate()
 	}
 }
 
@@ -343,7 +325,7 @@ func (a *App) SetHandRaised(raised bool) {
 	w := a.win
 	a.mu.Unlock()
 	if w != nil {
-		mygo.RunOnMain(func() { w.Invalidate() })
+		w.Invalidate()
 	}
 }
 
@@ -353,80 +335,98 @@ func (a *App) SetStatusNote(note string) {
 	w := a.win
 	a.mu.Unlock()
 	if w != nil {
-		mygo.RunOnMain(func() { w.Invalidate() })
+		w.Invalidate()
 	}
 }
 
-func (a *App) syncWindowForModeLocked(w *mygo.Window) {
+func (a *App) syncWindowOnMain(w *mygo.Window, show, focus bool) {
 	if w == nil {
 		return
 	}
-	if a.winSyncedOnce && a.lastWinMode == a.mode && a.lastWinCollapsed == a.barCollapsed && a.lastWinBcastWin == a.broadcastWindow {
-		return
+	a.mu.Lock()
+	mode := a.mode
+	collapsed := a.barCollapsed
+	bcastWin := a.broadcastWindow
+	changed := !a.winSyncedOnce || a.lastWinMode != mode || a.lastWinCollapsed != collapsed || a.lastWinBcastWin != bcastWin
+	if changed {
+		a.winSyncedOnce = true
+		a.lastWinMode = mode
+		a.lastWinCollapsed = collapsed
+		a.lastWinBcastWin = bcastWin
 	}
-	a.winSyncedOnce = true
-	a.lastWinMode = a.mode
-	a.lastWinCollapsed = a.barCollapsed
-	a.lastWinBcastWin = a.broadcastWindow
+	a.mu.Unlock()
 
-	switch a.mode {
-	case ModeLock:
-		w.SetAlwaysOnTop(true)
-		w.SetClosable(false)
-		w.SetFullScreen(true)
-		w.Focus()
-	case ModeBroadcast:
-		w.SetClosable(true)
-		if a.broadcastWindow {
+	if changed {
+		switch mode {
+		case ModeLock:
+			w.SetAlwaysOnTop(true)
+			w.SetClosable(false)
+			w.SetFullScreen(true)
+			w.Focus()
+		case ModeBroadcast:
+			w.SetClosable(true)
+			if bcastWin {
+				w.SetFullScreen(false)
+				w.SetAlwaysOnTop(false)
+				w.SetResizable(true)
+				w.SetSize(960, 600)
+				w.Center()
+			} else {
+				w.SetAlwaysOnTop(true)
+				w.SetFullScreen(true)
+			}
+		case ModeCheckIn:
+			w.SetFullScreen(false)
+			w.SetAlwaysOnTop(true)
+			w.SetClosable(true)
+			w.SetResizable(false)
+			w.SetSize(460, 270)
+			w.Center()
+		case ModeExam:
 			w.SetFullScreen(false)
 			w.SetAlwaysOnTop(false)
+			w.SetClosable(true)
 			w.SetResizable(true)
-			w.SetSize(960, 600)
+			w.SetSize(760, 560)
 			w.Center()
-		} else {
+		case ModeChat:
+			w.SetFullScreen(false)
+			w.SetAlwaysOnTop(false)
+			w.SetClosable(true)
+			w.SetResizable(true)
+			w.SetSize(640, 480)
+			w.Center()
+		default: // ModeBar
+			w.SetFullScreen(false)
 			w.SetAlwaysOnTop(true)
-			w.SetFullScreen(true)
+			w.SetClosable(true)
+			w.SetResizable(false)
+			h := 104
+			if collapsed {
+				h = 54
+			}
+			w.SetSize(780, h)
 		}
-	case ModeCheckIn:
-		w.SetFullScreen(false)
-		w.SetAlwaysOnTop(true)
-		w.SetClosable(true)
-		w.SetResizable(false)
-		w.SetSize(460, 270)
-		w.Center()
-	case ModeExam:
-		w.SetFullScreen(false)
-		w.SetAlwaysOnTop(false)
-		w.SetClosable(true)
-		w.SetResizable(true)
-		w.SetSize(760, 560)
-		w.Center()
-	case ModeChat:
-		w.SetFullScreen(false)
-		w.SetAlwaysOnTop(false)
-		w.SetClosable(true)
-		w.SetResizable(true)
-		w.SetSize(640, 480)
-		w.Center()
-	default: // ModeBar
-		w.SetFullScreen(false)
-		w.SetAlwaysOnTop(true)
-		w.SetClosable(true)
-		w.SetResizable(false)
-		h := 104
-		if a.barCollapsed {
-			h = 54
-		}
-		w.SetSize(780, h)
+	}
+	if show {
+		w.Show()
+	}
+	if focus {
+		w.Focus()
 	}
 }
 
 // View builds the active student interface (floating bar, broadcast viewer, blackout lock, check-in, exam, or chat/homework).
 func (a *App) View(c *ui.Context) {
-	pal := theme.GetPalette(a.dark)
-	c.SetTheme(theme.Theme(a.dark))
+	a.mu.Lock()
+	dark := a.dark
+	mode := a.mode
+	a.mu.Unlock()
+
+	pal := theme.GetPalette(dark)
+	c.SetTheme(theme.Theme(dark))
 	c.Root().Background(pal.Canvas)
-	switch a.mode {
+	switch mode {
 	case ModeLock:
 		a.buildLockView(c, pal)
 	case ModeBroadcast:
@@ -467,20 +467,28 @@ func (a *App) buildFloatingBarView(c *ui.Context, pal theme.Palette) {
 				a.ToggleHandRaise()
 			}
 			if ui.Button(c, "点名签到").Padding(4, 10).Radius(3).Clicked() {
+				a.mu.Lock()
 				a.mode = ModeCheckIn
+				a.mu.Unlock()
 				a.syncWindow()
 			}
 			if ui.Button(c, "随堂测验").Padding(4, 10).Radius(3).Clicked() {
 				a.loadActivePaper()
+				a.mu.Lock()
 				a.mode = ModeExam
+				a.mu.Unlock()
 				a.syncWindow()
 			}
 			if ui.Button(c, "作业与消息").Padding(4, 10).Radius(3).Clicked() {
+				a.mu.Lock()
 				a.mode = ModeChat
+				a.mu.Unlock()
 				a.syncWindow()
 			}
 			if ui.Button(c, "广播窗口").Padding(4, 10).Radius(3).Clicked() {
+				a.mu.Lock()
 				a.mode = ModeBroadcast
+				a.mu.Unlock()
 				a.syncWindow()
 			}
 			collapseLabel := "收起"
@@ -488,7 +496,9 @@ func (a *App) buildFloatingBarView(c *ui.Context, pal theme.Palette) {
 				collapseLabel = "展开"
 			}
 			if ui.Button(c, collapseLabel).Padding(4, 8).Radius(3).Clicked() {
+				a.mu.Lock()
 				a.barCollapsed = !a.barCollapsed
+				a.mu.Unlock()
 				a.syncWindow()
 			}
 		})
@@ -520,14 +530,18 @@ func (a *App) buildBroadcastView(c *ui.Context, pal theme.Palette) {
 			}
 			ui.Spacer(c)
 			if ui.Button(c, "切换窗口/全屏").Padding(3, 8).Clicked() {
+				a.mu.Lock()
 				a.broadcastWindow = !a.broadcastWindow
+				a.mu.Unlock()
 				a.syncWindow()
 			}
 			if ui.Button(c, "举手").Padding(3, 8).Clicked() {
 				a.ToggleHandRaise()
 			}
 			if ui.Button(c, "返回悬浮条").Padding(3, 8).Clicked() {
+				a.mu.Lock()
 				a.mode = ModeBar
+				a.mu.Unlock()
 				a.syncWindow()
 			}
 		})
@@ -570,7 +584,9 @@ func (a *App) buildCheckInView(c *ui.Context, pal theme.Palette) {
 			ui.Text(c, "课堂电子点名签到").FontSize(16).Bold().TextColor(pal.Accent)
 			ui.Spacer(c)
 			if ui.Button(c, "返回").Padding(4, 10).Clicked() {
+				a.mu.Lock()
 				a.mode = ModeBar
+				a.mu.Unlock()
 				a.syncWindow()
 			}
 		})
@@ -601,7 +617,9 @@ func (a *App) buildExamView(c *ui.Context, pal theme.Palette) {
 			ui.Text(c, title).FontSize(16).Bold().TextColor(pal.Accent)
 			ui.Spacer(c)
 			if ui.Button(c, "返回").Padding(4, 10).Clicked() {
+				a.mu.Lock()
 				a.mode = ModeBar
+				a.mu.Unlock()
 				a.syncWindow()
 			}
 		})
@@ -669,7 +687,9 @@ func (a *App) buildChatHomeworkView(c *ui.Context, pal theme.Palette) {
 			ui.Text(c, "作业提交与课堂消息").FontSize(16).Bold().TextColor(pal.Accent)
 			ui.Spacer(c)
 			if ui.Button(c, "返回").Padding(4, 10).Clicked() {
+				a.mu.Lock()
 				a.mode = ModeBar
+				a.mu.Unlock()
 				a.syncWindow()
 			}
 		})
@@ -846,13 +866,7 @@ func (a *App) SetLocked(locked bool, message string) {
 	}
 	if w != nil {
 		w.Update(func() {
-			a.mu.Lock()
-			a.syncWindowForModeLocked(w)
-			a.mu.Unlock()
-			w.Show()
-			if locked {
-				w.Focus()
-			}
+			a.syncWindowOnMain(w, true, locked)
 		})
 	}
 }

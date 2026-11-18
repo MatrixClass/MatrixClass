@@ -19,7 +19,7 @@ import (
 )
 
 const (
-	defaultRingBufferSize = 512
+	defaultRingBufferSize = 64
 	defaultMcastChunkSize = 1200
 	mcastPacketMagic      = uint16(0x4E58) // "NX"
 	mcastHeaderSize       = 14             // magic(2) + seq(8) + idx(2) + total(2)

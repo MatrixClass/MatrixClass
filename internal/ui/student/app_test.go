@@ -1,7 +1,9 @@
 package student
 
 import (
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/egoist/mygo/ui"
 
@@ -112,5 +114,43 @@ func TestStudentEmergencyUnlockWithRealControlManager(t *testing.T) {
 	app.tryEmergencyUnlock()
 	if app.ScreenLocked() {
 		t.Fatalf("expected real control.Manager EmergencyUnlock(bool, error) to unlock")
+	}
+}
+
+func TestStudentConcurrentStateTransitionsAndView(t *testing.T) {
+	app := newTestStudentApp()
+	tester := ui.NewTester(app.View, 920, 560)
+	tester.Frame()
+
+	done := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 40; i++ {
+			app.StartBroadcast(i%2 == 0)
+			app.SetBroadcastWindowed(i%3 == 0)
+			app.OpenMode(ModeCheckIn)
+			app.ShowFloatingBar()
+			app.SetLocked(i%5 == 0, "lock")
+		}
+	}()
+
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+
+	deadline := time.After(5 * time.Second)
+	for {
+		select {
+		case <-done:
+			return
+		case <-deadline:
+			t.Fatalf("timed out during concurrent student state transitions and View()")
+		default:
+			tester.Frame()
+			time.Sleep(5 * time.Millisecond)
+		}
 	}
 }

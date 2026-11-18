@@ -1,6 +1,7 @@
 package transport
 
 import (
+	"bytes"
 	"crypto/rand"
 	"encoding/binary"
 	"errors"
@@ -18,11 +19,16 @@ import (
 )
 
 const (
-	defaultKCPMTU     = 1350
-	defaultKCPSndWnd  = 256
-	defaultKCPRcvWnd  = 256
+	defaultKCPMTU      = 1350
+	defaultKCPSndWnd   = 1024
+	defaultKCPRcvWnd   = 1024
 	defaultKCPInterval = 10
-	streamTagEnvelope = byte(0xFE)
+	streamTagEnvelope  = byte(0xFE)
+	streamTagMediaEnv  = byte(0xFD)
+	ctrlWriteTimeout   = 1500 * time.Millisecond
+	mediaWriteTimeout  = 1500 * time.Millisecond
+	mediaQueueCapacity = 4
+	audioQueueCapacity = 8
 )
 
 var (
@@ -538,8 +544,12 @@ type SmuxSession struct {
 	onStream   func(core.Session, protocol.StreamKind, io.ReadWriteCloser)
 	onClose    func(core.Session)
 
-	ctrlMu     sync.Mutex
-	ctrlStream io.ReadWriteCloser
+	ctrlMu      sync.Mutex
+	ctrlStream  *smux.Stream
+	mediaStream *smux.Stream
+
+	videoMediaCh chan []byte
+	audioMediaCh chan []byte
 
 	incomingCh chan IncomingStream
 	done       chan struct{}
@@ -565,14 +575,17 @@ func NewSmuxSession(conn net.Conn, isServer bool, onEnvelope func(core.Session, 
 	}
 
 	s := &SmuxSession{
-		id:         fmt.Sprintf("sess-%d", sessionSeq.Add(1)),
-		conn:       conn,
-		mux:        mux,
-		onEnvelope: onEnvelope,
-		incomingCh: make(chan IncomingStream, 64),
-		done:       make(chan struct{}),
+		id:           fmt.Sprintf("sess-%d", sessionSeq.Add(1)),
+		conn:         conn,
+		mux:          mux,
+		onEnvelope:   onEnvelope,
+		videoMediaCh: make(chan []byte, mediaQueueCapacity),
+		audioMediaCh: make(chan []byte, audioQueueCapacity),
+		incomingCh:   make(chan IncomingStream, 64),
+		done:         make(chan struct{}),
 	}
 	go s.acceptLoop()
+	go s.mediaWriteLoop()
 	return s, nil
 }
 
@@ -629,26 +642,126 @@ func (s *SmuxSession) SendEnvelope(env protocol.Envelope) error {
 	if err != nil {
 		return err
 	}
+	if isMediaEnvelope(env) {
+		return s.enqueueMediaFrame(env.Type, raw)
+	}
 	s.ctrlMu.Lock()
 	defer s.ctrlMu.Unlock()
+
+	select {
+	case <-s.done:
+		return ErrConnClosed
+	default:
+	}
 
 	if s.ctrlStream == nil {
 		st, err := s.mux.OpenStream()
 		if err != nil {
 			return err
 		}
+		_ = st.SetWriteDeadline(time.Now().Add(ctrlWriteTimeout))
 		if _, err := st.Write([]byte{streamTagEnvelope}); err != nil {
 			_ = st.Close()
 			return err
 		}
 		s.ctrlStream = st
 	}
+	_ = s.ctrlStream.SetWriteDeadline(time.Now().Add(ctrlWriteTimeout))
 	if err := protocol.WriteFrame(s.ctrlStream, protocol.StreamControl, env.Type, raw); err != nil {
 		_ = s.ctrlStream.Close()
 		s.ctrlStream = nil
 		return err
 	}
+	_ = s.ctrlStream.SetWriteDeadline(time.Time{})
 	return nil
+}
+
+func isMediaEnvelope(env protocol.Envelope) bool {
+	return env.Type == protocol.MsgVideoFrame || env.Type == protocol.MsgAudioFrame
+}
+
+func (s *SmuxSession) enqueueMediaFrame(msgType protocol.MsgType, raw []byte) error {
+	select {
+	case <-s.done:
+		return ErrConnClosed
+	default:
+	}
+	var frameBuf bytes.Buffer
+	if err := protocol.WriteFrame(&frameBuf, protocol.StreamMedia, msgType, raw); err != nil {
+		return err
+	}
+	pkt := frameBuf.Bytes()
+	if msgType == protocol.MsgAudioFrame {
+		select {
+		case s.audioMediaCh <- pkt:
+		default:
+			select {
+			case <-s.audioMediaCh:
+			default:
+			}
+			select {
+			case s.audioMediaCh <- pkt:
+			default:
+			}
+		}
+		return nil
+	}
+	select {
+	case s.videoMediaCh <- pkt:
+	default:
+		select {
+		case <-s.videoMediaCh:
+		default:
+		}
+		select {
+		case s.videoMediaCh <- pkt:
+		default:
+		}
+	}
+	return nil
+}
+
+func (s *SmuxSession) mediaWriteLoop() {
+	defer func() {
+		if s.mediaStream != nil {
+			_ = s.mediaStream.Close()
+			s.mediaStream = nil
+		}
+	}()
+	writePacket := func(pkt []byte) {
+		if len(pkt) == 0 {
+			return
+		}
+		if s.mediaStream == nil {
+			st, err := s.mux.OpenStream()
+			if err != nil {
+				return
+			}
+			_ = st.SetWriteDeadline(time.Now().Add(mediaWriteTimeout))
+			if _, err := st.Write([]byte{streamTagMediaEnv}); err != nil {
+				_ = st.Close()
+				return
+			}
+			s.mediaStream = st
+		}
+		_ = s.mediaStream.SetWriteDeadline(time.Now().Add(mediaWriteTimeout))
+		if _, err := s.mediaStream.Write(pkt); err != nil {
+			_ = s.mediaStream.Close()
+			s.mediaStream = nil
+			return
+		}
+		_ = s.mediaStream.SetWriteDeadline(time.Time{})
+	}
+	for {
+		select {
+		case <-s.done:
+			return
+		case pkt := <-s.audioMediaCh:
+			writePacket(pkt)
+		case pkt := <-s.videoMediaCh:
+			writePacket(pkt)
+		}
+	}
 }
 
 func (s *SmuxSession) acceptLoop() {
@@ -670,7 +783,7 @@ func (s *SmuxSession) handleAcceptedStream(stream *smux.Stream) {
 		_ = stream.Close()
 		return
 	}
-	if tag[0] == streamTagEnvelope {
+	if tag[0] == streamTagEnvelope || tag[0] == streamTagMediaEnv {
 		defer stream.Close()
 		for {
 			_, _, payload, err := protocol.ReadFrame(stream)

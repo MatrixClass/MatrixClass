@@ -3,6 +3,7 @@
 package media
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"sync"
@@ -136,6 +137,8 @@ type ScreenCapturer struct {
 	lastWidth      int
 	lastHeight     int
 	hasCachedFrame bool
+	lastChanged    bool
+	prevHash       []byte
 }
 
 func NewScreenCapturer(opts CaptureOptions) *ScreenCapturer {
@@ -179,23 +182,36 @@ func (c *ScreenCapturer) CaptureScreenScaled(maxW, maxH int, withNV12 bool) (*co
 	c.seq++
 	var w, h int
 	var err error
+	c.lastChanged = true
 
 	if !c.dxgiDisabled {
-		w, h, err = c.captureDXGI()
+		var changed bool
+		w, h, changed, err = c.captureDXGI()
 		if err == nil && w > 0 && h > 0 {
 			c.backend = CaptureBackendDXGI
 			c.lastWidth, c.lastHeight = w, h
 			c.hasCachedFrame = true
+			c.lastChanged = changed
 			return c.buildVideoFrameScaled(w, h, maxW, maxH, withNV12), nil
+		}
+		if errors.Is(err, errDXGIWaitTimeoutNoCache) {
+			if gW, gH, gErr := c.captureGDI(); gErr == nil && gW > 0 && gH > 0 {
+				c.backend = CaptureBackendDXGI
+				c.lastWidth, c.lastHeight = gW, gH
+				c.hasCachedFrame = true
+				c.lastChanged = true
+				return c.buildVideoFrameScaled(gW, gH, maxW, maxH, withNV12), nil
+			}
 		}
 		if errors.Is(err, errDXGIAccessLost) {
 			c.releaseDXGI()
 			if initErr := c.initDXGI(); initErr == nil {
-				w, h, err = c.captureDXGI()
+				w, h, changed, err = c.captureDXGI()
 				if err == nil && w > 0 && h > 0 {
 					c.backend = CaptureBackendDXGI
 					c.lastWidth, c.lastHeight = w, h
 					c.hasCachedFrame = true
+					c.lastChanged = changed
 					return c.buildVideoFrameScaled(w, h, maxW, maxH, withNV12), nil
 				}
 			}
@@ -208,6 +224,15 @@ func (c *ScreenCapturer) CaptureScreenScaled(maxW, maxH int, withNV12 bool) (*co
 		w, h, err = c.captureGDI()
 		if err == nil && w > 0 && h > 0 {
 			c.backend = CaptureBackendGDI
+			need := w * h * 4
+			c.lastChanged = c.lastWidth != w || c.lastHeight != h || len(c.prevHash) != need || !bytes.Equal(c.prevHash, c.rgbaBuf[:need])
+			if c.lastChanged {
+				if cap(c.prevHash) < need {
+					c.prevHash = make([]byte, need)
+				}
+				c.prevHash = c.prevHash[:need]
+				copy(c.prevHash, c.rgbaBuf[:need])
+			}
 			c.lastWidth, c.lastHeight = w, h
 			c.hasCachedFrame = true
 			return c.buildVideoFrameScaled(w, h, maxW, maxH, withNV12), nil
@@ -219,6 +244,13 @@ func (c *ScreenCapturer) CaptureScreenScaled(maxW, maxH int, withNV12 bool) (*co
 	w, h = c.opts.Width, c.opts.Height
 	c.rgbaBuf = renderSyntheticRGBA(c.rgbaBuf, w, h, c.seq)
 	return c.buildVideoFrameScaled(w, h, maxW, maxH, withNV12), nil
+}
+
+// LastFrameChanged reports whether the most recently captured frame differed from the previous one.
+func (c *ScreenCapturer) LastFrameChanged() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.lastChanged
 }
 
 func (c *ScreenCapturer) buildVideoFrameScaled(w, h, maxW, maxH int, withNV12 bool) *core.VideoFrame {
@@ -254,7 +286,10 @@ func (c *ScreenCapturer) Close() error {
 	return nil
 }
 
-var errDXGIAccessLost = errors.New("media: dxgi access lost")
+var (
+	errDXGIAccessLost         = errors.New("media: dxgi access lost")
+	errDXGIWaitTimeoutNoCache = errors.New("media: dxgi acquire timeout with no cached frame")
+)
 
 func (c *ScreenCapturer) initDXGI() error {
 	if err := d3d11DLL.Load(); err != nil {
@@ -355,10 +390,10 @@ func (c *ScreenCapturer) releaseDXGI() {
 	c.dxgi = nil
 }
 
-func (c *ScreenCapturer) captureDXGI() (int, int, error) {
+func (c *ScreenCapturer) captureDXGI() (int, int, bool, error) {
 	if c.dxgi == nil {
 		if err := c.initDXGI(); err != nil {
-			return 0, 0, err
+			return 0, 0, false, err
 		}
 	}
 	d := c.dxgi
@@ -367,22 +402,22 @@ func (c *ScreenCapturer) captureDXGI() (int, int, error) {
 	hr := comCall(d.dupl, 8, 50, uintptr(unsafe.Pointer(&frameInfo)), uintptr(unsafe.Pointer(&resource)))
 	if uint32(hr) == dxgiErrorWaitTimeout {
 		if c.hasCachedFrame && c.lastWidth > 0 && c.lastHeight > 0 {
-			return c.lastWidth, c.lastHeight, nil
+			return c.lastWidth, c.lastHeight, false, nil
 		}
-		return 0, 0, fmt.Errorf("media: dxgi acquire timeout with no cached frame")
+		return 0, 0, false, errDXGIWaitTimeoutNoCache
 	}
 	if uint32(hr) == dxgiErrorAccessLost {
-		return 0, 0, errDXGIAccessLost
+		return 0, 0, false, errDXGIAccessLost
 	}
 	if int32(hr) < 0 || resource == 0 {
-		return 0, 0, fmt.Errorf("media: AcquireNextFrame failed: 0x%08x", uint32(hr))
+		return 0, 0, false, fmt.Errorf("media: AcquireNextFrame failed: 0x%08x", uint32(hr))
 	}
 	defer comCall(d.dupl, 14)
 	defer comRelease(resource)
 
 	var tex uintptr
 	if r := comCall(resource, 0, uintptr(unsafe.Pointer(&iidID3D11Texture2D)), uintptr(unsafe.Pointer(&tex))); int32(r) < 0 || tex == 0 {
-		return 0, 0, fmt.Errorf("media: QueryInterface(ID3D11Texture2D) failed: 0x%08x", uint32(r))
+		return 0, 0, false, fmt.Errorf("media: QueryInterface(ID3D11Texture2D) failed: 0x%08x", uint32(r))
 	}
 	defer comRelease(tex)
 
@@ -391,7 +426,7 @@ func (c *ScreenCapturer) captureDXGI() (int, int, error) {
 	w := int(desc.Width)
 	h := int(desc.Height)
 	if w <= 0 || h <= 0 {
-		return 0, 0, ErrInvalidDimension
+		return 0, 0, false, ErrInvalidDimension
 	}
 
 	if d.staging == 0 || d.width != w || d.height != h {
@@ -414,7 +449,7 @@ func (c *ScreenCapturer) captureDXGI() (int, int, error) {
 		}
 		var staging uintptr
 		if r := comCall(d.device, 5, uintptr(unsafe.Pointer(&stagingDesc)), 0, uintptr(unsafe.Pointer(&staging))); int32(r) < 0 || staging == 0 {
-			return 0, 0, fmt.Errorf("media: CreateTexture2D(staging) failed: 0x%08x", uint32(r))
+			return 0, 0, false, fmt.Errorf("media: CreateTexture2D(staging) failed: 0x%08x", uint32(r))
 		}
 		d.staging = staging
 		d.width = w
@@ -425,17 +460,17 @@ func (c *ScreenCapturer) captureDXGI() (int, int, error) {
 
 	var mapped d3d11MappedSubresource
 	if r := comCall(d.ctx, 14, d.staging, 0, d3d11MapRead, 0, uintptr(unsafe.Pointer(&mapped))); int32(r) < 0 || mapped.PData == 0 {
-		return 0, 0, fmt.Errorf("media: ID3D11DeviceContext::Map failed: 0x%08x", uint32(r))
+		return 0, 0, false, fmt.Errorf("media: ID3D11DeviceContext::Map failed: 0x%08x", uint32(r))
 	}
 	defer comCall(d.ctx, 15, d.staging, 0)
 
 	pitch := int(mapped.RowPitch)
 	if pitch < w*4 {
-		return 0, 0, ErrBufferTooSmall
+		return 0, 0, false, ErrBufferTooSmall
 	}
 	srcSlice := unsafe.Slice((*byte)(unsafe.Pointer(mapped.PData)), pitch*h)
 	c.rgbaBuf = bgraToRGBA(srcSlice, c.rgbaBuf, w, h, pitch)
-	return w, h, nil
+	return w, h, true, nil
 }
 
 func (c *ScreenCapturer) captureGDI() (int, int, error) {

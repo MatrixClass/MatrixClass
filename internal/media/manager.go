@@ -58,6 +58,10 @@ func (m *Manager) CaptureBackend() CaptureBackend {
 	return m.capturer.Backend()
 }
 
+func (m *Manager) LastFrameChanged() bool {
+	return m.capturer.LastFrameChanged()
+}
+
 func (m *Manager) MFTAvailable() bool {
 	return m.videoCodec.MFTAvailable()
 }

@@ -391,3 +391,76 @@ func TestManagerMulticastNACKFallbackAndPureUnicastFallback(t *testing.T) {
 		t.Fatalf("timed out waiting for unicast fallback media")
 	}
 }
+
+func TestControlEnvelopeNotBlockedByMediaBurst(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+
+	teacher := NewManager(WithDiscoveryConfig(DiscoveryConfig{Port: 0}))
+	defer teacher.Close()
+
+	tSessCh := make(chan struct{}, 1)
+	teacher.OnSession(func(_ core.Session) {
+		select {
+		case tSessCh <- struct{}{}:
+		default:
+		}
+	})
+	if err := teacher.StartTeacher(ctx, "127.0.0.1:0", protocol.DiscoveryBeacon{
+		Role:      "teacher",
+		TeacherID: "t-hol",
+		Channel:   "Lab-HOL",
+	}); err != nil {
+		t.Fatalf("StartTeacher: %v", err)
+	}
+
+	student := NewManager(
+		WithDiscoveryConfig(DiscoveryConfig{Port: 0}),
+		WithTeacherAddr(teacher.listener.Addr().String()),
+	)
+	defer student.Close()
+
+	ctrlCh := make(chan protocol.MsgType, 8)
+	student.OnEnvelope(func(_ core.Session, env protocol.Envelope) {
+		ctrlCh <- env.Type
+	})
+	if err := student.StartStudent(ctx, "Lab-HOL"); err != nil {
+		t.Fatalf("StartStudent: %v", err)
+	}
+	pingEnv, _ := protocol.NewEnvelope(protocol.MsgPing, "stu-hol", nil)
+	if err := student.SendTo("", pingEnv); err != nil {
+		t.Fatalf("student ping: %v", err)
+	}
+	select {
+	case <-tSessCh:
+	case <-ctx.Done():
+		t.Fatalf("timed out waiting for session")
+	}
+
+	// Flood large video fallback frames rapidly; control envelope must still enqueue & deliver promptly.
+	bigFrame := make([]byte, 256*1024)
+	for i := 0; i < 20; i++ {
+		_ = teacher.BroadcastMulticast(bigFrame)
+	}
+
+	stopEnv, _ := protocol.NewEnvelope(protocol.MsgBroadcastStop, "t-hol", nil)
+	start := time.Now()
+	if err := teacher.BroadcastControl(stopEnv, nil); err != nil {
+		t.Fatalf("BroadcastControl stop: %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > 500*time.Millisecond {
+		t.Fatalf("BroadcastControl took too long under media burst: %v", elapsed)
+	}
+
+	deadline := time.After(3 * time.Second)
+	for {
+		select {
+		case mt := <-ctrlCh:
+			if mt == protocol.MsgBroadcastStop {
+				return
+			}
+		case <-deadline:
+			t.Fatalf("timed out waiting for MsgBroadcastStop during media burst")
+		}
+	}
+}
