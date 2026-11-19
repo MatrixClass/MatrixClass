@@ -63,6 +63,7 @@ type FileTransferService interface {
 	SubmitHomework(ctx context.Context, studentID, localPath string) (*TransferTask, error)
 	CollectFiles(ctx context.Context, remoteDir, saveDir string, targetIDs []string) ([]*TransferTask, error)
 	ListTasks() []*TransferTask
+	CancelTask(taskID string) error
 }
 
 type ExamService interface {

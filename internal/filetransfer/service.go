@@ -32,6 +32,8 @@ var (
 	ErrInvalidPath      = errors.New("filetransfer: invalid file path")
 	ErrChecksumMismatch = errors.New("filetransfer: sha256 checksum mismatch")
 	ErrTransferRejected = errors.New("filetransfer: transfer rejected by peer")
+	ErrTaskNotFound     = errors.New("filetransfer: task not found")
+	ErrTaskTerminal     = errors.New("filetransfer: task already finished")
 )
 
 type StudentMeta struct {
@@ -99,6 +101,7 @@ type Service struct {
 	onAutoOpen      func(path string)
 	tasks           map[string]*core.TransferTask
 	taskOrder       []string
+	cancelTasks     map[string]context.CancelFunc
 	sentRecords     map[string]sentRecord
 	nextTaskID      atomic.Uint64
 }
@@ -137,8 +140,49 @@ func NewService(cfg Config) *Service {
 		onProgress:      cfg.OnProgress,
 		onAutoOpen:      cfg.OnAutoOpen,
 		tasks:           make(map[string]*core.TransferTask),
+		cancelTasks:     make(map[string]context.CancelFunc),
 		sentRecords:     make(map[string]sentRecord),
 	}
+}
+
+func (s *Service) CancelTask(taskID string) error {
+	s.mu.Lock()
+	task, ok := s.tasks[taskID]
+	if !ok {
+		s.mu.Unlock()
+		return ErrTaskNotFound
+	}
+	if task.Status == "completed" || task.Status == "failed" || task.Status == "cancelled" {
+		s.mu.Unlock()
+		return ErrTaskTerminal
+	}
+	cancel := s.cancelTasks[taskID]
+	task.Status = "cancelled"
+	task.Error = context.Canceled.Error()
+	s.tasks[taskID] = cloneTask(task)
+	cb := s.onProgress
+	s.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+	if cb != nil {
+		cb(*cloneTask(task))
+	}
+	return nil
+}
+
+func (s *Service) bindTaskContext(taskID string, cancel context.CancelFunc) {
+	s.mu.Lock()
+	if cancel != nil {
+		s.cancelTasks[taskID] = cancel
+	}
+	s.mu.Unlock()
+}
+
+func (s *Service) unbindTaskContext(taskID string) {
+	s.mu.Lock()
+	delete(s.cancelTasks, taskID)
+	s.mu.Unlock()
 }
 
 func (s *Service) RegisterSession(peerID string, sess core.Session) {
@@ -246,6 +290,10 @@ func (s *Service) newTask(direction core.TransferDirection, fileName, localPath,
 
 func (s *Service) updateTask(task *core.TransferTask, doneBytes int64, status, errMsg string) {
 	s.mu.Lock()
+	if current, ok := s.tasks[task.ID]; ok && current.Status == "cancelled" && status != "cancelled" {
+		s.mu.Unlock()
+		return
+	}
 	task.DoneBytes = doneBytes
 	if status != "" {
 		task.Status = status
@@ -302,7 +350,11 @@ func (s *Service) DistributeFile(ctx context.Context, localPath, remoteDir strin
 		sha256:    hash,
 		autoOpen:  autoOpen,
 	})
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 	task := s.newTask(core.TransferSend, fileName, localPath, remoteDir, size, hash, strings.Join(targetIDs, ","), autoOpen)
+	s.bindTaskContext(task.ID, cancel)
+	defer s.unbindTaskContext(task.ID)
 
 	var (
 		wg      sync.WaitGroup
@@ -343,7 +395,11 @@ func (s *Service) DistributeFile(ctx context.Context, localPath, remoteDir strin
 	wg.Wait()
 
 	if firstEr != nil {
-		s.updateTask(task, s.taskDoneBytes(task), "failed", firstEr.Error())
+		if errors.Is(ctx.Err(), context.Canceled) {
+			s.updateTask(task, s.taskDoneBytes(task), "cancelled", context.Canceled.Error())
+		} else {
+			s.updateTask(task, s.taskDoneBytes(task), "failed", firstEr.Error())
+		}
 		return cloneTask(task), firstEr
 	}
 	s.updateTask(task, size, "completed", "")

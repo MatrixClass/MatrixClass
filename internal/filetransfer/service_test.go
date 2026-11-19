@@ -178,6 +178,26 @@ func TestDistributeFileWithAutoOpenAndProgress(t *testing.T) {
 	}
 }
 
+func TestCancelTaskMarksRunningTransferCancelled(t *testing.T) {
+	service := NewService(Config{})
+	task := service.newTask(core.TransferSend, "demo.txt", "demo.txt", "Desktop", 10, "", "stu-1", false)
+	ctx, cancel := context.WithCancel(context.Background())
+	service.bindTaskContext(task.ID, cancel)
+	defer service.unbindTaskContext(task.ID)
+	if err := service.CancelTask(task.ID); err != nil {
+		t.Fatalf("CancelTask failed: %v", err)
+	}
+	got := service.ListTasks()[0]
+	if got.Status != "cancelled" || got.Error != context.Canceled.Error() {
+		t.Fatalf("unexpected cancelled task: %+v", got)
+	}
+	select {
+	case <-ctx.Done():
+	default:
+		t.Fatal("expected task context to be cancelled")
+	}
+}
+
 func TestResumeInterruptedTransferAndSkipIdentical(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()

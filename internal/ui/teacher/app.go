@@ -2364,11 +2364,18 @@ func (a *App) buildFileDistributeProgress(c *ui.Context, pal theme.Palette) {
 				statusText = "已完成"
 			case "failed":
 				statusText = "失败"
+			case "cancelled":
+				statusText = "已取消"
 			}
 			ui.Column(c).Key("fprog-" + tk.ID).FillWidth().Gap(3).Children(func() {
 				ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(6).Children(func() {
 					ui.Text(c, tk.FileName).FontSize(11).Grow(1).SingleLine()
 					ui.Text(c, fmt.Sprintf("%s · %.0f%%", statusText, ratio*100)).FontSize(11).TextColor(pal.TextMuted)
+					if tk.Status == "running" || tk.Status == "transferring" {
+						if ui.Button(c, "取消").Padding(2, 8).Clicked() {
+							_ = a.opts.Files.CancelTask(tk.ID)
+						}
+					}
 				})
 				ui.Progress(c, ratio).Height(4)
 			})

@@ -1589,6 +1589,11 @@ func (a *App) FileReceiveView(c *ui.Context) {
 								a.RetryReceiveFile(tk)
 							}
 						}
+						if tk.Status == "running" || tk.Status == "transferring" {
+							if ui.Button(c, "取消").Padding(3, 10).Clicked() {
+								_ = a.opts.Files.CancelTask(tk.ID)
+							}
+						}
 					})
 
 					ui.Progress(c, ratio).Height(6)

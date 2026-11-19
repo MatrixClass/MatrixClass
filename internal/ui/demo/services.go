@@ -82,9 +82,9 @@ func (t *Transport) BroadcastControl(env protocol.Envelope, targetIDs []string) 
 	return nil
 }
 
-func (t *Transport) OnSession(fn func(core.Session))                   { t.onSession = fn }
+func (t *Transport) OnSession(fn func(core.Session))                     { t.onSession = fn }
 func (t *Transport) OnEnvelope(fn func(core.Session, protocol.Envelope)) { t.onEnvelope = fn }
-func (t *Transport) OnMulticastData(fn func([]byte))                   { t.onMulticast = fn }
+func (t *Transport) OnMulticastData(fn func([]byte))                     { t.onMulticast = fn }
 
 func (t *Transport) Stats() core.TransportStats {
 	t.mu.Lock()
@@ -447,6 +447,23 @@ func (f *FileTransfer) ListTasks() []*core.TransferTask {
 	out := make([]*core.TransferTask, len(f.tasks))
 	copy(out, f.tasks)
 	return out
+}
+
+func (f *FileTransfer) CancelTask(taskID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, task := range f.tasks {
+		if task.ID != taskID {
+			continue
+		}
+		if task.Status == "completed" || task.Status == "failed" || task.Status == "cancelled" {
+			return fmt.Errorf("task already finished")
+		}
+		task.Status = "cancelled"
+		task.Error = context.Canceled.Error()
+		return nil
+	}
+	return fmt.Errorf("task not found")
 }
 
 type Exam struct {
