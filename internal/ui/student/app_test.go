@@ -1,16 +1,17 @@
 package student
 
 import (
+	"runtime"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/egoist/mygo/ui"
 
+	"nexlab/internal/control"
 	"nexlab/internal/core"
 	"nexlab/internal/protocol"
 	"nexlab/internal/ui/demo"
-	"nexlab/internal/control"
 )
 
 func newTestStudentApp() *App {
@@ -159,16 +160,17 @@ func TestStudentConcurrentStateTransitionsAndView(t *testing.T) {
 		close(done)
 	}()
 
-	deadline := time.After(5 * time.Second)
+	deadline := time.NewTimer(5 * time.Second)
+	defer deadline.Stop()
 	for {
 		select {
 		case <-done:
 			return
-		case <-deadline:
+		case <-deadline.C:
 			t.Fatalf("timed out during concurrent student state transitions and View()")
 		default:
 			tester.Frame()
-			time.Sleep(5 * time.Millisecond)
+			runtime.Gosched()
 		}
 	}
 }

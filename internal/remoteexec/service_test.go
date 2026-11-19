@@ -54,7 +54,7 @@ func TestStartCommandCanBeCancelled(t *testing.T) {
 		if result.Status != "cancelled" {
 			t.Fatalf("expected cancelled result, got %+v", result)
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.NewTimer(5 * time.Second).C:
 		t.Fatal("timed out waiting for cancelled command")
 	}
 }

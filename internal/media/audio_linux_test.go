@@ -119,9 +119,13 @@ func TestLinuxAudioCaptureRestartsAfterProcessExit(t *testing.T) {
 		t.Fatalf("StartCapture: %v", err)
 	}
 	for index := 0; index < 2; index++ {
+		timeout := time.NewTimer(2 * time.Second)
 		select {
 		case <-frames:
-		case <-time.After(2 * time.Second):
+			if !timeout.Stop() {
+				<-timeout.C
+			}
+		case <-timeout.C:
 			t.Fatalf("timed out waiting for capture restart frame %d", index+1)
 		}
 	}
@@ -196,7 +200,6 @@ func TestLinuxAudioHelperProcess(t *testing.T) {
 	if os.Getenv("NEXLAB_AUDIO_HELPER") == "playback-race" {
 		buffer := make([]byte, 4)
 		_, _ = os.Stdin.Read(buffer)
-		time.Sleep(10 * time.Millisecond)
 		return
 	}
 	t.Fatalf("unknown helper mode %q", os.Getenv("NEXLAB_AUDIO_HELPER"))
@@ -256,7 +259,7 @@ func TestLinuxAudioPlayFrameAndCloseCanRaceWithPlaybackWatcher(t *testing.T) {
 	wg.Wait()
 	select {
 	case <-closeDone:
-	case <-time.After(3 * time.Second):
+	case <-time.NewTimer(3 * time.Second).C:
 		t.Fatal("Close did not finish while PlayFrame calls raced with playback watcher")
 	}
 	if calls.Load() != 32 {

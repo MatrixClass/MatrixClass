@@ -333,7 +333,7 @@ func TestCaptureScreenAndManager(t *testing.T) {
 		if err := engine.PlayAudioFrame(af); err != nil {
 			t.Fatalf("PlayAudioFrame: %v", err)
 		}
-	case <-time.After(2 * time.Second):
+	case <-time.NewTimer(2 * time.Second).C:
 		t.Fatalf("timed out waiting for audio frame")
 	}
 	if err := engine.StopAudioCapture(); err != nil {

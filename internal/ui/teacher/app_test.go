@@ -34,6 +34,24 @@ func newTestTeacherApp() (*App, *demo.Transport, *demo.Classroom, *demo.Control)
 	return app, tr, cr, ctrl
 }
 
+func waitForTeacherFileTasks(t *testing.T, timeout time.Duration, condition func() bool) {
+	t.Helper()
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	ticker := time.NewTicker(time.Millisecond)
+	defer ticker.Stop()
+	for {
+		if condition() {
+			return
+		}
+		select {
+		case <-timer.C:
+			t.Fatalf("file task condition not met within %s", timeout)
+		case <-ticker.C:
+		}
+	}
+}
+
 func TestTeacherConsoleViewsAndTabs(t *testing.T) {
 	app, tr, _, _ := newTestTeacherApp()
 	tester := ui.NewTester(app.View, 1280, 820)
@@ -335,13 +353,9 @@ func TestTeacherFileDistributeQueueWindow(t *testing.T) {
 
 	beforeCount := len(app.opts.Files.ListTasks())
 	app.DistributeQueue()
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if len(app.opts.Files.ListTasks()) >= beforeCount+2 {
-			break
-		}
-		time.Sleep(15 * time.Millisecond)
-	}
+	waitForTeacherFileTasks(t, 2*time.Second, func() bool {
+		return len(app.opts.Files.ListTasks()) >= beforeCount+2
+	})
 
 	tasks := app.opts.Files.ListTasks()
 	if len(tasks) < beforeCount+2 {

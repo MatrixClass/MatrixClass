@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io"
 	"net"
 	"os"
@@ -22,6 +23,15 @@ import (
 	"nexlab/internal/ui/student"
 )
 
+func TestTeacherRuntimeCloseErrorsAreJoined(t *testing.T) {
+	first := errors.New("media close")
+	second := errors.New("transport close")
+	joined := joinRuntimeCloseErrors(first, nil, second)
+	if !errors.Is(joined, first) || !errors.Is(joined, second) {
+		t.Fatalf("joined error does not preserve both causes: %v", joined)
+	}
+}
+
 func freeUDPAddr(t *testing.T) string {
 	t.Helper()
 	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
@@ -31,6 +41,22 @@ func freeUDPAddr(t *testing.T) string {
 	addr := pc.LocalAddr().String()
 	_ = pc.Close()
 	return addr
+}
+
+func waitForTeacherCondition(t *testing.T, timeout time.Duration, condition func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	ticker := time.NewTicker(time.Millisecond)
+	defer ticker.Stop()
+	for {
+		if condition() {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("condition not met within %s", timeout)
+		}
+		<-ticker.C
+	}
 }
 
 func TestEndToEndTeacherStudentKCPIntegration(t *testing.T) {
@@ -65,9 +91,9 @@ func TestEndToEndTeacherStudentKCPIntegration(t *testing.T) {
 	defer stControl.Close()
 	stExam := exam.NewService()
 	stApp := student.New(student.Options{
-		StudentID:   "stu-e2e-1",
-		StudentNo:   "202688",
-		Channel:     "Lab-E2E",
+		StudentID: "stu-e2e-1",
+		StudentNo: "202688",
+		Channel:   "Lab-E2E",
 		Services: student.Services{
 			Transport: stTransport,
 			Media:     stMedia,
@@ -115,28 +141,13 @@ func TestEndToEndTeacherStudentKCPIntegration(t *testing.T) {
 	}
 
 	// Wait for teacher roster to receive student registration over KCP
-	deadline := time.Now().Add(4 * time.Second)
-	registered := false
-	for time.Now().Before(deadline) {
-		if len(trRuntime.Classroom.ListStudents()) > 0 {
-			registered = true
-			break
-		}
-		time.Sleep(30 * time.Millisecond)
-	}
-	if !registered {
-		t.Fatalf("student failed to register on teacher roster over KCP")
-	}
+	waitForTeacherCondition(t, 4*time.Second, func() bool {
+		return len(trRuntime.Classroom.ListStudents()) > 0
+	})
 
 	// Teacher locks student screen over KCP
 	trRuntime.App.ToggleScreenLock()
-	deadline = time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) && !stApp.ScreenLocked() {
-		time.Sleep(25 * time.Millisecond)
-	}
-	if !stApp.ScreenLocked() {
-		t.Fatalf("expected student screen lock propagated over KCP")
-	}
+	waitForTeacherCondition(t, 3*time.Second, stApp.ScreenLocked)
 
 	// Teacher publishes exam -> student answers -> teacher grades
 	paper := core.ExamPaper{
@@ -150,13 +161,9 @@ func TestEndToEndTeacherStudentKCPIntegration(t *testing.T) {
 	env, _ := protocol.NewEnvelope(protocol.MsgExamPublish, "teacher-e2e", paper)
 	_ = trRuntime.Transport.BroadcastControl(env, nil)
 
-	deadline = time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) && stExam.GetActivePaper() == nil {
-		time.Sleep(25 * time.Millisecond)
-	}
-	if stExam.GetActivePaper() == nil {
-		t.Fatalf("student did not receive exam paper over KCP")
-	}
+	waitForTeacherCondition(t, 3*time.Second, func() bool {
+		return stExam.GetActivePaper() != nil
+	})
 	sub := stExam.SubmitAnswer(core.ExamSubmission{
 		PaperID:   "e2e-quiz",
 		StudentID: "stu-e2e-1",
@@ -165,10 +172,9 @@ func TestEndToEndTeacherStudentKCPIntegration(t *testing.T) {
 	subEnv, _ := protocol.NewEnvelope(protocol.MsgExamAnswer, "stu-e2e-1", sub)
 	_ = stTransport.BroadcastControl(subEnv, nil)
 
-	deadline = time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) && trRuntime.Exam.ComputeStats("e2e-quiz").TotalSubmitted == 0 {
-		time.Sleep(25 * time.Millisecond)
-	}
+	waitForTeacherCondition(t, 3*time.Second, func() bool {
+		return trRuntime.Exam.ComputeStats("e2e-quiz").TotalSubmitted > 0
+	})
 	stats := trRuntime.Exam.ComputeStats("e2e-quiz")
 	if stats.TotalSubmitted != 1 || stats.AverageScore != 100 {
 		t.Fatalf("unexpected teacher exam stats: %+v", stats)
@@ -331,39 +337,21 @@ func TestEndToEndScreenBroadcastOverKCPFallback(t *testing.T) {
 		t.Fatalf("student StartStudent failed: %v", err)
 	}
 
-	deadline := time.Now().Add(4 * time.Second)
-	for time.Now().Before(deadline) && len(trRuntime.Classroom.ListStudents()) == 0 {
-		time.Sleep(25 * time.Millisecond)
-	}
-	if len(trRuntime.Classroom.ListStudents()) == 0 {
-		t.Fatalf("student failed to register on teacher")
-	}
+	waitForTeacherCondition(t, 4*time.Second, func() bool {
+		return len(trRuntime.Classroom.ListStudents()) > 0
+	})
 
 	// Start teacher screen broadcast -> student must switch to ModeBroadcast and decode a real frame
 	trRuntime.App.ToggleBroadcast()
-	deadline = time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		if stApp.Mode() == student.ModeBroadcast && stApp.HasVideoFrame() {
-			break
-		}
-		time.Sleep(30 * time.Millisecond)
-	}
-	if stApp.Mode() != student.ModeBroadcast {
-		t.Fatalf("expected student ModeBroadcast (%d), got %d", student.ModeBroadcast, stApp.Mode())
-	}
-	if !stApp.HasVideoFrame() {
-		t.Fatalf("expected student to receive and decode real broadcast video frame")
-	}
+	waitForTeacherCondition(t, 5*time.Second, func() bool {
+		return stApp.Mode() == student.ModeBroadcast && stApp.HasVideoFrame()
+	})
 
 	// Stop teacher screen broadcast -> student returns to floating bar
 	trRuntime.App.ToggleBroadcast()
-	deadline = time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) && stApp.Mode() != student.ModeBar {
-		time.Sleep(25 * time.Millisecond)
-	}
-	if stApp.Mode() != student.ModeBar {
-		t.Fatalf("expected student ModeBar (%d) after broadcast stop, got %d", student.ModeBar, stApp.Mode())
-	}
+	waitForTeacherCondition(t, 3*time.Second, func() bool {
+		return stApp.Mode() == student.ModeBar
+	})
 }
 
 func TestEndToEndBroadcastBurstLatestFrameOverKCP(t *testing.T) {
@@ -416,13 +404,9 @@ func TestEndToEndBroadcastBurstLatestFrameOverKCP(t *testing.T) {
 		t.Fatalf("student StartStudent failed: %v", err)
 	}
 
-	deadline := time.Now().Add(4 * time.Second)
-	for time.Now().Before(deadline) && len(trRuntime.Classroom.ListStudents()) == 0 {
-		time.Sleep(25 * time.Millisecond)
-	}
-	if len(trRuntime.Classroom.ListStudents()) == 0 {
-		t.Fatalf("student failed to register on teacher")
-	}
+	waitForTeacherCondition(t, 4*time.Second, func() bool {
+		return len(trRuntime.Classroom.ListStudents()) > 0
+	})
 
 	// Prepare a valid encoded video frame and send a rapid burst with unique markers.
 	baseFrame, err := trRuntime.Media.CaptureScreenMax(320, 180)
@@ -441,8 +425,8 @@ func TestEndToEndBroadcastBurstLatestFrameOverKCP(t *testing.T) {
 		pkt := make([]byte, len(encoded)+14)
 		copy(pkt, encoded)
 		copy(pkt[len(encoded):], []byte(markerPrefix))
-		pkt[len(encoded)+10] = byte(i / 10 + '0')
-		pkt[len(encoded)+11] = byte(i % 10 + '0')
+		pkt[len(encoded)+10] = byte(i/10 + '0')
+		pkt[len(encoded)+11] = byte(i%10 + '0')
 		pkt[len(encoded)+12] = '!'
 		pkt[len(encoded)+13] = '!'
 		if err := trRuntime.Transport.BroadcastMulticast(pkt); err != nil {
@@ -458,17 +442,24 @@ func TestEndToEndBroadcastBurstLatestFrameOverKCP(t *testing.T) {
 	wantSuffix := []byte("BURST-SEQ-24!!")
 	gotLatest := false
 	gotCount := 0
-	deadline = time.Now().Add(4 * time.Second)
-	for time.Now().Before(deadline) && !gotLatest {
+	deadlineTimer := time.NewTimer(4 * time.Second)
+	defer deadlineTimer.Stop()
+	poll := time.NewTicker(50 * time.Millisecond)
+	defer poll.Stop()
+	for !gotLatest {
 		select {
 		case pkt := <-receivedPayloads:
 			gotCount++
 			if len(pkt) >= len(wantSuffix) && string(pkt[len(pkt)-len(wantSuffix):]) == string(wantSuffix) {
 				gotLatest = true
 			}
-		case <-time.After(50 * time.Millisecond):
+		case <-poll.C:
+		case <-deadlineTimer.C:
+			gotLatest = false
+			goto burstDone
 		}
 	}
+burstDone:
 	if !gotLatest {
 		t.Fatalf("did not receive latest burst frame (%s) within timeout; received %d frames", wantSuffix, gotCount)
 	}
@@ -529,13 +520,9 @@ func TestMonitorDecodeErrorResetsDecoderRequestsRestartAndTouchesStudent(t *test
 		t.Fatalf("student StartStudent failed: %v", err)
 	}
 
-	deadline := time.Now().Add(4 * time.Second)
-	for time.Now().Before(deadline) && len(trRuntime.Classroom.ListStudents()) == 0 {
-		time.Sleep(25 * time.Millisecond)
-	}
-	if len(trRuntime.Classroom.ListStudents()) == 0 {
-		t.Fatalf("student failed to register on teacher")
-	}
+	waitForTeacherCondition(t, 4*time.Second, func() bool {
+		return len(trRuntime.Classroom.ListStudents()) > 0
+	})
 
 	// Enable monitoring on teacher app.
 	trRuntime.App.ToggleMonitor()
@@ -544,7 +531,7 @@ func TestMonitorDecodeErrorResetsDecoderRequestsRestartAndTouchesStudent(t *test
 		if !active {
 			t.Fatalf("expected initial monitor control active=true")
 		}
-	case <-time.After(2 * time.Second):
+	case <-time.NewTimer(2 * time.Second).C:
 		t.Fatalf("timed out waiting for initial MsgMonitorControl")
 	}
 
@@ -580,7 +567,7 @@ func TestMonitorDecodeErrorResetsDecoderRequestsRestartAndTouchesStudent(t *test
 		if !active {
 			t.Fatalf("expected recovery MsgMonitorControl active=true")
 		}
-	case <-time.After(3 * time.Second):
+	case <-time.NewTimer(3 * time.Second).C:
 		t.Fatalf("timed out waiting for recovery MsgMonitorControl after decode error")
 	}
 
@@ -618,17 +605,12 @@ func TestMonitorDecodeErrorResetsDecoderRequestsRestartAndTouchesStudent(t *test
 		t.Fatalf("BroadcastControl re-register failed: %v", err)
 	}
 
-	deadline = time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) {
+	waitForTeacherCondition(t, 3*time.Second, func() bool {
 		trRuntime.decMu.Lock()
 		_, exists := trRuntime.studentDecoders["stu-mon-1:monitor"]
 		trRuntime.decMu.Unlock()
-		if !exists {
-			return
-		}
-		time.Sleep(25 * time.Millisecond)
-	}
-	t.Fatalf("expected stu-mon-1:monitor decoder to be reset on MsgStudentRegister")
+		return !exists
+	})
 }
 
 func TestMarkOfflineStudentsReleasesMonitorDecoders(t *testing.T) {

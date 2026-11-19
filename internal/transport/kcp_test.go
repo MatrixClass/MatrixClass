@@ -404,7 +404,7 @@ func TestKCPConnAndSmuxConcurrentStreams(t *testing.T) {
 	case <-serverReady:
 	case err := <-serverErrCh:
 		t.Fatalf("server error: %v", err)
-	case <-time.After(5 * time.Second):
+	case <-time.NewTimer(5 * time.Second).C:
 		t.Fatalf("timed out waiting for server session")
 	}
 	defer serverSession.Close()
@@ -414,7 +414,7 @@ func TestKCPConnAndSmuxConcurrentStreams(t *testing.T) {
 		if gotEnv.Type != protocol.MsgHello || gotEnv.SenderID != "student-01" {
 			t.Fatalf("unexpected envelope: %+v", gotEnv)
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.NewTimer(5 * time.Second).C:
 		t.Fatalf("timed out waiting for control envelope")
 	}
 

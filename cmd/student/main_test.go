@@ -3,12 +3,39 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
+	"time"
 
 	"nexlab/internal/core"
 	"nexlab/internal/protocol"
 	"nexlab/internal/ui/student"
 )
+
+func TestStudentRuntimeCloseErrorsAreJoined(t *testing.T) {
+	first := errors.New("media close")
+	second := errors.New("transport close")
+	joined := joinRuntimeCloseErrors(first, nil, second)
+	if !errors.Is(joined, first) || !errors.Is(joined, second) {
+		t.Fatalf("joined error does not preserve both causes: %v", joined)
+	}
+}
+
+func TestStudentBroadcastDecodeLoopStopsWithRuntimeContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	rt := &Runtime{ctx: ctx, lifecycleCtx: ctx, bcastDecodeCh: make(chan []byte, 1)}
+	done := make(chan struct{})
+	go func() {
+		rt.broadcastDecodeLoop()
+		close(done)
+	}()
+	cancel()
+	select {
+	case <-done:
+	case <-time.NewTimer(time.Second).C:
+		t.Fatal("broadcast decode loop did not stop after context cancellation")
+	}
+}
 
 func TestNewStudentRuntime(t *testing.T) {
 	rt, err := NewRuntime("301机房", "stu-test", "202699", "127.0.0.1:39199", t.TempDir())
