@@ -34,13 +34,13 @@ type OverlayHooks struct {
 }
 
 type LockOptions struct {
-	Backend            LockBackend
-	Overlays           OverlayHooks
-	EmergencyPassHash  *[32]byte
-	EmergencyPassword  string
-	DisconnectTimeout  time.Duration
-	OnStateChange      func(LockState)
-	Now                func() time.Time
+	Backend           LockBackend
+	Overlays          OverlayHooks
+	EmergencyPassHash *[32]byte
+	EmergencyPassword string
+	DisconnectTimeout time.Duration
+	OnStateChange     func(LockState)
+	Now               func() time.Time
 }
 
 type ScreenLockController struct {

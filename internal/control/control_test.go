@@ -19,7 +19,7 @@ import (
 )
 
 type mockInputBackend struct {
-	mu     sync.Mutex
+	mu      sync.Mutex
 	batches [][]WinInput
 }
 
@@ -180,7 +180,7 @@ func TestInputMappingAndInjection(t *testing.T) {
 	}
 
 	// 1: left mouse down with position
-	if got[1].Mi.DwFlags != (wantMoveFlags|MouseEventfLeftDown) {
+	if got[1].Mi.DwFlags != (wantMoveFlags | MouseEventfLeftDown) {
 		t.Fatalf("mouse down flags = %#x", got[1].Mi.DwFlags)
 	}
 

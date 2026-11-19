@@ -20,11 +20,11 @@ const (
 
 	llkhfAltDown = 0x20
 
-	vkTab    = 0x09
-	vkEscape = 0x1B
-	vkLWin   = 0x5B
-	vkRWin   = 0x5C
-	vkF4     = 0x73
+	vkTab     = 0x09
+	vkEscape  = 0x1B
+	vkLWin    = 0x5B
+	vkRWin    = 0x5C
+	vkF4      = 0x73
 	vkControl = 0x11
 )
 
