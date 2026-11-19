@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"io"
 	"log"
@@ -53,9 +54,14 @@ type Runtime struct {
 	demoActive    bool
 	monitorCfg    monitorStreamConfig
 	ctx           context.Context
+	lifecycleCtx  context.Context
 	bcastDecodeCh chan []byte
 	remoteMu      sync.Mutex
 	remoteTasks   map[string]remoteexec.CommandTask
+	lifecycleStop context.CancelFunc
+	lifecycleWG   sync.WaitGroup
+	closeOnce     sync.Once
+	closeErr      error
 }
 
 type monitorStreamConfig struct {
@@ -154,16 +160,26 @@ func NewRuntime(channel, studentID, studentNo, teacherAddr, recvDir string) (*Ru
 		bcastDecodeCh: make(chan []byte, 16),
 		remoteTasks:   make(map[string]remoteexec.CommandTask),
 	}
+	rt.lifecycleCtx, rt.lifecycleStop = context.WithCancel(context.Background())
 	rt.wireHandlers()
-	go rt.broadcastDecodeLoop()
+	rt.lifecycleWG.Add(1)
+	go func() {
+		defer rt.lifecycleWG.Done()
+		rt.broadcastDecodeLoop()
+	}()
 	return rt, nil
 }
 
 func (rt *Runtime) broadcastDecodeLoop() {
-	for data := range rt.bcastDecodeCh {
-		frame, err := rt.Media.DecodeFrame(data)
-		if err == nil && frame != nil {
-			rt.App.UpdateVideoFrame(frame)
+	for {
+		select {
+		case <-rt.lifecycleCtx.Done():
+			return
+		case data := <-rt.bcastDecodeCh:
+			frame, err := rt.Media.DecodeFrame(data)
+			if err == nil && frame != nil {
+				rt.App.UpdateVideoFrame(frame)
+			}
 		}
 	}
 }
@@ -644,29 +660,54 @@ func (rt *Runtime) acceptFileStreams(sess core.Session) {
 
 func (rt *Runtime) Start(ctx context.Context) error {
 	rt.streamMu.Lock()
+	if rt.lifecycleStop != nil {
+		rt.lifecycleStop()
+	}
+	rt.lifecycleCtx, rt.lifecycleStop = context.WithCancel(ctx)
 	rt.ctx = ctx
+	startCtx := ctx
 	rt.streamMu.Unlock()
-	if _, err := rt.Control.Start(ctx); err != nil {
+	if _, err := rt.Control.Start(startCtx); err != nil {
 		return err
 	}
-	return rt.Transport.StartStudent(ctx, rt.channel)
+	return rt.Transport.StartStudent(startCtx, rt.channel)
+}
+
+func joinRuntimeCloseErrors(errs ...error) error {
+	return errors.Join(errs...)
 }
 
 func (rt *Runtime) Close() error {
-	rt.stopMonitorStream()
-	rt.stopRemoteStream()
-	rt.stopDemoStream()
-	rt.remoteMu.Lock()
-	for id, task := range rt.remoteTasks {
-		if task.Cancel != nil {
-			task.Cancel()
+	rt.closeOnce.Do(func() {
+		if rt.lifecycleStop != nil {
+			rt.lifecycleStop()
 		}
-		delete(rt.remoteTasks, id)
-	}
-	rt.remoteMu.Unlock()
-	_ = rt.Media.Close()
-	_ = rt.Control.Close()
-	return rt.Transport.Close()
+		rt.stopMonitorStream()
+		rt.stopRemoteStream()
+		rt.stopDemoStream()
+		rt.remoteMu.Lock()
+		for id, task := range rt.remoteTasks {
+			if task.Cancel != nil {
+				task.Cancel()
+			}
+			delete(rt.remoteTasks, id)
+		}
+		rt.remoteMu.Unlock()
+		rt.lifecycleWG.Wait()
+
+		var closeErrs []error
+		if rt.Media != nil {
+			closeErrs = append(closeErrs, rt.Media.Close())
+		}
+		if rt.Control != nil {
+			closeErrs = append(closeErrs, rt.Control.Close())
+		}
+		if rt.Transport != nil {
+			closeErrs = append(closeErrs, rt.Transport.Close())
+		}
+		rt.closeErr = joinRuntimeCloseErrors(closeErrs...)
+	})
+	return rt.closeErr
 }
 
 func main() {

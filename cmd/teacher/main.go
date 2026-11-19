@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"flag"
 	"io"
 	"log"
@@ -57,6 +58,12 @@ type Runtime struct {
 
 	forceKeyFrame atomic.Bool
 	startOnce     sync.Once
+	lifecycleMu   sync.Mutex
+	lifecycleCtx  context.Context
+	lifecycleStop context.CancelFunc
+	lifecycleWG   sync.WaitGroup
+	closeOnce     sync.Once
+	closeErr      error
 }
 
 func NewRuntime(channel, teacherID, teacherName, archiveDir string) (*Runtime, error) {
@@ -135,6 +142,7 @@ func NewRuntimeWithStore(channel, teacherID, teacherName, archiveDir string, dbS
 		teacherID:       teacherID,
 		studentDecoders: make(map[string]*media.HybridVideoCodec),
 	}
+	rt.lifecycleCtx, rt.lifecycleStop = context.WithCancel(context.Background())
 	rt.wireHandlers()
 	return rt, nil
 }
@@ -430,14 +438,32 @@ func (rt *Runtime) Start(ctx context.Context, listenAddr string, teacherName str
 			startErr = err
 			return
 		}
-		go rt.broadcastLoop(ctx)
-		go rt.heartbeatLoop(ctx)
+		rt.lifecycleMu.Lock()
+		if rt.lifecycleStop != nil {
+			rt.lifecycleStop()
+		}
+		rt.lifecycleCtx, rt.lifecycleStop = context.WithCancel(ctx)
+		lifecycleCtx := rt.lifecycleCtx
+		rt.lifecycleMu.Unlock()
+		rt.lifecycleWG.Add(2)
+		go func() {
+			defer rt.lifecycleWG.Done()
+			rt.broadcastLoop(lifecycleCtx)
+		}()
+		go func() {
+			defer rt.lifecycleWG.Done()
+			rt.heartbeatLoop(lifecycleCtx)
+		}()
 	})
 	return startErr
 }
 
 func (rt *Runtime) SetChannel(ch string) {
 	rt.channel = ch
+}
+
+func joinRuntimeCloseErrors(errs ...error) error {
+	return errors.Join(errs...)
 }
 
 func (rt *Runtime) heartbeatLoop(ctx context.Context) {
@@ -594,19 +620,38 @@ func (rt *Runtime) syncAudioCapture() {
 }
 
 func (rt *Runtime) Close() error {
-	_ = rt.Media.StopAudioCapture()
-	_ = rt.Media.Close()
-	rt.decMu.Lock()
-	for _, dec := range rt.studentDecoders {
-		_ = dec.Close()
-	}
-	rt.studentDecoders = nil
-	rt.decMu.Unlock()
-	_ = rt.Control.Close()
-	if rt.Store != nil {
-		_ = rt.Store.Close()
-	}
-	return rt.Transport.Close()
+	rt.closeOnce.Do(func() {
+		rt.lifecycleMu.Lock()
+		if rt.lifecycleStop != nil {
+			rt.lifecycleStop()
+		}
+		rt.lifecycleMu.Unlock()
+		rt.lifecycleWG.Wait()
+
+		var closeErrs []error
+		if rt.Media != nil {
+			closeErrs = append(closeErrs, rt.Media.StopAudioCapture(), rt.Media.Close())
+		}
+		rt.decMu.Lock()
+		for _, dec := range rt.studentDecoders {
+			if dec != nil {
+				closeErrs = append(closeErrs, dec.Close())
+			}
+		}
+		rt.studentDecoders = nil
+		rt.decMu.Unlock()
+		if rt.Control != nil {
+			closeErrs = append(closeErrs, rt.Control.Close())
+		}
+		if rt.Store != nil {
+			closeErrs = append(closeErrs, rt.Store.Close())
+		}
+		if rt.Transport != nil {
+			closeErrs = append(closeErrs, rt.Transport.Close())
+		}
+		rt.closeErr = joinRuntimeCloseErrors(closeErrs...)
+	})
+	return rt.closeErr
 }
 
 func main() {
