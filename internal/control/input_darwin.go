@@ -36,11 +36,16 @@ type darwinKeyboardEvent struct {
 	down    bool
 }
 
+type darwinCGPoint struct {
+	x float64
+	y float64
+}
+
 type darwinInputBackend struct {
 	mu                                sync.Mutex
 	applicationServices, coreGraphics uintptr
 	trusted                           func() bool
-	createMouse                       func(uintptr, uint32, float64, float64, uint32) uintptr
+	createMouse                       func(uintptr, uint32, darwinCGPoint, uint32) uintptr
 	createKeyboard                    func(uintptr, uint16, bool) uintptr
 	createScroll                      func(uintptr, uint32, uint32, int32) uintptr
 	post                              func(uint32, uintptr)
@@ -126,9 +131,9 @@ func (b *darwinInputBackend) SendInputs(inputs []WinInput) error {
 			}
 			switch action.kind {
 			case darwinMouseMove:
-				event = b.createMouse(0, darwinEventMouseMoved, action.x, action.y, darwinButtonLeft)
+				event = b.createMouse(0, darwinEventMouseMoved, darwinCGPoint{x: action.x, y: action.y}, darwinButtonLeft)
 			case darwinMouseButtonKind:
-				event = b.createMouse(0, darwinMouseEventType(action.button, action.down), action.x, action.y, action.button)
+				event = b.createMouse(0, darwinMouseEventType(action.button, action.down), darwinCGPoint{x: action.x, y: action.y}, action.button)
 			case darwinMouseScroll:
 				event = b.createScroll(0, 1, 1, action.delta)
 			}
