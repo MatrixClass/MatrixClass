@@ -490,7 +490,11 @@ func (c *ScreenCapturer) captureDXGI() (int, int, bool, error) {
 	defer comCall(d.ctx, 15, d.staging, 0)
 
 	pitch := int(mapped.RowPitch)
-	if pitch < w*4 {
+	if pitch < w*4 || !validWindowsFrameDimensions(w, h) {
+		return 0, 0, false, ErrBufferTooSmall
+	}
+	maxInt := int(^uint(0) >> 1)
+	if h > 0 && pitch > maxInt/h {
 		return 0, 0, false, ErrBufferTooSmall
 	}
 	srcSlice := unsafe.Slice((*byte)(unsafe.Pointer(mapped.PData)), pitch*h)
@@ -555,6 +559,9 @@ func (c *ScreenCapturer) captureGDI() (int, int, error) {
 		return 0, 0, fmt.Errorf("media: BitBlt failed: %v", err)
 	}
 
+	if !validWindowsFrameDimensions(w, h) {
+		return 0, 0, ErrBufferTooSmall
+	}
 	need := w * h * 4
 	if cap(c.bgraBuf) < need {
 		c.bgraBuf = make([]byte, need)
@@ -604,12 +611,24 @@ func (c *ScreenCapturer) releaseGDI() {
 }
 
 func comMethod(obj uintptr, index int) uintptr {
+	if obj == 0 || index < 0 {
+		return 0
+	}
 	vtbl := *(*uintptr)(unsafe.Pointer(obj))
+	if vtbl == 0 {
+		return 0
+	}
 	return *(*uintptr)(unsafe.Pointer(vtbl + uintptr(index)*unsafe.Sizeof(uintptr(0))))
 }
 
 func comCall(obj uintptr, index int, args ...uintptr) uintptr {
+	if obj == 0 || index < 0 {
+		return 0
+	}
 	fn := comMethod(obj, index)
+	if fn == 0 {
+		return 0
+	}
 	all := make([]uintptr, 0, 1+len(args))
 	all = append(all, obj)
 	all = append(all, args...)

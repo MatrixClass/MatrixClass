@@ -143,6 +143,9 @@ func (m *windowsH264MFT) Encode(frame *core.VideoFrame, quality int) ([]byte, er
 	if frame.Width%2 != 0 || frame.Height%2 != 0 {
 		return nil, ErrMFTUnavailable
 	}
+	if !validWindowsFrameDimensions(frame.Width, frame.Height) {
+		return nil, ErrInvalidDimension
+	}
 	if quality <= 0 {
 		quality = 80
 	}
@@ -210,6 +213,9 @@ func (m *windowsH264MFT) Decode(data []byte) (*core.VideoFrame, error) {
 		return nil, fmt.Errorf("%w: unexpected codec id %d", ErrInvalidFrameData, codecID)
 	}
 	if w <= 0 || h <= 0 {
+		return nil, ErrInvalidDimension
+	}
+	if !validWindowsFrameDimensions(w, h) {
 		return nil, ErrInvalidDimension
 	}
 
@@ -450,6 +456,9 @@ func (m *windowsH264MFT) drainOneOutput(mft uintptr) ([]byte, error) {
 	if r := comCall(contig, 3, uintptr(unsafe.Pointer(&ptr)), uintptr(unsafe.Pointer(&maxLen)), uintptr(unsafe.Pointer(&curLen))); int32(r) < 0 || ptr == 0 {
 		return nil, ErrMFTUnavailable
 	}
+	if curLen > maxLen {
+		return nil, ErrBufferTooSmall
+	}
 	defer comCall(contig, 4)
 
 	out := make([]byte, curLen)
@@ -492,6 +501,10 @@ func createMFSampleFromBytes(data []byte, sampleTime, duration int64) (uintptr, 
 		comRelease(buf)
 		return 0, ErrMFTUnavailable
 	}
+	if uint64(len(data)) > uint64(maxLen) {
+		comRelease(buf)
+		return 0, ErrBufferTooSmall
+	}
 	copy(unsafe.Slice((*byte)(unsafe.Pointer(ptr)), len(data)), data)
 	comCall(buf, 4)
 	comCall(buf, 6, uintptr(len(data)))
@@ -507,4 +520,12 @@ func createMFSampleFromBytes(data []byte, sampleTime, duration int64) (uintptr, 
 	comCall(sample, 36, uintptr(sampleTime))
 	comCall(sample, 38, uintptr(duration))
 	return sample, nil
+}
+
+func validWindowsFrameDimensions(width, height int) bool {
+	if width <= 0 || height <= 0 {
+		return false
+	}
+	maxInt := uint64(^uint(0) >> 1)
+	return uint64(width) <= maxInt/uint64(height) && uint64(width)*uint64(height) <= maxInt/4
 }

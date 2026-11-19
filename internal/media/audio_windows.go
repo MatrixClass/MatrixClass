@@ -177,7 +177,11 @@ func (a *AudioEngine) captureLoop(loopback bool, onFrame func(*core.AudioFrame),
 							if numFrames > 0 {
 								silentFrame := flags&audclntBufferSilent != 0 || dataPtr == 0
 								if !silentFrame {
-									frameBytes := int(numFrames) * fmtInfo.Channels * (fmtInfo.Bits / 8)
+									frameBytes, ok := wasapiFrameBytes(numFrames, fmtInfo)
+									if !ok {
+										comCall(capClient, 4, uintptr(numFrames))
+										continue
+									}
 									raw := unsafe.Slice((*byte)(unsafe.Pointer(dataPtr)), frameBytes)
 									pcm := convertToPCM16(raw, fmtInfo)
 									if !isPCM16Silent(pcm) {
@@ -462,6 +466,9 @@ func createAudioClient(dataFlow uintptr, extraFlags uint32, desiredRate, desired
 }
 
 func parseWaveFormat(ptr uintptr) wasapiFormat {
+	if ptr == 0 {
+		return wasapiFormat{SampleRate: 48000, Channels: 2, Bits: 16}
+	}
 	wfx := (*waveFormatEx)(unsafe.Pointer(ptr))
 	info := wasapiFormat{
 		SampleRate: int(wfx.NSamplesPerSec),
@@ -487,6 +494,19 @@ func parseWaveFormat(ptr uintptr) wasapiFormat {
 		info.Bits = 16
 	}
 	return info
+}
+
+func wasapiFrameBytes(frames uint32, format wasapiFormat) (int, bool) {
+	if frames == 0 || format.Channels <= 0 || format.Bits <= 0 || format.Bits%8 != 0 {
+		return 0, false
+	}
+	bytesPerFrame := uint64(format.Channels) * uint64(format.Bits/8)
+	total := uint64(frames) * bytesPerFrame
+	maxInt := uint64(^uint(0) >> 1)
+	if bytesPerFrame == 0 || total > maxInt {
+		return 0, false
+	}
+	return int(total), true
 }
 
 func isPCM16Silent(pcm []byte) bool {
@@ -533,6 +553,9 @@ func convertToPCM16(raw []byte, fmtInfo wasapiFormat) []byte {
 }
 
 func convertPCM16ToRender(pcm []byte, inRate, inCh int, dstFmt wasapiFormat) []byte {
+	if inCh <= 0 || dstFmt.Channels <= 0 || dstFmt.Bits <= 0 || dstFmt.Bits%8 != 0 || (dstFmt.Bits != 16 && dstFmt.Bits != 32) {
+		return nil
+	}
 	if !dstFmt.IsFloat && dstFmt.Bits == 16 && dstFmt.Channels == inCh && dstFmt.SampleRate == inRate {
 		return pcm
 	}
