@@ -172,9 +172,15 @@ type Manager struct {
 	networkWatcher   atomic.Bool
 	nackWatcher      atomic.Bool
 	studentChannel   string
+	connectionGen    atomic.Uint64
 
 	networkMu          sync.RWMutex
 	activeInterfaces   []string
+	interfaceDetails   []NetworkInterfaceStatus
+	localAddresses     []string
+	localAddress       string
+	connectionAddress  string
+	lastConnectedAt    time.Time
 	reconnects         uint64
 	lastReconnectCause string
 
@@ -219,8 +225,19 @@ type Manager struct {
 // NetworkStatus describes the transport's current interface and reconnect state.
 type NetworkStatus struct {
 	Interfaces          []string
+	InterfaceDetails    []NetworkInterfaceStatus
+	LocalAddresses      []string
+	LocalAddress        string
+	ConnectionAddress   string
+	LastConnectedAt     time.Time
 	Reconnects          uint64
 	LastReconnectReason string
+}
+
+type NetworkInterfaceStatus struct {
+	Index     int
+	Name      string
+	Addresses []string
 }
 
 func NewManager(opts ...ManagerOption) *Manager {
@@ -290,11 +307,39 @@ func (m *Manager) recordReconnect(reason string) {
 	m.networkMu.Unlock()
 }
 
+func (m *Manager) recordConnection(address, localAddress string, interfaces []string, localAddresses []string) {
+	m.networkMu.Lock()
+	m.connectionAddress = address
+	m.localAddresses = append([]string(nil), localAddresses...)
+	m.localAddress = localAddress
+	m.lastConnectedAt = time.Now()
+	m.activeInterfaces = append([]string(nil), interfaces...)
+	m.interfaceDetails = snapshotInterfaceDetails()
+	m.networkMu.Unlock()
+}
+
+func (m *Manager) nextConnectionGeneration() uint64 {
+	return m.connectionGen.Add(1)
+}
+
+func (m *Manager) invalidateConnectionGeneration() {
+	m.connectionGen.Add(1)
+}
+
+func (m *Manager) connectionGenerationCurrent(generation uint64) bool {
+	return generation != 0 && m.connectionGen.Load() == generation
+}
+
 func (m *Manager) NetworkStatus() NetworkStatus {
 	m.networkMu.RLock()
 	defer m.networkMu.RUnlock()
 	return NetworkStatus{
 		Interfaces:          append([]string(nil), m.activeInterfaces...),
+		InterfaceDetails:    cloneInterfaceDetails(m.interfaceDetails),
+		LocalAddresses:      append([]string(nil), m.localAddresses...),
+		LocalAddress:        m.localAddress,
+		ConnectionAddress:   m.connectionAddress,
+		LastConnectedAt:     m.lastConnectedAt,
 		Reconnects:          m.reconnects,
 		LastReconnectReason: m.lastReconnectCause,
 	}
@@ -451,6 +496,7 @@ func (m *Manager) StartStudent(ctx context.Context, channel string) error {
 		return ErrAlreadyStarted
 	}
 	m.starting = true
+	m.nextConnectionGeneration()
 	m.role = core.RoleStudent
 	m.ctx, m.cancel = context.WithCancel(ctx)
 	m.studentChannel = channel
@@ -512,11 +558,19 @@ func (m *Manager) connectStudentOnce(channel string) error {
 		_ = kcpConn.Close()
 		return err
 	}
+	m.mu.RLock()
+	connectionGeneration := m.connectionGen.Load()
+	m.mu.RUnlock()
 	sess.SetOnClose(func(closed core.Session) {
 		m.removeSession(closed.ID())
-		m.scheduleStudentReconnect()
+		m.scheduleStudentReconnect(connectionGeneration)
 	})
 	m.addSession(sess)
+	localAddress := ""
+	if addr := kcpConn.LocalAddr(); addr != nil {
+		localAddress = addr.String()
+	}
+	m.recordConnection(teacherAddr, localAddress, networkInterfaceSnapshot(), localAddressSnapshot())
 
 	mcastAddrStr := explicitMcast
 	if mcastAddrStr == "" && discovered.Beacon.MulticastIP != "" && discovered.Beacon.McastPort > 0 {
@@ -537,12 +591,16 @@ func (m *Manager) connectStudentOnce(channel string) error {
 	return nil
 }
 
-func (m *Manager) scheduleStudentReconnect() {
+func (m *Manager) scheduleStudentReconnect(closedGeneration uint64) {
 	m.mu.RLock()
 	isStudent := m.role == core.RoleStudent
 	closed := m.closed
 	ctx := m.ctx
 	channel := m.studentChannel
+	generation := m.connectionGen.Load()
+	if closedGeneration != 0 && closedGeneration != generation {
+		return
+	}
 	m.mu.RUnlock()
 	if !isStudent || closed || ctx == nil || ctx.Err() != nil {
 		return
@@ -555,6 +613,9 @@ func (m *Manager) scheduleStudentReconnect() {
 		backoff := 500 * time.Millisecond
 		const maxBackoff = 5 * time.Second
 		for {
+			if !m.connectionGenerationCurrent(generation) {
+				return
+			}
 			m.mu.RLock()
 			stillOpen := !m.closed && m.ctx != nil && m.ctx.Err() == nil
 			m.mu.RUnlock()
@@ -567,6 +628,9 @@ func (m *Manager) scheduleStudentReconnect() {
 				timer.Stop()
 				return
 			case <-timer.C:
+			}
+			if !m.connectionGenerationCurrent(generation) {
+				return
 			}
 			if err := m.connectStudentOnce(channel); err == nil {
 				return
@@ -686,6 +750,59 @@ func networkInterfaceSnapshot() []string {
 	}
 	sort.Strings(snapshot)
 	return snapshot
+}
+
+func localAddressSnapshot() []string {
+	ifaces, err := interfaceEnumerator()
+	if err != nil {
+		return nil
+	}
+	var addresses []string
+	for _, iface := range usableInterfaces(ifaces) {
+		ifAddrs, err := interfaceAddressEnumerator(iface)
+		if err != nil {
+			continue
+		}
+		for _, addr := range ifAddrs {
+			if ipNet, ok := addr.(*net.IPNet); ok && ipNet.IP != nil {
+				ip := ipNet.IP
+				addresses = append(addresses, ip.String())
+			}
+		}
+	}
+	sort.Strings(addresses)
+	return addresses
+}
+
+func snapshotInterfaceDetails() []NetworkInterfaceStatus {
+	ifaces, err := interfaceEnumerator()
+	if err != nil {
+		return nil
+	}
+	usable := usableInterfaces(ifaces)
+	details := make([]NetworkInterfaceStatus, 0, len(usable))
+	for _, iface := range usable {
+		detail := NetworkInterfaceStatus{Index: iface.Index, Name: iface.Name}
+		ifAddrs, err := interfaceAddressEnumerator(iface)
+		if err == nil {
+			for _, addr := range ifAddrs {
+				if ipNet, ok := addr.(*net.IPNet); ok && ipNet.IP != nil {
+					detail.Addresses = append(detail.Addresses, ipNet.IP.String())
+				}
+			}
+		}
+		details = append(details, detail)
+	}
+	return details
+}
+
+func cloneInterfaceDetails(details []NetworkInterfaceStatus) []NetworkInterfaceStatus {
+	cloned := make([]NetworkInterfaceStatus, len(details))
+	for i, detail := range details {
+		cloned[i] = detail
+		cloned[i].Addresses = append([]string(nil), detail.Addresses...)
+	}
+	return cloned
 }
 
 func sameStrings(left, right []string) bool {
@@ -1493,6 +1610,7 @@ func (m *Manager) Close() error {
 	m.closed = true
 	m.started = false
 	m.starting = false
+	m.invalidateConnectionGeneration()
 	cancel := m.cancel
 	listener := m.listener
 	broadcaster := m.broadcaster
