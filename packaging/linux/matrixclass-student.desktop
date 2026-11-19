@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=MatrixClass Student
+Name[zh_CN]=矩联电子教室学生端
+Comment=LAN classroom student client
+Comment[zh_CN]=局域网电子教室学生端
+Exec=matrixclass-student
+Icon=matrixclass
+Terminal=false
+Categories=Education;Network;
+StartupNotify=true

@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=MatrixClass Teacher
+Name[zh_CN]=矩联电子教室教师端
+Comment=LAN classroom management console
+Comment[zh_CN]=局域网电子教室教师端
+Exec=matrixclass-teacher
+Icon=matrixclass
+Terminal=false
+Categories=Education;Network;
+StartupNotify=true
