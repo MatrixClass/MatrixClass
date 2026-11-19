@@ -30,6 +30,34 @@ func TestLinuxInputActionMapsKeyboardVK(t *testing.T) {
 	}
 }
 
+func TestLinuxInputActionMapsWheelToX11Buttons(t *testing.T) {
+	downWheelValue := int32(-120)
+	upWheelValue := int32(120)
+	downWheel := uint32(downWheelValue)
+	upWheel := uint32(upWheelValue)
+	action, err := linuxInputAction(WinInput{Type: InputTypeMouse, Mi: MouseInput{
+		MouseData: upWheel,
+		DwFlags:   MouseEventfWheel,
+	}}, 0, 0)
+	if err != nil {
+		t.Fatalf("linuxInputAction returned error: %v", err)
+	}
+	if action.kind != linuxInputButton || action.button != 4 || !action.down {
+		t.Fatalf("unexpected wheel-up action: %+v", action)
+	}
+
+	action, err = linuxInputAction(WinInput{Type: InputTypeMouse, Mi: MouseInput{
+		MouseData: downWheel,
+		DwFlags:   MouseEventfWheel,
+	}}, 0, 0)
+	if err != nil {
+		t.Fatalf("linuxInputAction returned error: %v", err)
+	}
+	if action.kind != linuxInputButton || action.button != 5 || !action.down {
+		t.Fatalf("unexpected wheel-down action: %+v", action)
+	}
+}
+
 func TestLinuxInputBackendRejectsUnsupportedInput(t *testing.T) {
 	backend := &linuxInputBackend{}
 	err := backend.SendInputs([]WinInput{{Type: 99}})

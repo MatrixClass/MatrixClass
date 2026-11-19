@@ -31,18 +31,19 @@ type linuxInputEvent struct {
 }
 
 type linuxInputBackend struct {
-	mu      sync.Mutex
-	handle  uintptr
-	display uintptr
-	screen  int32
-	width   int32
-	height  int32
-	close   func(uintptr) int32
-	flush   func(uintptr) int32
-	motion  func(uintptr, int32, int32, int32, uint64) int32
-	button  func(uintptr, uint32, int32, uint64) int32
-	key     func(uintptr, uint32, int32, uint64) int32
-	keycode func(uintptr, uint64) byte
+	mu         sync.Mutex
+	handle     uintptr
+	xtstHandle uintptr
+	display    uintptr
+	screen     int32
+	width      int32
+	height     int32
+	close      func(uintptr) int32
+	flush      func(uintptr) int32
+	motion     func(uintptr, int32, int32, int32, uint64) int32
+	button     func(uintptr, uint32, int32, uint64) int32
+	key        func(uintptr, uint32, int32, uint64) int32
+	keycode    func(uintptr, uint64) byte
 }
 
 func newPlatformInputBackend() InputBackend {
@@ -100,7 +101,7 @@ func newLinuxInputBackend() (*linuxInputBackend, error) {
 		return nil, ErrInputUnsupportedPlatform
 	}
 	screen := defaultScreen(display)
-	return &linuxInputBackend{handle: x11, display: display, screen: screen, width: displayWidth(display, screen), height: displayHeight(display, screen), close: closeDisplay, flush: flush, motion: fakeMotion, button: fakeButton, key: fakeKey, keycode: keysymToKeycode}, nil
+	return &linuxInputBackend{handle: x11, xtstHandle: xtst, display: display, screen: screen, width: displayWidth(display, screen), height: displayHeight(display, screen), close: closeDisplay, flush: flush, motion: fakeMotion, button: fakeButton, key: fakeKey, keycode: keysymToKeycode}, nil
 }
 
 func (b *linuxInputBackend) SendInputs(inputs []WinInput) error {
@@ -158,6 +159,15 @@ func (b *linuxInputBackend) Close() error {
 	if b.handle != 0 {
 		err := purego.Dlclose(b.handle)
 		b.handle = 0
+		if b.xtstHandle != 0 {
+			_ = purego.Dlclose(b.xtstHandle)
+			b.xtstHandle = 0
+		}
+		return err
+	}
+	if b.xtstHandle != 0 {
+		err := purego.Dlclose(b.xtstHandle)
+		b.xtstHandle = 0
 		return err
 	}
 	return nil
@@ -180,6 +190,12 @@ func linuxInputAction(input WinInput, width, height int) (linuxInputEvent, error
 			y = int((int64(input.Mi.Dy) * int64(height-1)) / 65535)
 		}
 		button, down, hasButton := linuxMouseButton(flags, input.Mi.MouseData)
+		if flags&MouseEventfWheel != 0 {
+			if int32(input.Mi.MouseData) >= 0 {
+				return linuxInputEvent{kind: linuxInputButton, button: 4, down: true}, nil
+			}
+			return linuxInputEvent{kind: linuxInputButton, button: 5, down: true}, nil
+		}
 		if flags&MouseEventfMove != 0 && hasButton {
 			return linuxInputEvent{kind: linuxInputMotionButton, x: x, y: y, button: button, down: down}, nil
 		}
