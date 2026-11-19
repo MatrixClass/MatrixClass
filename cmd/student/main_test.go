@@ -37,6 +37,18 @@ func TestStudentBroadcastDecodeLoopStopsWithRuntimeContext(t *testing.T) {
 	}
 }
 
+func TestStudentRuntimeLifecycleRejectsTasksAfterClose(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	rt := &Runtime{lifecycleCtx: ctx, lifecycleStop: cancel}
+	rt.lifecycleMu.Lock()
+	rt.lifecycleClosed = true
+	rt.lifecycleMu.Unlock()
+	started := rt.goLifecycle(func(context.Context) { t.Error("closed runtime started a task") })
+	if started {
+		t.Fatal("expected lifecycle task to be rejected after close")
+	}
+}
+
 func TestNewStudentRuntime(t *testing.T) {
 	rt, err := NewRuntime("301机房", "stu-test", "202699", "127.0.0.1:39199", t.TempDir())
 	if err != nil {

@@ -56,14 +56,15 @@ type Runtime struct {
 	audioMu   sync.Mutex
 	audioMode string // "", "voice", "loopback"
 
-	forceKeyFrame atomic.Bool
-	startOnce     sync.Once
-	lifecycleMu   sync.Mutex
-	lifecycleCtx  context.Context
-	lifecycleStop context.CancelFunc
-	lifecycleWG   sync.WaitGroup
-	closeOnce     sync.Once
-	closeErr      error
+	forceKeyFrame   atomic.Bool
+	startOnce       sync.Once
+	lifecycleMu     sync.Mutex
+	lifecycleCtx    context.Context
+	lifecycleStop   context.CancelFunc
+	lifecycleWG     sync.WaitGroup
+	lifecycleClosed bool
+	closeOnce       sync.Once
+	closeErr        error
 }
 
 func NewRuntime(channel, teacherID, teacherName, archiveDir string) (*Runtime, error) {
@@ -156,7 +157,7 @@ func (rt *Runtime) wireHandlers() {
 	})
 	rt.Transport.OnSession(func(sess core.Session) {
 		rt.Files.RegisterSession(sess.ID(), sess)
-		go rt.acceptFileStreams(sess)
+		rt.goLifecycle(func(ctx context.Context) { rt.acceptFileStreams(ctx, sess) })
 	})
 	rt.Transport.OnEnvelope(func(sess core.Session, env protocol.Envelope) {
 		senderID := env.SenderID
@@ -299,9 +300,9 @@ func (rt *Runtime) wireHandlers() {
 					targetID = senderID
 				}
 				if targetID != "" && rt.Files != nil {
-					go func(sid, fname, rpath, sha string, open bool) {
-						_, _ = rt.Files.RetryDistribute(context.Background(), sid, fname, rpath, sha, open)
-					}(targetID, req.FileName, req.RemotePath, req.SHA256, req.AutoOpen)
+					rt.goLifecycle(func(ctx context.Context) {
+						_, _ = rt.Files.RetryDistribute(ctx, targetID, req.FileName, req.RemotePath, req.SHA256, req.AutoOpen)
+					})
 				}
 			}
 		case protocol.MsgRemoteAppListResp, protocol.MsgRemoteAppResult, protocol.MsgRemoteCommandOutput, protocol.MsgRemoteCommandResult:
@@ -398,7 +399,23 @@ func (rt *Runtime) decodeStudentFrame(studentID string, data []byte) (*core.Vide
 	return dec.Decode(data)
 }
 
-func (rt *Runtime) acceptFileStreams(sess core.Session) {
+func (rt *Runtime) goLifecycle(task func(context.Context)) bool {
+	rt.lifecycleMu.Lock()
+	if rt.lifecycleClosed || rt.lifecycleCtx == nil {
+		rt.lifecycleMu.Unlock()
+		return false
+	}
+	ctx := rt.lifecycleCtx
+	rt.lifecycleWG.Add(1)
+	rt.lifecycleMu.Unlock()
+	go func() {
+		defer rt.lifecycleWG.Done()
+		task(ctx)
+	}()
+	return true
+}
+
+func (rt *Runtime) acceptFileStreams(ctx context.Context, sess core.Session) {
 	type streamAccepter interface {
 		AcceptStream() (protocol.StreamKind, io.ReadWriteCloser, error)
 	}
@@ -411,11 +428,17 @@ func (rt *Runtime) acceptFileStreams(sess core.Session) {
 		if err != nil {
 			return
 		}
+		select {
+		case <-ctx.Done():
+			_ = stream.Close()
+			return
+		default:
+		}
 		if kind == protocol.StreamFile {
-			go func(st io.ReadWriteCloser) {
-				_ = rt.Files.HandleStream(context.Background(), st)
+			rt.goLifecycle(func(taskCtx context.Context) {
+				_ = rt.Files.HandleStream(taskCtx, stream)
 				rt.App.Invalidate()
-			}(stream)
+			})
 		} else {
 			_ = stream.Close()
 		}
@@ -622,13 +645,17 @@ func (rt *Runtime) syncAudioCapture() {
 func (rt *Runtime) Close() error {
 	rt.closeOnce.Do(func() {
 		rt.lifecycleMu.Lock()
+		rt.lifecycleClosed = true
 		if rt.lifecycleStop != nil {
 			rt.lifecycleStop()
 		}
 		rt.lifecycleMu.Unlock()
+		var closeErrs []error
+		if rt.Transport != nil {
+			closeErrs = append(closeErrs, rt.Transport.Close())
+		}
 		rt.lifecycleWG.Wait()
 
-		var closeErrs []error
 		if rt.Media != nil {
 			closeErrs = append(closeErrs, rt.Media.StopAudioCapture(), rt.Media.Close())
 		}
@@ -645,9 +672,6 @@ func (rt *Runtime) Close() error {
 		}
 		if rt.Store != nil {
 			closeErrs = append(closeErrs, rt.Store.Close())
-		}
-		if rt.Transport != nil {
-			closeErrs = append(closeErrs, rt.Transport.Close())
 		}
 		rt.closeErr = joinRuntimeCloseErrors(closeErrs...)
 	})

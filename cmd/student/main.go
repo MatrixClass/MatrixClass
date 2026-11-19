@@ -47,21 +47,23 @@ type Runtime struct {
 	macAddr     string
 	channel     string
 
-	streamMu      sync.Mutex
-	monitorStop   context.CancelFunc
-	remoteStop    context.CancelFunc
-	demoStop      context.CancelFunc
-	demoActive    bool
-	monitorCfg    monitorStreamConfig
-	ctx           context.Context
-	lifecycleCtx  context.Context
-	bcastDecodeCh chan []byte
-	remoteMu      sync.Mutex
-	remoteTasks   map[string]remoteexec.CommandTask
-	lifecycleStop context.CancelFunc
-	lifecycleWG   sync.WaitGroup
-	closeOnce     sync.Once
-	closeErr      error
+	streamMu        sync.Mutex
+	monitorStop     context.CancelFunc
+	remoteStop      context.CancelFunc
+	demoStop        context.CancelFunc
+	demoActive      bool
+	monitorCfg      monitorStreamConfig
+	ctx             context.Context
+	lifecycleCtx    context.Context
+	bcastDecodeCh   chan []byte
+	remoteMu        sync.Mutex
+	remoteTasks     map[string]remoteexec.CommandTask
+	lifecycleMu     sync.Mutex
+	lifecycleStop   context.CancelFunc
+	lifecycleWG     sync.WaitGroup
+	lifecycleClosed bool
+	closeOnce       sync.Once
+	closeErr        error
 }
 
 type monitorStreamConfig struct {
@@ -206,7 +208,7 @@ func (rt *Runtime) wireHandlers() {
 	rt.Transport.OnSession(func(sess core.Session) {
 		rt.Files.SetTeacherSession(sess)
 		rt.App.SetStatusNote("已连接频道: " + rt.channel)
-		go rt.acceptFileStreams(sess)
+		rt.goLifecycle(func(ctx context.Context) { rt.acceptFileStreams(ctx, sess) })
 		env, err := protocol.NewEnvelope(protocol.MsgStudentRegister, rt.studentID, core.StudentInfo{
 			ID:          rt.studentID,
 			StudentNo:   rt.studentNo,
@@ -423,7 +425,14 @@ func (rt *Runtime) sendRemoteEnvelope(sess core.Session, msgType protocol.MsgTyp
 
 func (rt *Runtime) startRemoteCommand(sess core.Session, req remoteexec.CommandRequest) {
 	rt.App.SetStatusNote("教师正在执行远程命令")
-	task, err := rt.Remote.StartCommand(context.Background(), req, func(output remoteexec.CommandOutput) {
+	rt.streamMu.Lock()
+	if rt.lifecycleCtx == nil || rt.lifecycleClosed {
+		rt.streamMu.Unlock()
+		return
+	}
+	lifecycleCtx := rt.lifecycleCtx
+	rt.streamMu.Unlock()
+	task, err := rt.Remote.StartCommand(lifecycleCtx, req, func(output remoteexec.CommandOutput) {
 		rt.sendRemoteEnvelope(sess, protocol.MsgRemoteCommandOutput, req.RequestID, output)
 	})
 	if err != nil {
@@ -440,13 +449,13 @@ func (rt *Runtime) startRemoteCommand(sess core.Session, req remoteexec.CommandR
 	rt.remoteMu.Lock()
 	rt.remoteTasks[req.RequestID] = task
 	rt.remoteMu.Unlock()
-	go func() {
+	rt.goLifecycle(func(ctx context.Context) {
 		result := <-task.Result
 		rt.remoteMu.Lock()
 		delete(rt.remoteTasks, req.RequestID)
 		rt.remoteMu.Unlock()
 		rt.sendRemoteEnvelope(sess, protocol.MsgRemoteCommandResult, req.RequestID, result)
-	}()
+	})
 }
 
 func (rt *Runtime) startMonitorStream(maxW, maxH, fps, quality int) {
@@ -493,7 +502,7 @@ func (rt *Runtime) startMonitorStreamWithReset(maxW, maxH, fps, quality int, res
 	rt.monitorStop = cancel
 	rt.monitorCfg = cfg
 	rt.streamMu.Unlock()
-	go rt.runScreenStream(ctx, "monitor", maxW, maxH, fps, quality)
+	rt.goLifecycle(func(context.Context) { rt.runScreenStream(ctx, "monitor", maxW, maxH, fps, quality) })
 }
 
 func (rt *Runtime) stopMonitorStream() {
@@ -513,7 +522,7 @@ func (rt *Runtime) startRemoteStream() {
 	rt.streamMu.Lock()
 	rt.remoteStop = cancel
 	rt.streamMu.Unlock()
-	go rt.runScreenStream(ctx, "remote", 1280, 720, 15, 75)
+	rt.goLifecycle(func(context.Context) { rt.runScreenStream(ctx, "remote", 1280, 720, 15, 75) })
 }
 
 func (rt *Runtime) stopRemoteStream() {
@@ -533,7 +542,7 @@ func (rt *Runtime) startDemoStream() {
 	rt.demoActive = true
 	rt.demoStop = cancel
 	rt.streamMu.Unlock()
-	go rt.runScreenStream(ctx, "demo", 1280, 720, 15, 75)
+	rt.goLifecycle(func(context.Context) { rt.runScreenStream(ctx, "demo", 1280, 720, 15, 75) })
 }
 
 func (rt *Runtime) stopDemoStream() {
@@ -634,7 +643,23 @@ func localPrimaryMAC() string {
 	return ""
 }
 
-func (rt *Runtime) acceptFileStreams(sess core.Session) {
+func (rt *Runtime) goLifecycle(task func(context.Context)) bool {
+	rt.lifecycleMu.Lock()
+	if rt.lifecycleClosed || rt.lifecycleCtx == nil {
+		rt.lifecycleMu.Unlock()
+		return false
+	}
+	ctx := rt.lifecycleCtx
+	rt.lifecycleWG.Add(1)
+	rt.lifecycleMu.Unlock()
+	go func() {
+		defer rt.lifecycleWG.Done()
+		task(ctx)
+	}()
+	return true
+}
+
+func (rt *Runtime) acceptFileStreams(ctx context.Context, sess core.Session) {
 	type streamAccepter interface {
 		AcceptStream() (protocol.StreamKind, io.ReadWriteCloser, error)
 	}
@@ -647,11 +672,17 @@ func (rt *Runtime) acceptFileStreams(sess core.Session) {
 		if err != nil {
 			return
 		}
+		select {
+		case <-ctx.Done():
+			_ = stream.Close()
+			return
+		default:
+		}
 		if kind == protocol.StreamFile {
-			go func(st io.ReadWriteCloser) {
-				_ = rt.Files.HandleStream(context.Background(), st)
+			rt.goLifecycle(func(taskCtx context.Context) {
+				_ = rt.Files.HandleStream(taskCtx, stream)
 				rt.App.Invalidate()
-			}(stream)
+			})
 		} else {
 			_ = stream.Close()
 		}
@@ -660,10 +691,6 @@ func (rt *Runtime) acceptFileStreams(sess core.Session) {
 
 func (rt *Runtime) Start(ctx context.Context) error {
 	rt.streamMu.Lock()
-	if rt.lifecycleStop != nil {
-		rt.lifecycleStop()
-	}
-	rt.lifecycleCtx, rt.lifecycleStop = context.WithCancel(ctx)
 	rt.ctx = ctx
 	startCtx := ctx
 	rt.streamMu.Unlock()
@@ -679,6 +706,9 @@ func joinRuntimeCloseErrors(errs ...error) error {
 
 func (rt *Runtime) Close() error {
 	rt.closeOnce.Do(func() {
+		rt.lifecycleMu.Lock()
+		rt.lifecycleClosed = true
+		rt.lifecycleMu.Unlock()
 		if rt.lifecycleStop != nil {
 			rt.lifecycleStop()
 		}
@@ -693,17 +723,17 @@ func (rt *Runtime) Close() error {
 			delete(rt.remoteTasks, id)
 		}
 		rt.remoteMu.Unlock()
+		var closeErrs []error
+		if rt.Transport != nil {
+			closeErrs = append(closeErrs, rt.Transport.Close())
+		}
 		rt.lifecycleWG.Wait()
 
-		var closeErrs []error
 		if rt.Media != nil {
 			closeErrs = append(closeErrs, rt.Media.Close())
 		}
 		if rt.Control != nil {
 			closeErrs = append(closeErrs, rt.Control.Close())
-		}
-		if rt.Transport != nil {
-			closeErrs = append(closeErrs, rt.Transport.Close())
 		}
 		rt.closeErr = joinRuntimeCloseErrors(closeErrs...)
 	})
