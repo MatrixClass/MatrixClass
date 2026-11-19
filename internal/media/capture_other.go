@@ -16,6 +16,7 @@ type ScreenCapturer struct {
 	seq     uint64
 	backend CaptureBackend
 	buf     []byte
+	changed bool
 }
 
 func NewScreenCapturer(opts CaptureOptions) *ScreenCapturer {
@@ -48,6 +49,7 @@ func (c *ScreenCapturer) CaptureScreenScaled(maxW, maxH int, withNV12 bool) (*co
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.seq++
+	c.changed = true
 	c.buf = renderSyntheticRGBA(c.buf, c.width, c.height, c.seq)
 	out := make([]byte, len(c.buf))
 	copy(out, c.buf)
@@ -67,6 +69,14 @@ func (c *ScreenCapturer) CaptureScreenScaled(maxW, maxH int, withNV12 bool) (*co
 		_ = EnsureNV12(frame)
 	}
 	return frame, nil
+}
+
+func (c *ScreenCapturer) LastFrameChanged() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	changed := c.changed
+	c.changed = false
+	return changed
 }
 
 func (c *ScreenCapturer) Close() error {

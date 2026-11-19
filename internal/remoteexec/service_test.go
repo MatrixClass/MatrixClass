@@ -2,6 +2,7 @@ package remoteexec
 
 import (
 	"context"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -10,7 +11,12 @@ import (
 func TestStartCommandCapturesOutput(t *testing.T) {
 	service := NewService()
 	outputs := make(chan CommandOutput, 4)
-	task, err := service.StartCommand(context.Background(), CommandRequest{RequestID: "req-1", Shell: ShellCMD, Command: "echo hello", TimeoutSec: 5}, func(output CommandOutput) {
+	shell := ShellCMD
+	command := "echo hello"
+	if runtime.GOOS == "linux" {
+		shell = ShellSH
+	}
+	task, err := service.StartCommand(context.Background(), CommandRequest{RequestID: "req-1", Shell: shell, Command: command, TimeoutSec: 5}, func(output CommandOutput) {
 		outputs <- output
 	})
 	if err != nil {
@@ -31,7 +37,13 @@ func TestStartCommandCapturesOutput(t *testing.T) {
 
 func TestStartCommandCanBeCancelled(t *testing.T) {
 	service := NewService()
-	task, err := service.StartCommand(context.Background(), CommandRequest{RequestID: "req-2", Shell: ShellCMD, Command: "ping 127.0.0.1 -n 20", TimeoutSec: 60}, nil)
+	shell := ShellCMD
+	command := "ping 127.0.0.1 -n 20"
+	if runtime.GOOS == "linux" {
+		shell = ShellSH
+		command = "sleep 20"
+	}
+	task, err := service.StartCommand(context.Background(), CommandRequest{RequestID: "req-2", Shell: shell, Command: command, TimeoutSec: 60}, nil)
 	if err != nil {
 		t.Fatalf("StartCommand failed: %v", err)
 	}

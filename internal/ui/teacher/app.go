@@ -280,7 +280,7 @@ func New(opts Options) *App {
 		examPointsInput:   100,
 		distributePath:    "",
 		remoteDir:         "",
-		remoteShell:       string(remoteexec.ShellCMD),
+		remoteShell:       string(remoteexec.DefaultShell()),
 		remoteTimeout:     60,
 		remoteExecPanel:   remoteExecPanelLaunch,
 		collectSaveDir:    archiveDir,
@@ -3662,7 +3662,7 @@ func (a *App) buildRemoteCommandPanel(c *ui.Context, pal theme.Palette) {
 	ui.Text(c, "执行命令").FontSize(14).Bold()
 	ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(8).Children(func() {
 		ui.Text(c, "Shell").FontSize(12).Bold()
-		ui.Select(c, &a.remoteShell, []string{string(remoteexec.ShellCMD), string(remoteexec.ShellPowerShell)}).Width(130)
+		ui.Select(c, &a.remoteShell, remoteexec.ShellOptions()).Width(130)
 		ui.Text(c, "超时秒数").FontSize(12).Bold()
 		ui.NumberInput(c, &a.remoteTimeout, 1, 600, 1).Width(90)
 	})

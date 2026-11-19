@@ -54,7 +54,7 @@ func (s *Service) StartCommand(parent context.Context, req CommandRequest, onOut
 	if strings.TrimSpace(req.Command) == "" {
 		return CommandTask{}, ErrInvalidCommand
 	}
-	if req.Shell != ShellCMD && req.Shell != ShellPowerShell {
+	if !supportedShell(req.Shell) {
 		return CommandTask{}, ErrInvalidShell
 	}
 	if req.WorkingDir != "" {

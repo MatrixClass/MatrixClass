@@ -7,6 +7,8 @@ type Shell string
 const (
 	ShellCMD        Shell = "cmd"
 	ShellPowerShell Shell = "powershell"
+	ShellSH         Shell = "sh"
+	ShellBash       Shell = "bash"
 )
 
 type Application struct {
