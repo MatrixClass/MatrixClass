@@ -20,10 +20,10 @@ import (
 )
 
 const (
-	defaultRingBufferSize = 64
-	defaultMcastChunkSize = 1200
-	mcastPacketMagic      = uint16(0x4E58) // "NX"
-	mcastHeaderSize       = 14             // magic(2) + seq(8) + idx(2) + total(2)
+	defaultRingBufferSize  = 64
+	defaultMcastChunkSize  = 1200
+	mcastPacketMagic       = uint16(0x4E58) // "NX"
+	mcastHeaderSize        = 14             // magic(2) + seq(8) + idx(2) + total(2)
 	internalNackRequestID  = "__nexlab_mcast_nack__"
 	internalFallbackReqID  = "__nexlab_mcast_fallback__"
 	internalMcastInfoReqID = "__nexlab_mcast_info__"
@@ -219,8 +219,8 @@ func NewManager(opts ...ManagerOption) *Manager {
 				return make([]byte, 64*1024)
 			},
 		},
-		mcastTxBuf:     make([]byte, mcastHeaderSize+defaultMcastChunkSize),
-		lastStatsTime:  time.Now(),
+		mcastTxBuf:    make([]byte, mcastHeaderSize+defaultMcastChunkSize),
+		lastStatsTime: time.Now(),
 	}
 	m.multicastEnabled.Store(true)
 	for _, opt := range opts {
@@ -505,14 +505,13 @@ func (m *Manager) startMulticastReceiver(addrStr string) error {
 	}
 	var pc net.PacketConn
 	if udpAddr.IP != nil && udpAddr.IP.IsMulticast() {
-		mc, err := net.ListenMulticastUDP("udp4", nil, udpAddr)
+		mc, err := listenMulticastAllInterfaces(udpAddr)
 		if err != nil {
 			pc, err = net.ListenPacket("udp4", fmt.Sprintf(":%d", udpAddr.Port))
 			if err != nil {
 				return err
 			}
 		} else {
-			_ = mc.SetReadBuffer(2 * 1024 * 1024)
 			pc = mc
 		}
 	} else {
@@ -537,6 +536,132 @@ func (m *Manager) startMulticastReceiver(addrStr string) error {
 	go m.multicastReadLoop(pc)
 	go m.nackWatchLoop()
 	return nil
+}
+
+func listenMulticastAllInterfaces(addr *net.UDPAddr) (net.PacketConn, error) {
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		return nil, err
+	}
+	var conns []*net.UDPConn
+	for _, iface := range ifaces {
+		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
+			continue
+		}
+		conn, err := net.ListenMulticastUDP("udp4", &iface, addr)
+		if err != nil {
+			continue
+		}
+		_ = conn.SetReadBuffer(2 * 1024 * 1024)
+		conns = append(conns, conn)
+	}
+	if len(conns) == 0 {
+		return nil, fmt.Errorf("transport: no multicast-capable interface for %s", addr.String())
+	}
+	if len(conns) == 1 {
+		return conns[0], nil
+	}
+	combined := &multiPacketConn{
+		conns:   conns,
+		packets: make(chan multiPacket, 64),
+		done:    make(chan struct{}),
+	}
+	for _, conn := range conns {
+		go combined.readConn(conn)
+	}
+	return combined, nil
+}
+
+type multiPacketConn struct {
+	conns   []*net.UDPConn
+	packets chan multiPacket
+	done    chan struct{}
+	once    sync.Once
+}
+
+func (m *multiPacketConn) SetDeadline(t time.Time) error {
+	for _, conn := range m.conns {
+		if err := conn.SetReadDeadline(t); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (m *multiPacketConn) SetReadDeadline(t time.Time) error {
+	return m.SetDeadline(t)
+}
+
+func (m *multiPacketConn) SetWriteDeadline(t time.Time) error {
+	for _, conn := range m.conns {
+		if err := conn.SetWriteDeadline(t); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+type multiPacket struct {
+	data []byte
+	addr net.Addr
+}
+
+func (m *multiPacketConn) readConn(conn *net.UDPConn) {
+	buf := make([]byte, 64*1024)
+	for {
+		n, addr, err := conn.ReadFromUDP(buf)
+		if err != nil {
+			return
+		}
+		packet := multiPacket{data: append([]byte(nil), buf[:n]...), addr: addr}
+		select {
+		case m.packets <- packet:
+		case <-m.done:
+			return
+		}
+	}
+}
+
+func (m *multiPacketConn) ReadFrom(p []byte) (int, net.Addr, error) {
+	select {
+	case packet := <-m.packets:
+		n := copy(p, packet.data)
+		return n, packet.addr, nil
+	case <-m.done:
+		return 0, nil, net.ErrClosed
+	}
+}
+
+func (m *multiPacketConn) WriteTo(p []byte, addr net.Addr) (int, error) {
+	var n int
+	var firstErr error
+	for _, conn := range m.conns {
+		written, err := conn.WriteToUDP(p, addr.(*net.UDPAddr))
+		if err == nil {
+			n = written
+		} else if firstErr == nil {
+			firstErr = err
+		}
+	}
+	return n, firstErr
+}
+
+func (m *multiPacketConn) LocalAddr() net.Addr {
+	if len(m.conns) == 0 {
+		return &net.UDPAddr{}
+	}
+	return m.conns[0].LocalAddr()
+}
+
+func (m *multiPacketConn) Close() error {
+	m.once.Do(func() { close(m.done) })
+	var firstErr error
+	for _, conn := range m.conns {
+		if err := conn.Close(); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
 }
 
 func (m *Manager) multicastReadLoop(pc net.PacketConn) {

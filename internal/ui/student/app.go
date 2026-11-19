@@ -52,10 +52,10 @@ const (
 type App struct {
 	mu sync.Mutex
 
-	opts Services
-	win  *mygo.Window
+	opts     Services
+	win      *mygo.Window
 	toastWin *mygo.Window
-	tray *mygo.Tray
+	tray     *mygo.Tray
 
 	studentID   string
 	studentNo   string
@@ -63,35 +63,36 @@ type App struct {
 	channel     string
 	dark        bool
 
-	mode             int
-	barCollapsed     bool
-	barDocked        bool
-	barHovered       bool
-	barFocused       bool
-	barAutoDockSeq   uint64
-	handRaised       bool
-	connected        bool
-	broadcasting     bool
-	broadcastWindow  bool
-	remoteControlled bool
-	monitoringActive bool
-	screenLocked     bool
-	lockMessage      string
-	unlockPassInput  string
-	unlockStatus     string
-	checkInNo        string
-	checkInSubmitted bool
-	homeworkPath     string
-	homeworkQueue    []string
-	homeworkSubmitWin *mygo.Window
+	mode               int
+	barCollapsed       bool
+	barDocked          bool
+	barHovered         bool
+	barFocused         bool
+	barAutoDockSeq     uint64
+	handRaised         bool
+	connected          bool
+	broadcasting       bool
+	broadcastWindow    bool
+	remoteControlled   bool
+	monitoringActive   bool
+	screenLocked       bool
+	lockMessage        string
+	unlockPassInput    string
+	unlockStatus       string
+	checkInNo          string
+	checkInSubmitted   bool
+	homeworkPath       string
+	homeworkSubmitting bool
+	homeworkQueue      []string
+	homeworkSubmitWin  *mygo.Window
 	homeworkCollecting bool
-	homeworkSubmitNote  string
+	homeworkSubmitNote string
 	fileReceiveWin     *mygo.Window
 	fileReceiveItems   []receiveFileItem
 	fileReceiveNote    string
-	chatInput        string
-	statusNote       string
-	volume           float64
+	chatInput          string
+	statusNote         string
+	volume             float64
 
 	lastWinMode      int
 	lastWinCollapsed bool
@@ -99,8 +100,8 @@ type App struct {
 	lastWinDocked    bool
 	winSyncedOnce    bool
 
-	videoBitmap *ui.Bitmap
-	lastFrameAt time.Time
+	videoBitmap    *ui.Bitmap
+	lastFrameAt    time.Time
 	pendingFrame   *core.VideoFrame
 	frameScheduled atomic.Bool
 
@@ -134,23 +135,23 @@ func New(opts Options) *App {
 		opts.Channel = "301机房"
 	}
 	return &App{
-		opts:          opts.Services,
-		studentID:     opts.StudentID,
-		studentNo:     opts.StudentNo,
-		machineName:   opts.MachineName,
-		channel:       opts.Channel,
-		dark:          opts.Dark,
-		mode:          ModeBar,
+		opts:            opts.Services,
+		studentID:       opts.StudentID,
+		studentNo:       opts.StudentNo,
+		machineName:     opts.MachineName,
+		channel:         opts.Channel,
+		dark:            opts.Dark,
+		mode:            ModeBar,
 		broadcastWindow: true,
-		connected:     true,
-		lockMessage:   "课堂黑屏安静模式：请注意前方黑板或教师讲解。",
-		checkInNo:     opts.StudentNo,
-		homeworkPath:  "",
-		statusNote:    "已连接频道: " + opts.Channel,
-		volume:        80,
-		examAnswers:   make(map[string]string),
-		recentNotices: []string{"欢迎加入 矩联电子教室 MatrixClass"},
-		lastWinMode:   -1,
+		connected:       true,
+		lockMessage:     "课堂黑屏安静模式：请注意前方黑板或教师讲解。",
+		checkInNo:       opts.StudentNo,
+		homeworkPath:    "",
+		statusNote:      "已连接频道: " + opts.Channel,
+		volume:          80,
+		examAnswers:     make(map[string]string),
+		recentNotices:   []string{"欢迎加入 矩联电子教室 MatrixClass"},
+		lastWinMode:     -1,
 	}
 }
 
@@ -1052,7 +1053,8 @@ func (a *App) buildHomeworkView(c *ui.Context, pal theme.Palette) {
 				if ui.Button(c, "浏览").Padding(4, 10).Clicked() {
 					a.openHomeworkPicker()
 				}
-				if ui.PrimaryButton(c, "上传作业").Padding(4, 14).Clicked() {
+				submitButton := ui.PrimaryButton(c, "上传作业").Disabled(a.homeworkSubmitting).Padding(4, 14)
+				if submitButton.Clicked() {
 					a.SubmitHomework()
 				}
 			})
@@ -1149,6 +1151,10 @@ func (a *App) SubmitHomework() {
 		a.statusNote = "请先选择作业文件"
 		return
 	}
+	if a.homeworkSubmitting {
+		return
+	}
+	a.homeworkSubmitting = true
 	a.statusNote = "正在上传作业..."
 	go func() {
 		task, err := a.opts.Files.SubmitHomework(context.Background(), a.studentID, path)
@@ -1158,6 +1164,9 @@ func (a *App) SubmitHomework() {
 		} else {
 			note = "作业已提交: " + task.FileName
 		}
+		a.mu.Lock()
+		a.homeworkSubmitting = false
+		a.mu.Unlock()
 		a.SetStatusNote(note)
 	}()
 }
@@ -1639,8 +1648,8 @@ func (a *App) HasVideoFrame() bool {
 	defer a.mu.Unlock()
 	return a.videoBitmap != nil
 }
-func (a *App) SetMode(m int)     { a.mode = m }
-func (a *App) HandRaised() bool  { return a.handRaised }
+func (a *App) SetMode(m int)      { a.mode = m }
+func (a *App) HandRaised() bool   { return a.handRaised }
 func (a *App) ScreenLocked() bool { return a.screenLocked }
 func (a *App) CheckInSubmitted() bool {
 	return a.checkInSubmitted

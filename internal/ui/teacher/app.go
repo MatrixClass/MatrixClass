@@ -150,14 +150,14 @@ type App struct {
 	examPublished      bool
 
 	// File distribution & collection state
-	distributePath string
-	fileQueue      []string
-	fileDistModal  bool
-	fileSending    bool
-	remoteDir      string
-	collectSaveDir string
-	autoOpenFile   bool
-	fileTargetAll  bool
+	distributePath     string
+	fileQueue          []string
+	fileDistModal      bool
+	fileSending        bool
+	remoteDir          string
+	collectSaveDir     string
+	autoOpenFile       bool
+	fileTargetAll      bool
 	collectingHomework bool
 
 	// Chat & Policy state
@@ -258,16 +258,16 @@ func New(opts Options) *App {
 		examOptionsInput:  "是,否",
 		examAnswerInput:   "否",
 		examPointsInput:   100,
-		distributePath:    "D:\\Teaching\\Lab03_PacketGuide.pdf",
+		distributePath:    "",
 		remoteDir:         "",
 		collectSaveDir:    archiveDir,
 		autoOpenFile:      false,
 		fileTargetAll:     true,
 		policyMode:        "blacklist",
-		blockedAppsInput:  "steam.exe, wechat.exe, chrome.exe",
-		allowedAppsInput:  "code.exe, wireshark.exe, notepad.exe",
-		blockedSitesInput: "game.example.com, video.example.com",
-		allowedSitesInput: "lab.nexlab.local, docs.golang.org",
+		blockedAppsInput:  "",
+		allowedAppsInput:  "",
+		blockedSitesInput: "",
+		allowedSitesInput: "",
 	}
 	app.loadPersistedState()
 	app.syncRuntimeFlags()
@@ -366,20 +366,20 @@ func (a *App) savePersistedSettings() {
 		Channel:          a.channel,
 		AuthUsername:     a.authUsername,
 		AuthPasswordHash: a.authPasswordHash,
-		UseMulticast:   a.useMulticast,
-		Dark:           a.dark,
-		CollectSaveDir: a.collectSaveDir,
-		MonitorFPS:     a.monitorFPS,
-		MonitorQual:    a.monitorQual,
-		SpeakerVolume:  a.volume,
-		MicVolume:      a.micVolume,
-		SpeakerMuted:   a.speakerMuted,
-		MicMuted:       a.micMuted,
-		PolicyMode:     a.policyMode,
-		BlockedApps:    a.blockedAppsInput,
-		AllowedApps:    a.allowedAppsInput,
-		BlockedSites:   a.blockedSitesInput,
-		LockMessage:    a.lockMessage,
+		UseMulticast:     a.useMulticast,
+		Dark:             a.dark,
+		CollectSaveDir:   a.collectSaveDir,
+		MonitorFPS:       a.monitorFPS,
+		MonitorQual:      a.monitorQual,
+		SpeakerVolume:    a.volume,
+		MicVolume:        a.micVolume,
+		SpeakerMuted:     a.speakerMuted,
+		MicMuted:         a.micMuted,
+		PolicyMode:       a.policyMode,
+		BlockedApps:      a.blockedAppsInput,
+		AllowedApps:      a.allowedAppsInput,
+		BlockedSites:     a.blockedSitesInput,
+		LockMessage:      a.lockMessage,
 	})
 }
 
@@ -1075,7 +1075,7 @@ func (a *App) buildSeatCard(c *ui.Context, pal theme.Palette, st core.StudentInf
 
 	statusText, statusColor := statusBadge(pal, st)
 
-	card := ui.Column(c).Key("seat-" + st.ID).Width(178).Padding(9).Gap(5).Radius(3).
+	card := ui.Column(c).Key("seat-"+st.ID).Width(178).Padding(9).Gap(5).Radius(3).
 		Background(bg).Border(1.5, border).Focusable().
 		Label(fmt.Sprintf("%s %s", st.MachineName, st.StudentNo))
 	if b := card.Bounds(); b.W > 0 && b.H > 0 {
@@ -1162,7 +1162,7 @@ func (a *App) buildMonitorWallTab(c *ui.Context, pal theme.Palette, students []c
 						border = pal.Accent
 						bg = pal.Selection
 					}
-					tile := ui.Column(c).Key("mon-" + st.ID).Width(256).Padding(8).Gap(6).Radius(3).
+					tile := ui.Column(c).Key("mon-"+st.ID).Width(256).Padding(8).Gap(6).Radius(3).
 						Background(bg).Border(1.5, border).Focusable()
 					if b := tile.Bounds(); b.W > 0 && b.H > 0 {
 						a.itemBounds = ensureBoundsMap(a.itemBounds)
@@ -1236,7 +1236,7 @@ func (a *App) buildMyTheatreTab(c *ui.Context, pal theme.Palette) {
 				if a.theatre.Playing {
 					playLabel = "暂停同步"
 				}
-				playButton := ui.PrimaryButton(c, playLabel).Disabled(a.theatrePlayer == nil)
+				playButton := ui.PrimaryButton(c, playLabel).Disabled(a.theatrePlayer == nil || strings.TrimSpace(a.theatre.Media) == "")
 				if playButton.Clicked() {
 					a.toggleTheatrePlayback()
 				}
@@ -1376,18 +1376,18 @@ func (a *App) buildExamStatsTab(c *ui.Context, pal theme.Palette) {
 				if len(subs) > 0 {
 					ui.Text(c, "学生答卷明细").FontSize(12).Bold()
 					for _, sub := range subs {
-					subLabel := sub.StudentID
-					for _, st := range a.listStudents() {
-						if st.ID == sub.StudentID {
-							subLabel = st.MachineName
-							if st.StudentNo != "" {
-								subLabel += " (" + st.StudentNo + ")"
+						subLabel := sub.StudentID
+						for _, st := range a.listStudents() {
+							if st.ID == sub.StudentID {
+								subLabel = st.MachineName
+								if st.StudentNo != "" {
+									subLabel += " (" + st.StudentNo + ")"
+								}
+								break
 							}
-							break
 						}
-					}
-						ui.Row(c).Key("sub-" + sub.StudentID).Padding(4, 8).Background(pal.Canvas).Border(1, pal.CardBorder).Radius(2).AlignItems(ui.Center).Children(func() {
-						ui.Text(c, subLabel).FontSize(12).Grow(1)
+						ui.Row(c).Key("sub-"+sub.StudentID).Padding(4, 8).Background(pal.Canvas).Border(1, pal.CardBorder).Radius(2).AlignItems(ui.Center).Children(func() {
+							ui.Text(c, subLabel).FontSize(12).Grow(1)
 							ui.Text(c, fmt.Sprintf("%d / %d 分", sub.Score, sub.MaxScore)).FontSize(12).Bold()
 						})
 					}
@@ -1410,15 +1410,15 @@ func (a *App) buildFilesTab(c *ui.Context, pal theme.Palette) {
 			if ui.PrimaryButton(c, "打开文件分发窗口").Padding(5, 14).Clicked() {
 				a.OpenFileDistributeWindow()
 			}
-		if a.collectingHomework {
-			if ui.Button(c, "结束收取").Padding(5, 12).Clicked() {
-				a.EndCollectHomework()
-			}
-			ui.Badge(c, "正在收取作业...").Background(pal.Selection).TextColor(pal.Accent)
-		} else {
-			if ui.Button(c, "收取作业").Padding(5, 12).Clicked() {
-				a.CollectHomework()
-			}
+			if a.collectingHomework {
+				if ui.Button(c, "结束收取").Padding(5, 12).Clicked() {
+					a.EndCollectHomework()
+				}
+				ui.Badge(c, "正在收取作业...").Background(pal.Selection).TextColor(pal.Accent)
+			} else {
+				if ui.Button(c, "收取作业").Padding(5, 12).Clicked() {
+					a.CollectHomework()
+				}
 			}
 		})
 
@@ -1450,7 +1450,7 @@ func (a *App) buildFilesTab(c *ui.Context, pal theme.Palette) {
 				} else if tk.Direction == core.TransferCollect {
 					dirLabel = "收取"
 				}
-				ui.Column(c).Key("task-" + tk.ID).Background(pal.Card).Border(1, pal.CardBorder).Radius(3).Padding(10).Gap(6).Children(func() {
+				ui.Column(c).Key("task-"+tk.ID).Background(pal.Card).Border(1, pal.CardBorder).Radius(3).Padding(10).Gap(6).Children(func() {
 					ui.Row(c).AlignItems(ui.Center).Gap(8).Children(func() {
 						ui.Badge(c, dirLabel)
 						ui.Text(c, tk.FileName).FontSize(13).Bold().Grow(1).SingleLine()
@@ -1571,11 +1571,11 @@ func (a *App) buildSideChatQueue(c *ui.Context, pal theme.Palette, students []co
 
 	ui.Scroll(c).Grow(1).Gap(6).Children(func() {
 		for _, msg := range chats {
-		chatKey := msg.ID
-		if chatKey == "" {
-			chatKey = fmt.Sprintf("chat-%s-%d", msg.SenderID, msg.CreatedAt.UnixMilli())
-		}
-		ui.Column(c).Key(chatKey).Background(pal.Card).Border(1, pal.CardBorder).Radius(3).Padding(8).Gap(2).Children(func() {
+			chatKey := msg.ID
+			if chatKey == "" {
+				chatKey = fmt.Sprintf("chat-%s-%d", msg.SenderID, msg.CreatedAt.UnixMilli())
+			}
+			ui.Column(c).Key(chatKey).Background(pal.Card).Border(1, pal.CardBorder).Radius(3).Padding(8).Gap(2).Children(func() {
 				ui.Row(c).AlignItems(ui.Center).Children(func() {
 					ui.Text(c, msg.Sender).FontSize(11).Bold().TextColor(pal.Accent)
 					ui.Spacer(c)
@@ -2343,7 +2343,7 @@ func (a *App) buildFileDistributeProgress(c *ui.Context, pal theme.Palette) {
 			case "failed":
 				statusText = "失败"
 			}
-			ui.Column(c).Key("fprog-"+tk.ID).FillWidth().Gap(3).Children(func() {
+			ui.Column(c).Key("fprog-" + tk.ID).FillWidth().Gap(3).Children(func() {
 				ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(6).Children(func() {
 					ui.Text(c, tk.FileName).FontSize(11).Grow(1).SingleLine()
 					ui.Text(c, fmt.Sprintf("%s · %.0f%%", statusText, ratio*100)).FontSize(11).TextColor(pal.TextMuted)
@@ -2745,7 +2745,7 @@ func (a *App) buildGroupBottomBar(c *ui.Context, pal theme.Palette) {
 
 		for _, g := range groups {
 			g := g
-			btn := ui.Button(c, g.Name).Key("grp-" + g.ID).Padding(4, 12).Radius(3)
+			btn := ui.Button(c, g.Name).Key("grp-"+g.ID).Padding(4, 12).Radius(3)
 			if a.selectedGroup == g.ID {
 				btn.Background(pal.Selection).Border(1, pal.Accent)
 			}
@@ -3514,7 +3514,7 @@ func (a *App) MonitorQual() float64 {
 }
 func (a *App) Broadcasting() bool { return a.broadcastFlag.Load() }
 func (a *App) ScreenLocked() bool { return a.screenLocked }
-func (a *App) SelectedID() string   { return a.selectedID }
+func (a *App) SelectedID() string { return a.selectedID }
 func (a *App) VoiceActive() bool  { return a.voiceFlag.Load() }
 func (a *App) Monitoring() bool   { return a.monitoring }
 func (a *App) RemoteControlID() string {
@@ -3647,4 +3647,3 @@ func (a *App) ToggleMicMute() {
 
 func (a *App) SpeakerMuted() bool { return a.speakerMuted }
 func (a *App) MicMuted() bool     { return a.micMuted }
-
