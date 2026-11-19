@@ -685,7 +685,7 @@ func TestRevokeClassroomPolicy(t *testing.T) {
 	if len(ctrl.Policy.BlockedApps) != 0 || len(ctrl.Policy.BlockedDomains) != 0 {
 		t.Fatalf("expected empty blocklists after revoke, got %+v", ctrl.Policy)
 	}
-	if app.blockedAppsInput != "WeChat.exe,steam.exe" || app.blockedSitesInput != "bilibili.com" {
+	if app.blockedAppsInput != "WeChat.exe, steam.exe" || app.blockedSitesInput != "bilibili.com" {
 		t.Fatalf("expected input fields preserved after revoke")
 	}
 }
@@ -712,12 +712,12 @@ func TestTeacherPolicyOpensFromNavigation(t *testing.T) {
 	}
 }
 
-func TestPolicyRulesCanBeAddedAndCompiled(t *testing.T) {
+func TestPolicyCSVRulesCompile(t *testing.T) {
 	app, _, _, ctrl := newTestTeacherApp()
-	app.blockedAppRules = []string{"game.exe", "chat.exe"}
-	app.allowedAppRules = []string{"notepad.exe"}
-	app.blockedSiteRules = []string{"example.com", "video.example.com"}
-	app.allowedSiteRules = []string{"school.edu.cn"}
+	app.blockedAppsInput = "game.exe,chat.exe"
+	app.allowedAppsInput = "notepad.exe"
+	app.blockedSitesInput = "example.com,video.example.com"
+	app.allowedSitesInput = "school.edu.cn"
 	app.ApplyClassroomPolicy()
 
 	if got := app.blockedAppsInput; got != "game.exe,chat.exe" {
