@@ -30,8 +30,8 @@ const (
 	audclntStreamFlagsSrcDefaultQual = 0x08000000
 	audclntBufferSilent              = 0x2
 
-	waveFormatPCM        = 1
-	waveFormatIEEEFloat  = 3
+	waveFormatPCM           = 1
+	waveFormatIEEEFloat     = 3
 	waveFormatTagExtensible = 0xFFFE
 )
 

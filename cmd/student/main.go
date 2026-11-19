@@ -22,6 +22,7 @@ import (
 	"nexlab/internal/filetransfer"
 	"nexlab/internal/logging"
 	"nexlab/internal/media"
+	"nexlab/internal/platform"
 	"nexlab/internal/protocol"
 	"nexlab/internal/remoteexec"
 	"nexlab/internal/transport"
@@ -687,6 +688,7 @@ func main() {
 		log.SetFlags(0)
 	}
 	log.Printf("student starting channel=%s id=%s", *channel, *studentID)
+	log.Printf("platform capabilities: %+v", platform.Detect())
 
 	if *recvDir == "" {
 		if home, err := os.UserHomeDir(); err == nil && home != "" {

@@ -17,6 +17,7 @@ type ScreenCapturer struct {
 	backend CaptureBackend
 	buf     []byte
 	changed bool
+	native  nativeScreenCapture
 }
 
 func NewScreenCapturer(opts CaptureOptions) *ScreenCapturer {
@@ -28,11 +29,18 @@ func NewScreenCapturer(opts CaptureOptions) *ScreenCapturer {
 	if h <= 0 {
 		h = 720
 	}
-	return &ScreenCapturer{
+	c := &ScreenCapturer{
 		width:   w,
 		height:  h,
 		backend: CaptureBackendSynthetic,
 	}
+	if !opts.ForceSynthetic {
+		c.native = newNativeScreenCapture(opts)
+		if c.native != nil {
+			c.backend = c.native.Backend()
+		}
+	}
+	return c
 }
 
 func (c *ScreenCapturer) Backend() CaptureBackend {
@@ -48,6 +56,16 @@ func (c *ScreenCapturer) CaptureScreen() (*core.VideoFrame, error) {
 func (c *ScreenCapturer) CaptureScreenScaled(maxW, maxH int, withNV12 bool) (*core.VideoFrame, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if c.native != nil {
+		frame, changed, err := c.native.Capture(maxW, maxH, withNV12)
+		if err == nil && frame != nil {
+			c.changed = changed
+			return frame, nil
+		}
+		_ = c.native.Close()
+		c.native = nil
+		c.backend = CaptureBackendSynthetic
+	}
 	c.seq++
 	c.changed = true
 	c.buf = renderSyntheticRGBA(c.buf, c.width, c.height, c.seq)
@@ -80,5 +98,12 @@ func (c *ScreenCapturer) LastFrameChanged() bool {
 }
 
 func (c *ScreenCapturer) Close() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.native != nil {
+		err := c.native.Close()
+		c.native = nil
+		return err
+	}
 	return nil
 }

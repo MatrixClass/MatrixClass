@@ -714,6 +714,7 @@ type CaptureBackend string
 const (
 	CaptureBackendDXGI      CaptureBackend = "dxgi"
 	CaptureBackendGDI       CaptureBackend = "gdi"
+	CaptureBackendX11       CaptureBackend = "x11"
 	CaptureBackendSynthetic CaptureBackend = "synthetic"
 )
 
