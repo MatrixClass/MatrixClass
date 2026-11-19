@@ -3,6 +3,7 @@
 package control
 
 import (
+	"errors"
 	"testing"
 )
 
@@ -149,5 +150,41 @@ func TestLinuxInputBackendRejectsUnsupportedInput(t *testing.T) {
 	err := backend.SendInputs([]WinInput{{Type: 99}})
 	if err == nil {
 		t.Fatal("expected unsupported input error")
+	}
+}
+
+func TestLinuxInputCloseReleasesBothLibrariesWhenFirstCloseFails(t *testing.T) {
+	var closed []uintptr
+	errFirst := errors.New("x11 close failed")
+	err := releaseLinuxInputLibraries(11, 22, func(handle uintptr) error {
+		closed = append(closed, handle)
+		if handle == 11 {
+			return errFirst
+		}
+		return nil
+	})
+	if !errors.Is(err, errFirst) {
+		t.Fatalf("releaseLinuxInputLibraries error = %v, want %v", err, errFirst)
+	}
+	if len(closed) != 2 || closed[0] != 11 || closed[1] != 22 {
+		t.Fatalf("closed handles = %#v, want [11 22]", closed)
+	}
+}
+
+func TestLinuxInputCloseIsIdempotent(t *testing.T) {
+	var closed []uintptr
+	backend := &linuxInputBackend{handle: 11, xtstHandle: 22, close: func(uintptr) int32 { return 1 }}
+	backend.closeLibraries = func(handle uintptr) error {
+		closed = append(closed, handle)
+		return nil
+	}
+	if err := backend.Close(); err != nil {
+		t.Fatalf("first Close: %v", err)
+	}
+	if err := backend.Close(); err != nil {
+		t.Fatalf("second Close: %v", err)
+	}
+	if len(closed) != 2 || closed[0] != 11 || closed[1] != 22 {
+		t.Fatalf("closed handles = %#v, want [11 22]", closed)
 	}
 }

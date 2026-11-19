@@ -31,19 +31,20 @@ type linuxInputEvent struct {
 }
 
 type linuxInputBackend struct {
-	mu         sync.Mutex
-	handle     uintptr
-	xtstHandle uintptr
-	display    uintptr
-	screen     int32
-	width      int32
-	height     int32
-	close      func(uintptr) int32
-	flush      func(uintptr) int32
-	motion     func(uintptr, int32, int32, int32, uint64) int32
-	button     func(uintptr, uint32, int32, uint64) int32
-	key        func(uintptr, uint32, int32, uint64) int32
-	keycode    func(uintptr, uint64) byte
+	mu             sync.Mutex
+	handle         uintptr
+	xtstHandle     uintptr
+	display        uintptr
+	screen         int32
+	width          int32
+	height         int32
+	close          func(uintptr) int32
+	flush          func(uintptr) int32
+	motion         func(uintptr, int32, int32, int32, uint64) int32
+	button         func(uintptr, uint32, int32, uint64) int32
+	key            func(uintptr, uint32, int32, uint64) int32
+	closeLibraries func(uintptr) error
+	keycode        func(uintptr, uint64) byte
 }
 
 func newPlatformInputBackend() InputBackend {
@@ -64,14 +65,13 @@ func newLinuxInputBackend() (*linuxInputBackend, error) {
 	}
 	xtst, err := purego.Dlopen("libXtst.so.6", 2)
 	if err != nil {
-		_ = purego.Dlclose(x11)
+		_ = releaseLinuxInputLibraries(x11, 0, func(handle uintptr) error { return purego.Dlclose(handle) })
 		return nil, fmt.Errorf("control: load libXtst: %w", err)
 	}
 	lookupX11 := func(name string) uintptr { addr, _ := purego.Dlsym(x11, name); return addr }
 	lookupXtst := func(name string) uintptr { addr, _ := purego.Dlsym(xtst, name); return addr }
 	if lookupX11("XOpenDisplay") == 0 || lookupX11("XCloseDisplay") == 0 || lookupX11("XDefaultScreen") == 0 || lookupX11("XDisplayWidth") == 0 || lookupX11("XDisplayHeight") == 0 || lookupX11("XFlush") == 0 || lookupX11("XKeysymToKeycode") == 0 || lookupXtst("XTestFakeMotionEvent") == 0 || lookupXtst("XTestFakeButtonEvent") == 0 || lookupXtst("XTestFakeKeyEvent") == 0 {
-		_ = purego.Dlclose(xtst)
-		_ = purego.Dlclose(x11)
+		_ = releaseLinuxInputLibraries(x11, xtst, func(handle uintptr) error { return purego.Dlclose(handle) })
 		return nil, ErrInputUnsupportedPlatform
 	}
 	var open func(*byte) uintptr
@@ -96,8 +96,7 @@ func newLinuxInputBackend() (*linuxInputBackend, error) {
 	purego.RegisterFunc(&fakeKey, lookupXtst("XTestFakeKeyEvent"))
 	display := open(nil)
 	if display == 0 {
-		_ = purego.Dlclose(xtst)
-		_ = purego.Dlclose(x11)
+		_ = releaseLinuxInputLibraries(x11, xtst, func(handle uintptr) error { return purego.Dlclose(handle) })
 		return nil, ErrInputUnsupportedPlatform
 	}
 	screen := defaultScreen(display)
@@ -156,21 +155,26 @@ func (b *linuxInputBackend) Close() error {
 		_ = b.close(b.display)
 		b.display = 0
 	}
-	if b.handle != 0 {
-		err := purego.Dlclose(b.handle)
-		b.handle = 0
-		if b.xtstHandle != 0 {
-			_ = purego.Dlclose(b.xtstHandle)
-			b.xtstHandle = 0
+	handle, xtstHandle := b.handle, b.xtstHandle
+	b.handle, b.xtstHandle = 0, 0
+	closeLibrary := b.closeLibraries
+	if closeLibrary == nil {
+		closeLibrary = func(value uintptr) error { return purego.Dlclose(value) }
+	}
+	return releaseLinuxInputLibraries(handle, xtstHandle, closeLibrary)
+}
+
+func releaseLinuxInputLibraries(handle, xtstHandle uintptr, closeLibrary func(uintptr) error) error {
+	var firstErr error
+	for _, value := range []uintptr{handle, xtstHandle} {
+		if value == 0 {
+			continue
 		}
-		return err
+		if err := closeLibrary(value); err != nil && firstErr == nil {
+			firstErr = err
+		}
 	}
-	if b.xtstHandle != 0 {
-		err := purego.Dlclose(b.xtstHandle)
-		b.xtstHandle = 0
-		return err
-	}
-	return nil
+	return firstErr
 }
 
 type linuxUnavailableInputBackend struct{ err error }

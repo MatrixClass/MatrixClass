@@ -57,6 +57,7 @@ type x11Capture struct {
 	maxHeight    int
 	lastHash     uint64
 	hasLastHash  bool
+	closeLibrary func(uintptr) error
 }
 
 func newNativeScreenCapture(opts CaptureOptions) nativeScreenCapture {
@@ -249,12 +250,15 @@ func (x *x11Capture) Close() error {
 		_ = x.closeDisplay(x.display)
 		x.display = 0
 	}
-	if x.handle != 0 {
-		err := purego.Dlclose(x.handle)
-		x.handle = 0
-		return err
+	handle := x.handle
+	x.handle = 0
+	if handle == 0 {
+		return nil
 	}
-	return nil
+	if x.closeLibrary != nil {
+		return x.closeLibrary(handle)
+	}
+	return purego.Dlclose(handle)
 }
 
 type waylandCapture struct{}

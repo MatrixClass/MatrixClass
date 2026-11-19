@@ -2,7 +2,10 @@
 
 package media
 
-import "testing"
+import (
+	"errors"
+	"testing"
+)
 
 func TestX11RGBAChangeDetection(t *testing.T) {
 	first := []byte{1, 2, 3, 4, 5, 6}
@@ -55,5 +58,29 @@ func TestX11CaptureReconnectsWhenDisplayHandleIsLost(t *testing.T) {
 	}
 	if opened != 1 || closed != 0 || capture.display != 22 || capture.root != 33 || capture.width != 640 || capture.height != 360 {
 		t.Fatalf("unexpected reconnect state: opened=%d closed=%d capture=%+v", opened, closed, capture)
+	}
+}
+
+func TestX11CloseReleasesLibraryOnFailureAndIsIdempotent(t *testing.T) {
+	var closed []uintptr
+	errClose := errors.New("X11 library close failed")
+	capture := &x11Capture{
+		handle: 41,
+		closeLibrary: func(handle uintptr) error {
+			closed = append(closed, handle)
+			return errClose
+		},
+	}
+	if err := capture.Close(); !errors.Is(err, errClose) {
+		t.Fatalf("Close error = %v, want %v", err, errClose)
+	}
+	if capture.handle != 0 {
+		t.Fatalf("handle = %d, want zero after failed close", capture.handle)
+	}
+	if err := capture.Close(); err != nil {
+		t.Fatalf("second Close error = %v", err)
+	}
+	if len(closed) != 1 || closed[0] != 41 {
+		t.Fatalf("closed handles = %#v, want [41]", closed)
 	}
 }
