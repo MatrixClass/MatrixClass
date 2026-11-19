@@ -19,21 +19,26 @@ var ErrLinuxAudioClosed = errors.New("media: audio engine is closed")
 var linuxLookPath = exec.LookPath
 var linuxExecCommand = exec.Command
 
+const linuxAudioCaptureQueueCapacity = 8
+
 type linuxAudioCommand struct {
 	name string
 	args []string
 }
 
 type AudioEngine struct {
-	mu       sync.Mutex
-	volume   float32
-	stopCh   chan struct{}
-	doneCh   chan struct{}
-	capture  *exec.Cmd
-	playback *exec.Cmd
-	playIn   io.WriteCloser
-	playDone chan struct{}
-	closed   bool
+	mu                sync.Mutex
+	volume            float32
+	stopCh            chan struct{}
+	doneCh            chan struct{}
+	capture           *exec.Cmd
+	captureQueue      chan *core.AudioFrame
+	captureWorkerDone chan struct{}
+	playback          *exec.Cmd
+	playIn            io.WriteCloser
+	playDone          chan struct{}
+	closed            bool
+	captureDropped    uint64
 }
 
 func NewAudioEngine() *AudioEngine { return &AudioEngine{volume: 1.0} }
@@ -55,6 +60,8 @@ func (a *AudioEngine) StartCapture(loopback bool, onFrame func(*core.AudioFrame)
 	}
 	stopCh := make(chan struct{})
 	doneCh := make(chan struct{})
+	workerDone := make(chan struct{})
+	captureQueue := make(chan *core.AudioFrame, linuxAudioCaptureQueueCapacity)
 	a.mu.Lock()
 	if a.closed {
 		a.mu.Unlock()
@@ -63,7 +70,10 @@ func (a *AudioEngine) StartCapture(loopback bool, onFrame func(*core.AudioFrame)
 	a.stopCh = stopCh
 	a.doneCh = doneCh
 	a.capture = nil
+	a.captureQueue = captureQueue
+	a.captureWorkerDone = workerDone
 	a.mu.Unlock()
+	go linuxAudioCaptureWorker(stopCh, captureQueue, workerDone, onFrame)
 	go func() {
 		defer close(doneCh)
 		const sampleRate = 48000
@@ -99,7 +109,16 @@ func (a *AudioEngine) StartCapture(loopback bool, onFrame func(*core.AudioFrame)
 				}
 				sequence++
 				data := append([]byte(nil), buffer...)
-				onFrame(&core.AudioFrame{Seq: sequence, SampleRate: sampleRate, Channels: channels, Timestamp: time.Now().UnixMilli(), Data: data})
+				frame := &core.AudioFrame{Seq: sequence, SampleRate: sampleRate, Channels: channels, Timestamp: time.Now().UnixMilli(), Data: data}
+				select {
+				case <-stopCh:
+					return
+				case captureQueue <- frame:
+				default:
+					a.mu.Lock()
+					a.captureDropped++
+					a.mu.Unlock()
+				}
 			}
 			_ = cmd.Wait()
 			a.mu.Lock()
@@ -120,6 +139,26 @@ func (a *AudioEngine) StartCapture(loopback bool, onFrame func(*core.AudioFrame)
 	return nil
 }
 
+func linuxAudioCaptureWorker(stopCh <-chan struct{}, queue <-chan *core.AudioFrame, doneCh chan<- struct{}, onFrame func(*core.AudioFrame)) {
+	defer close(doneCh)
+	for {
+		select {
+		case <-stopCh:
+			return
+		default:
+		}
+		select {
+		case <-stopCh:
+			return
+		case frame, ok := <-queue:
+			if !ok || frame == nil {
+				return
+			}
+			onFrame(frame)
+		}
+	}
+}
+
 func waitLinuxAudioRetry(stopCh <-chan struct{}, delay time.Duration) bool {
 	timer := time.NewTimer(delay)
 	defer timer.Stop()
@@ -134,7 +173,9 @@ func waitLinuxAudioRetry(stopCh <-chan struct{}, delay time.Duration) bool {
 func (a *AudioEngine) StopCapture() error {
 	a.mu.Lock()
 	stopCh, doneCh, cmd := a.stopCh, a.doneCh, a.capture
+	workerDone, queue := a.captureWorkerDone, a.captureQueue
 	a.stopCh, a.doneCh, a.capture = nil, nil, nil
+	a.captureWorkerDone, a.captureQueue = nil, nil
 	a.mu.Unlock()
 	if stopCh != nil {
 		close(stopCh)
@@ -144,6 +185,12 @@ func (a *AudioEngine) StopCapture() error {
 	}
 	if doneCh != nil {
 		<-doneCh
+	}
+	if queue != nil {
+		close(queue)
+	}
+	if workerDone != nil {
+		<-workerDone
 	}
 	return nil
 }

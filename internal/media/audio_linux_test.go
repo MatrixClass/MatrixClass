@@ -192,6 +192,13 @@ func TestLinuxAudioHelperProcess(t *testing.T) {
 		_, _ = os.Stdout.Write(make([]byte, 3840))
 		return
 	}
+	if os.Getenv("NEXLAB_AUDIO_HELPER") == "capture-burst" {
+		frame := make([]byte, 3840)
+		for index := 0; index < linuxAudioCaptureQueueCapacity+32; index++ {
+			_, _ = os.Stdout.Write(frame)
+		}
+		return
+	}
 	if os.Getenv("NEXLAB_AUDIO_HELPER") == "playback" {
 		buffer := make([]byte, 4)
 		_, _ = os.Stdin.Read(buffer)
@@ -335,5 +342,64 @@ func TestLinuxAudioCloseIsIdempotentAndPreventsRestart(t *testing.T) {
 	}
 	if err := engine.StartCapture(false, func(*core.AudioFrame) {}); !errors.Is(err, ErrLinuxAudioClosed) {
 		t.Fatalf("expected closed capture error, got %v", err)
+	}
+}
+
+func TestLinuxAudioCaptureBackpressureUsesBoundedQueue(t *testing.T) {
+	originalLookPath, originalCommand := linuxLookPath, linuxExecCommand
+	defer func() { linuxLookPath, linuxExecCommand = originalLookPath, originalCommand }()
+	linuxLookPath = func(name string) (string, error) {
+		if name == "arecord" {
+			return "/test/arecord", nil
+		}
+		return "", errCommandMissing
+	}
+	linuxExecCommand = func(_ string, _ ...string) *exec.Cmd {
+		cmd := exec.Command(os.Args[0], "-test.run=TestLinuxAudioHelperProcess", "--")
+		cmd.Env = append(os.Environ(), "NEXLAB_AUDIO_HELPER=capture-burst")
+		return cmd
+	}
+
+	callbackStarted := make(chan struct{})
+	releaseCallback := make(chan struct{})
+	engine := NewAudioEngine()
+	if err := engine.StartCapture(false, func(*core.AudioFrame) {
+		select {
+		case <-callbackStarted:
+		default:
+			close(callbackStarted)
+		}
+		<-releaseCallback
+	}); err != nil {
+		t.Fatalf("StartCapture: %v", err)
+	}
+
+	select {
+	case <-callbackStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("capture callback did not start")
+	}
+	waitForLinuxAudioCondition(t, 2*time.Second, func() bool {
+		engine.mu.Lock()
+		defer engine.mu.Unlock()
+		return engine.capture == nil && engine.captureDropped > 0
+	})
+	engine.mu.Lock()
+	queueCapacity := cap(engine.captureQueue)
+	dropped := engine.captureDropped
+	engine.mu.Unlock()
+	if queueCapacity != linuxAudioCaptureQueueCapacity {
+		t.Fatalf("expected queue capacity %d, got %d", linuxAudioCaptureQueueCapacity, queueCapacity)
+	}
+	if dropped == 0 {
+		t.Fatal("expected frames to be dropped when callback is blocked")
+	}
+
+	close(releaseCallback)
+	if err := engine.StopCapture(); err != nil {
+		t.Fatalf("StopCapture: %v", err)
+	}
+	if err := engine.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
 	}
 }
