@@ -20,27 +20,33 @@ const (
 )
 
 type Capabilities struct {
-	OS                  string           `json:"os"`
-	Architecture        string           `json:"architecture"`
-	Desktop             Desktop          `json:"desktop"`
-	ScreenCapture       bool             `json:"screen_capture"`
-	AudioCapture        bool             `json:"audio_capture"`
-	RemoteInput         bool             `json:"remote_input"`
-	ScreenLock          bool             `json:"screen_lock"`
-	PowerControl        bool             `json:"power_control"`
-	ProcessControl      bool             `json:"process_control"`
-	AppDiscovery        bool             `json:"app_discovery"`
-	CommandExecution    bool             `json:"command_execution"`
-	SystemTray          bool             `json:"system_tray"`
-	WaylandRestricted   bool             `json:"wayland_restricted"`
-	ScreenCaptureStatus CapabilityStatus `json:"screen_capture_status"`
-	ScreenCaptureReason string           `json:"screen_capture_reason,omitempty"`
-	AudioCaptureStatus  CapabilityStatus `json:"audio_capture_status"`
-	AudioCaptureReason  string           `json:"audio_capture_reason,omitempty"`
-	RemoteInputStatus   CapabilityStatus `json:"remote_input_status"`
-	RemoteInputReason   string           `json:"remote_input_reason,omitempty"`
-	ScreenLockStatus    CapabilityStatus `json:"screen_lock_status"`
-	ScreenLockReason    string           `json:"screen_lock_reason,omitempty"`
+	OS                    string           `json:"os"`
+	Architecture          string           `json:"architecture"`
+	Desktop               Desktop          `json:"desktop"`
+	ScreenCapture         bool             `json:"screen_capture"`
+	AudioCapture          bool             `json:"audio_capture"`
+	RemoteInput           bool             `json:"remote_input"`
+	ScreenLock            bool             `json:"screen_lock"`
+	PowerControl          bool             `json:"power_control"`
+	ProcessControl        bool             `json:"process_control"`
+	AppDiscovery          bool             `json:"app_discovery"`
+	CommandExecution      bool             `json:"command_execution"`
+	SystemTray            bool             `json:"system_tray"`
+	WaylandRestricted     bool             `json:"wayland_restricted"`
+	ScreenCaptureStatus   CapabilityStatus `json:"screen_capture_status"`
+	ScreenCaptureReason   string           `json:"screen_capture_reason,omitempty"`
+	AudioCaptureStatus    CapabilityStatus `json:"audio_capture_status"`
+	AudioCaptureReason    string           `json:"audio_capture_reason,omitempty"`
+	RemoteInputStatus     CapabilityStatus `json:"remote_input_status"`
+	RemoteInputReason     string           `json:"remote_input_reason,omitempty"`
+	ScreenLockStatus      CapabilityStatus `json:"screen_lock_status"`
+	ScreenLockReason      string           `json:"screen_lock_reason,omitempty"`
+	ScreenRecordingStatus CapabilityStatus `json:"screen_recording_status"`
+	ScreenRecordingReason string           `json:"screen_recording_reason,omitempty"`
+	MicrophoneStatus      CapabilityStatus `json:"microphone_status"`
+	MicrophoneReason      string           `json:"microphone_reason,omitempty"`
+	AccessibilityStatus   CapabilityStatus `json:"accessibility_status"`
+	AccessibilityReason   string           `json:"accessibility_reason,omitempty"`
 }
 
 func (c Capabilities) Summary() string {
