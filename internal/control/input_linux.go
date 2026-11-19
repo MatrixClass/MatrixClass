@@ -186,8 +186,8 @@ func linuxInputAction(input WinInput, width, height int) (linuxInputEvent, error
 			if width <= 0 || height <= 0 {
 				return linuxInputEvent{}, errors.New("control: X11 screen dimensions are unavailable")
 			}
-			x = int((int64(input.Mi.Dx) * int64(width-1)) / 65535)
-			y = int((int64(input.Mi.Dy) * int64(height-1)) / 65535)
+			x = clampLinuxCoordinate(input.Mi.Dx, width)
+			y = clampLinuxCoordinate(input.Mi.Dy, height)
 		}
 		button, down, hasButton := linuxMouseButton(flags, input.Mi.MouseData)
 		if flags&MouseEventfWheel != 0 {
@@ -195,6 +195,12 @@ func linuxInputAction(input WinInput, width, height int) (linuxInputEvent, error
 				return linuxInputEvent{kind: linuxInputButton, button: 4, down: true}, nil
 			}
 			return linuxInputEvent{kind: linuxInputButton, button: 5, down: true}, nil
+		}
+		if flags&MouseEventfHWheel != 0 {
+			if int32(input.Mi.MouseData) >= 0 {
+				return linuxInputEvent{kind: linuxInputButton, button: 6, down: true}, nil
+			}
+			return linuxInputEvent{kind: linuxInputButton, button: 7, down: true}, nil
 		}
 		if flags&MouseEventfMove != 0 && hasButton {
 			return linuxInputEvent{kind: linuxInputMotionButton, x: x, y: y, button: button, down: down}, nil
@@ -207,6 +213,9 @@ func linuxInputAction(input WinInput, width, height int) (linuxInputEvent, error
 		}
 		return linuxInputEvent{}, errors.New("control: unsupported X11 mouse event")
 	case InputTypeKeyboard:
+		if input.Ki.DwFlags&KeyEventfUnicode != 0 {
+			return linuxInputEvent{}, errors.New("control: Unicode keyboard input is unavailable through XTest")
+		}
 		keysym, ok := linuxVKToKeysym(input.Ki.WVk)
 		if !ok {
 			return linuxInputEvent{}, fmt.Errorf("control: unsupported virtual key %#x on X11", input.Ki.WVk)
@@ -215,6 +224,16 @@ func linuxInputAction(input WinInput, width, height int) (linuxInputEvent, error
 	default:
 		return linuxInputEvent{}, ErrInvalidInputKind
 	}
+}
+
+func clampLinuxCoordinate(value int32, extent int) int {
+	if value <= 0 {
+		return 0
+	}
+	if value >= 65535 {
+		return extent - 1
+	}
+	return int((int64(value) * int64(extent-1)) / 65535)
 }
 
 func linuxMouseButton(flags, data uint32) (uint32, bool, bool) {
@@ -232,9 +251,9 @@ func linuxMouseButton(flags, data uint32) (uint32, bool, bool) {
 	case flags&MouseEventfRightUp != 0:
 		return 3, false, true
 	case flags&MouseEventfXDown != 0:
-		return 4 + data, true, true
+		return 7 + data, true, true
 	case flags&MouseEventfXUp != 0:
-		return 4 + data, false, true
+		return 7 + data, false, true
 	default:
 		return 0, false, false
 	}
@@ -258,6 +277,88 @@ func linuxVKToKeysym(vk uint16) (uint64, bool) {
 		return 0xff1b, true
 	case 0x20:
 		return 0x20, true
+	case 0x10, 0xa0:
+		return 0xffe1, true
+	case 0xa1:
+		return 0xffe2, true
+	case 0x11, 0xa2:
+		return 0xffe3, true
+	case 0xa3:
+		return 0xffe4, true
+	case 0x12, 0xa4:
+		return 0xffe9, true
+	case 0xa5:
+		return 0xffea, true
+	case 0x13:
+		return 0xff13, true
+	case 0x14:
+		return 0xffe5, true
+	case 0x15:
+		return 0xffe0, true
+	case 0x2c:
+		return 0xffe9, true
+	case 0x2d:
+		return 0xff63, true
+	case 0x2e:
+		return 0xffff, true
+	case 0x2f:
+		return 0xff55, true
+	case 0x22:
+		return 0xff56, true
+	case 0x23:
+		return 0xff57, true
+	case 0x24:
+		return 0xff50, true
+	case 0x2b:
+		return 0xff8d, true
+	case 0x5b:
+		return 0xffeb, true
+	case 0x5c:
+		return 0xffec, true
+	case 0x5d:
+		return 0xff67, true
+	case 0x90:
+		return 0xff7f, true
+	case 0xba:
+		return 0x3b, true
+	case 0xbb:
+		return 0x3d, true
+	case 0xbc:
+		return 0x2c, true
+	case 0xbd:
+		return 0x2d, true
+	case 0xbe:
+		return 0x2e, true
+	case 0xbf:
+		return 0x2f, true
+	case 0xc0:
+		return 0x60, true
+	case 0xdb:
+		return 0x5b, true
+	case 0xdc:
+		return 0x5c, true
+	case 0xdd:
+		return 0x5d, true
+	case 0xde:
+		return 0x27, true
+	case 0xdf:
+		return 0x5c, true
+	case 0x6a:
+		return 0xffaa, true
+	case 0x6b:
+		return 0xffab, true
+	case 0x6d:
+		return 0xffad, true
+	case 0x6e:
+		return 0xffae, true
+	case 0x6f:
+		return 0xffaf, true
+	case 0x60:
+		return 0xffb0, true
+	case 0x61, 0x62, 0x63, 0x64, 0x65, 0x66, 0x67, 0x68, 0x69:
+		return uint64(0xffb1 + (vk - 0x61)), true
+	case 0x6c:
+		return 0xffb5, true
 	case 0x25:
 		return 0xff51, true
 	case 0x26:
