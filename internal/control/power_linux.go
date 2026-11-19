@@ -14,6 +14,8 @@ import (
 
 var ErrPowerUnsupportedPlatform = errors.New("control: Linux power action is unavailable")
 
+var linuxPowerLookPath = exec.LookPath
+
 type linuxPowerExecutor struct {
 	command func(context.Context, string, ...string) error
 }
@@ -35,25 +37,48 @@ func (e *linuxPowerExecutor) Logoff() error {
 	if user == "" {
 		return fmt.Errorf("%w: current user unavailable", ErrPowerUnsupportedPlatform)
 	}
-	return e.command(context.Background(), "loginctl", "terminate-user", user)
+	if _, err := linuxPowerLookPath("loginctl"); err == nil {
+		return e.command(context.Background(), "loginctl", "terminate-user", user)
+	}
+	if _, err := linuxPowerLookPath("pkill"); err == nil {
+		return e.command(context.Background(), "pkill", "-TERM", "-u", user)
+	}
+	return fmt.Errorf("%w: no logoff command", ErrPowerUnsupportedPlatform)
 }
 
 func (e *linuxPowerExecutor) runLinuxAction(action string, timeoutSec uint32, reason string) error {
-	if _, err := exec.LookPath("systemctl"); err == nil {
+	if name, args, ok := linuxPowerCommand(action, timeoutSec, reason); ok {
+		return e.command(context.Background(), name, args...)
+	}
+	return fmt.Errorf("%w: no command for %s", ErrPowerUnsupportedPlatform, action)
+}
+
+func linuxPowerCommand(action string, timeoutSec uint32, reason string) (string, []string, bool) {
+	if path, err := linuxPowerLookPath("systemctl"); err == nil {
 		args := []string{action}
 		if reason != "" {
 			args = append(args, "--message", reason)
 		}
-		return e.command(context.Background(), "systemctl", args...)
+		return path, args, true
 	}
 	if action == "shutdown" {
 		delay := "+0"
 		if timeoutSec > 0 {
 			delay = "+" + strconv.FormatUint(uint64((timeoutSec+59)/60), 10)
 		}
-		return e.command(context.Background(), "shutdown", "-h", delay)
+		if path, err := linuxPowerLookPath("shutdown"); err == nil {
+			args := []string{"-h", delay}
+			if reason != "" {
+				args = append(args, reason)
+			}
+			return path, args, true
+		}
+		return "", nil, false
 	}
-	return e.command(context.Background(), "reboot")
+	if path, err := linuxPowerLookPath("reboot"); err == nil {
+		return path, []string{}, true
+	}
+	return "", nil, false
 }
 
 func runLinuxPowerCommand(parent context.Context, name string, args ...string) error {

@@ -12,9 +12,20 @@ import (
 	"syscall"
 )
 
-type linuxProcessInspector struct{ procRoot string }
+var (
+	ErrLinuxProcessUnavailable = errors.New("control: Linux process is unavailable")
+	ErrLinuxProcessZombie      = errors.New("control: refusing to terminate zombie Linux process")
+	ErrLinuxProcessProtected   = errors.New("control: refusing to terminate protected Linux process")
+)
 
-func newPlatformProcessInspector() ProcessInspector { return &linuxProcessInspector{procRoot: "/proc"} }
+type linuxProcessInspector struct {
+	procRoot string
+	selfPID  uint32
+}
+
+func newPlatformProcessInspector() ProcessInspector {
+	return &linuxProcessInspector{procRoot: "/proc", selfPID: uint32(os.Getpid())}
+}
 
 func (p *linuxProcessInspector) ListProcesses() ([]ProcessInfo, error) {
 	entries, err := os.ReadDir(p.procRoot)
@@ -56,11 +67,33 @@ func readLinuxProcessName(procDir string) string {
 }
 
 func (p *linuxProcessInspector) TerminateProcess(pid uint32) error {
-	if pid == 0 || pid == uint32(os.Getpid()) {
-		return errors.New("control: refusing to terminate protected process")
+	if pid == 0 || pid == uint32(os.Getpid()) || (p.selfPID != 0 && pid == p.selfPID) {
+		return ErrLinuxProcessProtected
+	}
+	procDir := filepath.Join(p.procRoot, strconv.FormatUint(uint64(pid), 10))
+	stat, err := os.ReadFile(filepath.Join(procDir, "stat"))
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("%w: %d", ErrLinuxProcessUnavailable, pid)
+		}
+		return fmt.Errorf("control: inspect Linux process %d: %w", pid, err)
+	}
+	if linuxProcessState(string(stat)) == 'Z' {
+		return fmt.Errorf("%w: %d", ErrLinuxProcessZombie, pid)
 	}
 	if err := syscall.Kill(int(pid), syscall.SIGTERM); err != nil {
+		if errors.Is(err, syscall.ESRCH) {
+			return fmt.Errorf("%w: %d", ErrLinuxProcessUnavailable, pid)
+		}
 		return fmt.Errorf("control: terminate linux process %d: %w", pid, err)
 	}
 	return nil
+}
+
+func linuxProcessState(stat string) rune {
+	closeParen := strings.LastIndex(stat, ")")
+	if closeParen < 0 || closeParen+2 >= len(stat) {
+		return 0
+	}
+	return rune(stat[closeParen+2])
 }
