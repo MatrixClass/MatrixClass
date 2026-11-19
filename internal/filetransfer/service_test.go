@@ -14,6 +14,7 @@ import (
 	"nexlab/internal/protocol"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -535,5 +536,70 @@ func TestDistributeFileStalePartAndAutoOverwrite(t *testing.T) {
 	}
 	if _, err := os.Stat(destPath + ".part.sha256"); !os.IsNotExist(err) {
 		t.Fatalf("expected .part.sha256 cleaned up, err=%v", err)
+	}
+}
+
+func TestReceiveOfferFlushesPartialDataBeforeTransportFailure(t *testing.T) {
+	tmpDir := t.TempDir()
+	destPath := filepath.Join(tmpDir, "lesson.bin")
+	payload := []byte("partial payload must survive a disconnected transfer")
+	offer := FileOffer{
+		TaskID:     "resume-after-disconnect",
+		Direction:  core.TransferSend,
+		FileName:   filepath.Base(destPath),
+		TotalBytes: int64(len(payload) + 32),
+		SHA256:     sha256Hex(append(append([]byte{}, payload...), make([]byte, 32)...)),
+	}
+
+	service := NewService(Config{ReceiveDir: tmpDir, ChunkSize: 64})
+	client, server := net.Pipe()
+	defer client.Close()
+
+	resultCh := make(chan struct {
+		task *core.TransferTask
+		err  error
+	}, 1)
+	go func() {
+		task, err := service.receiveOffer(context.Background(), server, offer, destPath, core.TransferSend)
+		resultCh <- struct {
+			task *core.TransferTask
+			err  error
+		}{task: task, err: err}
+	}()
+
+	if _, msgType, _, err := protocol.ReadFrame(client); err != nil || msgType != protocol.MsgFileAck {
+		t.Fatalf("read resume ack: type=%d err=%v", msgType, err)
+	}
+	chunk := make([]byte, 8+len(payload))
+	binary.BigEndian.PutUint64(chunk[:8], 0)
+	copy(chunk[8:], payload)
+	if err := protocol.WriteFrame(client, protocol.StreamFile, protocol.MsgFileChunk, chunk); err != nil {
+		t.Fatalf("write partial chunk: %v", err)
+	}
+	if err := client.Close(); err != nil {
+		t.Fatalf("close client: %v", err)
+	}
+
+	result := <-resultCh
+	if result.err == nil {
+		t.Fatal("expected receiveOffer to fail after transport disconnect")
+	}
+	if result.task.Status != "failed" {
+		t.Fatalf("expected failed task, got %+v", result.task)
+	}
+	partPath := destPath + ".part"
+	got, err := os.ReadFile(partPath)
+	if err != nil {
+		t.Fatalf("read preserved partial file: %v", err)
+	}
+	if !bytes.Equal(got, payload) {
+		t.Fatalf("partial file mismatch: got %q want %q", got, payload)
+	}
+	meta, err := os.ReadFile(partPath + ".sha256")
+	if err != nil {
+		t.Fatalf("read preserved partial metadata: %v", err)
+	}
+	if strings.TrimSpace(string(meta)) != offer.SHA256 {
+		t.Fatalf("partial metadata mismatch: got %q want %q", strings.TrimSpace(string(meta)), offer.SHA256)
 	}
 }

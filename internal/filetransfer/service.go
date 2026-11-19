@@ -970,87 +970,87 @@ func (s *Service) receiveOffer(ctx context.Context, stream io.ReadWriter, offer 
 		}
 	}
 	bw := bufio.NewWriterSize(outFile, 512*1024)
+	doneBytes := resumeOffset
+	closed := false
+	flushAndClose := func() error {
+		if err := bw.Flush(); err != nil {
+			return err
+		}
+		if closed {
+			return nil
+		}
+		closed = true
+		return outFile.Close()
+	}
+	failReceive := func(receiveErr error, removePartial bool, sendFinal bool) (*core.TransferTask, error) {
+		closeErr := flushAndClose()
+		if closeErr != nil && receiveErr == nil {
+			receiveErr = closeErr
+		}
+		if removePartial {
+			_ = os.Remove(partPath)
+			_ = os.Remove(partMetaPath)
+		}
+		if sendFinal {
+			s.sendFinalComplete(stream, offer.TaskID, doneBytes, "", "", false, receiveErr.Error())
+		}
+		s.updateTask(task, doneBytes, "failed", receiveErr.Error())
+		return cloneTask(task), receiveErr
+	}
 
 	if err := s.sendAckResume(stream, offer.TaskID, resumeOffset); err != nil {
-		outFile.Close()
-		s.updateTask(task, 0, "failed", err.Error())
-		return cloneTask(task), err
+		return failReceive(err, false, false)
 	}
-	doneBytes := resumeOffset
 	s.updateTask(task, doneBytes, "running", "")
 
 	for {
 		if err := ctx.Err(); err != nil {
-			outFile.Close()
-			s.updateTask(task, doneBytes, "failed", err.Error())
-			return cloneTask(task), err
+			return failReceive(err, false, false)
 		}
 		_, msgType, payload, err := protocol.ReadFrame(stream)
 		if err != nil {
-			outFile.Close()
-			s.updateTask(task, doneBytes, "failed", err.Error())
-			return cloneTask(task), err
+			return failReceive(err, false, false)
 		}
 		switch msgType {
 		case protocol.MsgFileChunk:
 			if len(payload) < 8 {
-				outFile.Close()
-				err := errors.New("filetransfer: malformed chunk frame")
-				s.updateTask(task, doneBytes, "failed", err.Error())
-				return cloneTask(task), err
+				return failReceive(errors.New("filetransfer: malformed chunk frame"), false, false)
 			}
 			chunkOffset := int64(binary.BigEndian.Uint64(payload[:8]))
 			data := payload[8:]
 			if chunkOffset != doneBytes {
 				if err := bw.Flush(); err != nil {
-					outFile.Close()
-					s.updateTask(task, doneBytes, "failed", err.Error())
-					return cloneTask(task), err
+					return failReceive(err, false, false)
 				}
 				if _, err := outFile.Seek(chunkOffset, io.SeekStart); err != nil {
-					outFile.Close()
-					s.updateTask(task, doneBytes, "failed", err.Error())
-					return cloneTask(task), err
+					return failReceive(err, false, false)
 				}
 				doneBytes = chunkOffset
 			}
 			if _, err := bw.Write(data); err != nil {
-				outFile.Close()
-				s.updateTask(task, doneBytes, "failed", err.Error())
-				return cloneTask(task), err
+				return failReceive(err, false, false)
 			}
 			doneBytes += int64(len(data))
 			s.updateTask(task, doneBytes, "running", "")
 
 		case protocol.MsgFileComplete:
-			if err := bw.Flush(); err != nil {
-				outFile.Close()
-				s.sendFinalComplete(stream, offer.TaskID, doneBytes, "", "", false, err.Error())
-				s.updateTask(task, doneBytes, "failed", err.Error())
-				return cloneTask(task), err
-			}
-			if err := outFile.Close(); err != nil {
-				s.sendFinalComplete(stream, offer.TaskID, doneBytes, "", "", false, err.Error())
-				s.updateTask(task, doneBytes, "failed", err.Error())
-				return cloneTask(task), err
+			if err := flushAndClose(); err != nil {
+				return failReceive(err, false, true)
 			}
 			actualSize, actualHash, err := inspectFileSHA256(partPath)
 			if err != nil {
-				s.sendFinalComplete(stream, offer.TaskID, doneBytes, "", "", false, err.Error())
-				s.updateTask(task, doneBytes, "failed", err.Error())
-				return cloneTask(task), err
+				return failReceive(err, false, true)
 			}
 			if offer.SHA256 != "" && !strings.EqualFold(actualHash, offer.SHA256) {
+				s.sendFinalComplete(stream, offer.TaskID, actualSize, actualHash, "", false, ErrChecksumMismatch.Error())
 				_ = os.Remove(partPath)
 				_ = os.Remove(partMetaPath)
-				s.sendFinalComplete(stream, offer.TaskID, actualSize, actualHash, "", false, ErrChecksumMismatch.Error())
 				s.updateTask(task, actualSize, "failed", ErrChecksumMismatch.Error())
 				return cloneTask(task), ErrChecksumMismatch
 			}
 			if err := replaceFile(partPath, destPath); err != nil {
-				s.sendFinalComplete(stream, offer.TaskID, actualSize, actualHash, "", false, err.Error())
-				s.updateTask(task, actualSize, "failed", err.Error())
-				return cloneTask(task), err
+				doneBytes = actualSize
+				return failReceive(err, false, true)
 			}
 			_ = os.Remove(partMetaPath)
 			s.sendFinalComplete(stream, offer.TaskID, actualSize, actualHash, destPath, true, "")
@@ -1059,10 +1059,7 @@ func (s *Service) receiveOffer(ctx context.Context, stream io.ReadWriter, offer 
 			return cloneTask(task), nil
 
 		default:
-			outFile.Close()
-			err := fmt.Errorf("filetransfer: unexpected frame type %d", msgType)
-			s.updateTask(task, doneBytes, "failed", err.Error())
-			return cloneTask(task), err
+			return failReceive(fmt.Errorf("filetransfer: unexpected frame type %d", msgType), false, false)
 		}
 	}
 }
