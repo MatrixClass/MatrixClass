@@ -450,8 +450,19 @@ func (rt *Runtime) heartbeatLoop(ctx context.Context) {
 				env.Timestamp = time.Now().UnixMilli()
 				_ = rt.Transport.BroadcastControl(env, nil)
 			}
-			rt.Classroom.MarkOfflineStale(15 * time.Second)
+			rt.markOfflineStudents(rt.Classroom.MarkOfflineStale(15 * time.Second))
 		}
+	}
+}
+
+func (rt *Runtime) markOfflineStudents(studentIDs []string) {
+	for _, studentID := range studentIDs {
+		rt.resetStudentDecoder(studentID + ":monitor")
+		rt.resetStudentDecoder(studentID + ":remote")
+		rt.resetStudentDecoder(studentID + ":demo")
+	}
+	if len(studentIDs) > 0 && rt.App != nil {
+		rt.App.Invalidate()
 	}
 }
 

@@ -630,3 +630,23 @@ func TestMonitorDecodeErrorResetsDecoderRequestsRestartAndTouchesStudent(t *test
 	}
 	t.Fatalf("expected stu-mon-1:monitor decoder to be reset on MsgStudentRegister")
 }
+
+func TestMarkOfflineStudentsReleasesMonitorDecoders(t *testing.T) {
+	rt, err := NewRuntime("1", "teacher-offline", "", t.TempDir())
+	if err != nil {
+		t.Fatalf("NewRuntime failed: %v", err)
+	}
+	defer rt.Close()
+	codec, err := media.NewHybridVideoCodec(false)
+	if err != nil {
+		t.Fatalf("NewHybridVideoCodec failed: %v", err)
+	}
+	rt.studentDecoders["stu-offline:monitor"] = codec
+	rt.markOfflineStudents([]string{"stu-offline"})
+	rt.decMu.Lock()
+	_, ok := rt.studentDecoders["stu-offline:monitor"]
+	rt.decMu.Unlock()
+	if ok {
+		t.Fatal("expected offline student's monitor decoder to be released")
+	}
+}

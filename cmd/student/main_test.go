@@ -63,3 +63,16 @@ func TestMonitorControlResetRestartsUnchangedStream(t *testing.T) {
 		t.Fatal("reset monitor control should restart an unchanged stream")
 	}
 }
+
+func TestEnqueueLatestFrameDropsStaleBroadcastFrame(t *testing.T) {
+	queue := make(chan []byte, 1)
+	if !enqueueLatestFrame(queue, []byte("old")) {
+		t.Fatal("expected first frame to be queued")
+	}
+	if !enqueueLatestFrame(queue, []byte("new")) {
+		t.Fatal("expected latest frame to replace stale frame")
+	}
+	if got := string(<-queue); got != "new" {
+		t.Fatalf("expected latest frame, got %q", got)
+	}
+}

@@ -159,6 +159,24 @@ func (rt *Runtime) broadcastDecodeLoop() {
 	}
 }
 
+func enqueueLatestFrame(queue chan []byte, data []byte) bool {
+	select {
+	case queue <- data:
+		return true
+	default:
+	}
+	select {
+	case <-queue:
+	default:
+	}
+	select {
+	case queue <- data:
+		return true
+	default:
+		return false
+	}
+}
+
 func (rt *Runtime) wireHandlers() {
 	rt.Transport.OnSession(func(sess core.Session) {
 		rt.Files.SetTeacherSession(sess)
@@ -188,10 +206,7 @@ func (rt *Runtime) wireHandlers() {
 		}
 		cp := make([]byte, len(data))
 		copy(cp, data)
-		select {
-		case rt.bcastDecodeCh <- cp:
-		default:
-		}
+		enqueueLatestFrame(rt.bcastDecodeCh, cp)
 	})
 
 	rt.Transport.OnEnvelope(func(sess core.Session, env protocol.Envelope) {
