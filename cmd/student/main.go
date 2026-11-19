@@ -20,6 +20,7 @@ import (
 	"nexlab/internal/core"
 	"nexlab/internal/exam"
 	"nexlab/internal/filetransfer"
+	"nexlab/internal/logging"
 	"nexlab/internal/media"
 	"nexlab/internal/protocol"
 	"nexlab/internal/transport"
@@ -42,13 +43,13 @@ type Runtime struct {
 	macAddr     string
 	channel     string
 
-	streamMu     sync.Mutex
-	monitorStop  context.CancelFunc
-	remoteStop   context.CancelFunc
-	demoStop     context.CancelFunc
-	demoActive   bool
-	monitorCfg   monitorStreamConfig
-	ctx          context.Context
+	streamMu      sync.Mutex
+	monitorStop   context.CancelFunc
+	remoteStop    context.CancelFunc
+	demoStop      context.CancelFunc
+	demoActive    bool
+	monitorCfg    monitorStreamConfig
+	ctx           context.Context
 	bcastDecodeCh chan []byte
 }
 
@@ -130,19 +131,19 @@ func NewRuntime(channel, studentID, studentNo, teacherAddr, recvDir string) (*Ru
 	appRef = app
 
 	rt := &Runtime{
-		App:         app,
-		Transport:   tr,
-		Media:       md,
-		Control:     ctrl,
-		Classroom:   cr,
-		Files:       ft,
-		Exam:        ex,
-		studentID:   studentID,
-		studentNo:   studentNo,
-		machineName: host,
-		macAddr:     mac,
-		channel:     channel,
-		ctx:         context.Background(),
+		App:           app,
+		Transport:     tr,
+		Media:         md,
+		Control:       ctrl,
+		Classroom:     cr,
+		Files:         ft,
+		Exam:          ex,
+		studentID:     studentID,
+		studentNo:     studentNo,
+		machineName:   host,
+		macAddr:       mac,
+		channel:       channel,
+		ctx:           context.Background(),
 		bcastDecodeCh: make(chan []byte, 16),
 	}
 	rt.wireHandlers()
@@ -597,6 +598,17 @@ func main() {
 	studentNo := flag.String("no", "202601", "student number")
 	recvDir := flag.String("recv", "", "received files directory (defaults to Desktop)")
 	flag.Parse()
+	logDir := "logs"
+	if exePath, err := os.Executable(); err == nil && exePath != "" {
+		logDir = filepath.Join(filepath.Dir(exePath), "logs")
+	}
+	appLogger, loggerErr := logging.New(logging.Config{Dir: logDir, Role: "student"})
+	if loggerErr == nil {
+		defer appLogger.Close()
+		log.SetOutput(appLogger)
+		log.SetFlags(0)
+	}
+	log.Printf("student starting channel=%s id=%s", *channel, *studentID)
 
 	if *recvDir == "" {
 		if home, err := os.UserHomeDir(); err == nil && home != "" {
@@ -623,9 +635,9 @@ func main() {
 
 	if *demoMode {
 		app = student.New(student.Options{
-			StudentID:   *studentID,
-			StudentNo:   *studentNo,
-			Channel:     *channel,
+			StudentID: *studentID,
+			StudentNo: *studentNo,
+			Channel:   *channel,
 			Services: student.Services{
 				Transport: demo.NewTransport(*channel, 1),
 				Media:     demo.NewMedia(),
@@ -670,18 +682,18 @@ func main() {
 			barX = wa.X
 		}
 		win := mygo.NewWindow(mygo.WindowOptions{
-			Title:       "矩联电子教室 MatrixClass - 学生端",
-			Width:       barW,
-			Height:      92,
-			X:           barX,
-			Y:           wa.Y,
-			MinWidth:    560,
-			MinHeight:   8,
-			Frameless:   true,
-			Transparent: true,
+			Title:         "矩联电子教室 MatrixClass - 学生端",
+			Width:         barW,
+			Height:        92,
+			X:             barX,
+			Y:             wa.Y,
+			MinWidth:      560,
+			MinHeight:     8,
+			Frameless:     true,
+			Transparent:   true,
 			DisableShadow: true,
-			AlwaysOnTop: true,
-			Content:     ui.View(app.View),
+			AlwaysOnTop:   true,
+			Content:       ui.View(app.View),
 		})
 		app.AttachWindow(win)
 		app.InstallTray()

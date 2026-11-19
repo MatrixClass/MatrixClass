@@ -21,6 +21,7 @@ import (
 	"nexlab/internal/core"
 	"nexlab/internal/exam"
 	"nexlab/internal/filetransfer"
+	"nexlab/internal/logging"
 	"nexlab/internal/media"
 	"nexlab/internal/protocol"
 	"nexlab/internal/store"
@@ -214,11 +215,11 @@ func (rt *Runtime) wireHandlers() {
 					}{
 						Active: true,
 						MonitorConfig: core.MonitorConfig{
-							Width:        320,
-							Height:       180,
-							FPS:          int(rt.App.MonitorFPS()),
-							Quality:      int(rt.App.MonitorQual()),
-							Reset:        true,
+							Width:   320,
+							Height:  180,
+							FPS:     int(rt.App.MonitorFPS()),
+							Quality: int(rt.App.MonitorQual()),
+							Reset:   true,
 						},
 					}); err == nil {
 						mEnv.Channel = rt.channel
@@ -612,6 +613,17 @@ func main() {
 	teacherLabel := "教师端"
 	archiveDir := flag.String("archive", "", "homework archive directory (defaults to Downloads)")
 	flag.Parse()
+	logDir := "logs"
+	if exePath, err := os.Executable(); err == nil && exePath != "" {
+		logDir = filepath.Join(filepath.Dir(exePath), "logs")
+	}
+	appLogger, loggerErr := logging.New(logging.Config{Dir: logDir, Role: "teacher"})
+	if loggerErr == nil {
+		defer appLogger.Close()
+		log.SetOutput(appLogger)
+		log.SetFlags(0)
+	}
+	log.Printf("teacher starting channel=%s listen=%s", *channel, *listenAddr)
 
 	if *archiveDir == "" {
 		if home, err := os.UserHomeDir(); err == nil && home != "" {
