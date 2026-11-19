@@ -5,6 +5,7 @@ package media
 import (
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"os"
 	"runtime"
 	"time"
@@ -50,10 +51,22 @@ type x11Capture struct {
 	getGeometry  func(uintptr, uintptr, *uintptr, *int32, *int32, *uint32, *uint32, *uint32, *uint32) int32
 	getImage     func(uintptr, uintptr, int32, int32, uint32, uint32, uint64, int32) uintptr
 	destroyImage func(uintptr) int32
+	openDisplay  func(*byte) uintptr
+	defaultRoot  func(uintptr) uintptr
+	maxWidth     int
+	maxHeight    int
+	lastHash     uint64
+	hasLastHash  bool
 }
 
 func newNativeScreenCapture(opts CaptureOptions) nativeScreenCapture {
-	if runtime.GOOS != "linux" || os.Getenv("DISPLAY") == "" {
+	if runtime.GOOS != "linux" {
+		return nil
+	}
+	if os.Getenv("DISPLAY") == "" {
+		if os.Getenv("WAYLAND_DISPLAY") != "" {
+			return &waylandCapture{}
+		}
 		return nil
 	}
 	lib, err := purego.Dlopen("libX11.so.6", rtldNow)
@@ -100,7 +113,7 @@ func newNativeScreenCapture(opts CaptureOptions) nativeScreenCapture {
 	if opts.Height > 0 && uint32(opts.Height) < height {
 		height = uint32(opts.Height)
 	}
-	return &x11Capture{handle: lib, display: display, root: root, width: width, height: height, closeDisplay: closeDisplay, getGeometry: getGeometry, getImage: getImage, destroyImage: destroyImage}
+	return &x11Capture{handle: lib, display: display, root: root, width: width, height: height, closeDisplay: closeDisplay, getGeometry: getGeometry, getImage: getImage, destroyImage: destroyImage, openDisplay: openDisplay, defaultRoot: defaultRoot, maxWidth: opts.Width, maxHeight: opts.Height}
 }
 
 func (x *x11Capture) Backend() CaptureBackend { return CaptureBackendX11 }
@@ -110,24 +123,25 @@ func (x *x11Capture) Capture(maxW, maxH int, withNV12 bool) (*core.VideoFrame, b
 		return nil, false, errors.New("media: X11 display is closed")
 	}
 	imagePtr := x.getImage(x.display, x.root, 0, 0, x.width, x.height, x11AllPlanes, x11ZPixmap)
+	if imagePtr == 0 && x.reopen() {
+		imagePtr = x.getImage(x.display, x.root, 0, 0, x.width, x.height, x11AllPlanes, x11ZPixmap)
+	}
 	if imagePtr == 0 {
 		return nil, false, errors.New("media: XGetImage failed")
 	}
 	defer x.destroyImage(imagePtr)
 	img := (*x11Image)(unsafe.Pointer(imagePtr))
-	if img.Data == 0 || img.Width <= 0 || img.Height <= 0 || img.BitsPerPixel != 32 || img.BytesPerLine <= 0 {
+	if img.Data == 0 || img.Width <= 0 || img.Height <= 0 || (img.BitsPerPixel != 32 && img.BitsPerPixel != 24) || img.BytesPerLine <= 0 {
 		return nil, false, fmt.Errorf("media: unsupported XImage format bpp=%d depth=%d", img.BitsPerPixel, img.Depth)
 	}
 	width, height := int(img.Width), int(img.Height)
 	data := unsafe.Slice((*byte)(unsafe.Pointer(img.Data)), int(img.BytesPerLine)*height)
 	rgba := make([]byte, width*height*4)
+	bytesPerPixel := int((img.BitsPerPixel + 7) / 8)
 	for row := 0; row < height; row++ {
 		for col := 0; col < width; col++ {
-			off := row*int(img.BytesPerLine) + col*4
-			pixel := uint32(data[off]) | uint32(data[off+1])<<8 | uint32(data[off+2])<<16 | uint32(data[off+3])<<24
-			if img.ByteOrder != 0 {
-				pixel = uint32(data[off+3]) | uint32(data[off+2])<<8 | uint32(data[off+1])<<16 | uint32(data[off])<<24
-			}
+			off := row*int(img.BytesPerLine) + col*bytesPerPixel
+			pixel := x11ReadPixel(data[off:off+bytesPerPixel], int(img.BitsPerPixel), img.ByteOrder)
 			r, g, b := x11ExtractRGB(uint64(pixel), uint64(img.RedMask), uint64(img.GreenMask), uint64(img.BlueMask))
 			out := (row*width + col) * 4
 			rgba[out], rgba[out+1], rgba[out+2], rgba[out+3] = r, g, b, 255
@@ -140,7 +154,66 @@ func (x *x11Capture) Capture(maxW, maxH int, withNV12 bool) (*core.VideoFrame, b
 	if withNV12 {
 		_ = EnsureNV12(frame)
 	}
-	return frame, true, nil
+	frameHash := x11FrameHash(rgba)
+	changed := !x.hasLastHash || frameHash != x.lastHash
+	x.lastHash, x.hasLastHash = frameHash, true
+	return frame, changed, nil
+}
+
+func x11ReadPixel(data []byte, bitsPerPixel int, byteOrder int32) uint32 {
+	var pixel uint32
+	if byteOrder == 0 {
+		for i := len(data) - 1; i >= 0; i-- {
+			pixel = pixel<<8 | uint32(data[i])
+		}
+		return pixel
+	}
+	for _, value := range data {
+		pixel = pixel<<8 | uint32(value)
+	}
+	return pixel
+}
+
+func x11FrameHash(data []byte) uint64 {
+	h := fnv.New64a()
+	_, _ = h.Write(data)
+	return h.Sum64()
+}
+
+func x11FrameChanged(data []byte, previous uint64, hasPrevious bool) bool {
+	current := x11FrameHash(data)
+	return !hasPrevious || current != previous
+}
+
+func (x *x11Capture) reopen() bool {
+	if x == nil || x.openDisplay == nil || x.defaultRoot == nil {
+		return false
+	}
+	if x.display != 0 && x.closeDisplay != nil {
+		_ = x.closeDisplay(x.display)
+	}
+	display := x.openDisplay(nil)
+	if display == 0 {
+		x.display = 0
+		return false
+	}
+	root := x.defaultRoot(display)
+	var rootID uintptr
+	var px, py int32
+	var width, height, border, depth uint32
+	if root == 0 || x.getGeometry(display, root, &rootID, &px, &py, &width, &height, &border, &depth) == 0 || width == 0 || height == 0 {
+		_ = x.closeDisplay(display)
+		x.display = 0
+		return false
+	}
+	if x.maxWidth > 0 && x.maxWidth < int(width) {
+		width = uint32(x.maxWidth)
+	}
+	if x.maxHeight > 0 && x.maxHeight < int(height) {
+		height = uint32(x.maxHeight)
+	}
+	x.display, x.root, x.width, x.height = display, root, width, height
+	return true
 }
 
 func x11ExtractRGB(pixel, redMask, greenMask, blueMask uint64) (byte, byte, byte) {
@@ -180,3 +253,13 @@ func (x *x11Capture) Close() error {
 	}
 	return nil
 }
+
+type waylandCapture struct{}
+
+func (w *waylandCapture) Backend() CaptureBackend { return CaptureBackendWayland }
+
+func (w *waylandCapture) Capture(int, int, bool) (*core.VideoFrame, bool, error) {
+	return nil, false, fmt.Errorf("%w: Wayland portal capture is not configured", ErrScreenCaptureUnavailable)
+}
+
+func (w *waylandCapture) Close() error { return nil }

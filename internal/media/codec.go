@@ -712,10 +712,12 @@ func parseVideoHeader(data []byte) (codecID, flags, quality uint8, width, height
 type CaptureBackend string
 
 const (
-	CaptureBackendDXGI      CaptureBackend = "dxgi"
-	CaptureBackendGDI       CaptureBackend = "gdi"
-	CaptureBackendX11       CaptureBackend = "x11"
-	CaptureBackendSynthetic CaptureBackend = "synthetic"
+	CaptureBackendDXGI        CaptureBackend = "dxgi"
+	CaptureBackendGDI         CaptureBackend = "gdi"
+	CaptureBackendX11         CaptureBackend = "x11"
+	CaptureBackendWayland     CaptureBackend = "wayland"
+	CaptureBackendUnavailable CaptureBackend = "unavailable"
+	CaptureBackendSynthetic   CaptureBackend = "synthetic"
 )
 
 type CaptureOptions struct {
