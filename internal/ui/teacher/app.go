@@ -829,7 +829,7 @@ func (a *App) View(c *ui.Context) {
 	})
 
 	ui.Modal(c, &a.policyModal, func() {
-		ui.Column(c).Width(520).Height(680).Background(pal.Canvas).Border(1, pal.CardBorder).Radius(6).Padding(16).Gap(10).Children(func() {
+		ui.Column(c).Width(520).Height(560).Background(pal.Canvas).Border(1, pal.CardBorder).Radius(6).Padding(16).Gap(10).Children(func() {
 			ui.Row(c).FillWidth().AlignItems(ui.Center).Children(func() {
 				ui.Text(c, "管控策略编排").FontSize(16).Bold()
 				ui.Spacer(c)
@@ -1617,38 +1617,40 @@ func (a *App) buildSideChatQueue(c *ui.Context, pal theme.Palette, students []co
 }
 
 func (a *App) buildSidePolicy(c *ui.Context, pal theme.Palette) {
-	ui.Scroll(c).Grow(1).Gap(8).Children(func() {
-		ui.Row(c).AlignItems(ui.Center).Gap(6).Children(func() {
-			ui.Text(c, "课堂管控策略").FontSize(13).Bold()
-			ui.Spacer(c)
-			if a.policyActive {
-				ui.Badge(c, "已生效").Background(pal.Selection).TextColor(pal.Accent)
-			} else {
-				ui.Badge(c, "未生效")
+	ui.Column(c).Grow(1).FillWidth().Gap(8).Children(func() {
+		ui.Scroll(c).Grow(1).FillWidth().Gap(8).Children(func() {
+			ui.Row(c).AlignItems(ui.Center).Gap(6).Children(func() {
+				ui.Text(c, "课堂管控策略").FontSize(13).Bold()
+				ui.Spacer(c)
+				if a.policyActive {
+					ui.Badge(c, "已生效").Background(pal.Selection).TextColor(pal.Accent)
+				} else {
+					ui.Badge(c, "未生效")
+				}
+			})
+			policyDisplay := "黑名单模式"
+			if a.policyMode == "whitelist" {
+				policyDisplay = "白名单模式"
 			}
+			if ui.Select(c, &policyDisplay, []string{"黑名单模式", "白名单模式"}).Changed() {
+				if policyDisplay == "白名单模式" {
+					a.policyMode = "whitelist"
+				} else {
+					a.policyMode = "blacklist"
+				}
+			}
+			ui.Text(c, "禁止运行进程 (逗号分隔)").FontSize(11).TextColor(pal.TextMuted)
+			a.buildPolicyRuleList(c, pal, "blocked-app", &a.blockedAppRules, "例如：game.exe")
+			ui.Text(c, "允许运行进程 (白名单模式)").FontSize(11).TextColor(pal.TextMuted)
+			a.buildPolicyRuleList(c, pal, "allowed-app", &a.allowedAppRules, "例如：notepad.exe")
+			ui.Text(c, "禁用网址域名").FontSize(11).TextColor(pal.TextMuted)
+			a.buildPolicyRuleList(c, pal, "blocked-site", &a.blockedSiteRules, "例如：example.com")
+			ui.Text(c, "允许网址域名").FontSize(11).TextColor(pal.TextMuted)
+			a.buildPolicyRuleList(c, pal, "allowed-site", &a.allowedSiteRules, "例如：school.edu.cn")
+			ui.Text(c, "黑屏锁定提示语").FontSize(11).TextColor(pal.TextMuted)
+			ui.TextInput(c, &a.lockMessage)
 		})
-		policyDisplay := "黑名单模式"
-		if a.policyMode == "whitelist" {
-			policyDisplay = "白名单模式"
-		}
-		if ui.Select(c, &policyDisplay, []string{"黑名单模式", "白名单模式"}).Changed() {
-			if policyDisplay == "白名单模式" {
-				a.policyMode = "whitelist"
-			} else {
-				a.policyMode = "blacklist"
-			}
-		}
-		ui.Text(c, "禁止运行进程 (逗号分隔)").FontSize(11).TextColor(pal.TextMuted)
-		a.buildPolicyRuleList(c, pal, "blocked-app", &a.blockedAppRules, "例如：game.exe")
-		ui.Text(c, "允许运行进程 (白名单模式)").FontSize(11).TextColor(pal.TextMuted)
-		a.buildPolicyRuleList(c, pal, "allowed-app", &a.allowedAppRules, "例如：notepad.exe")
-		ui.Text(c, "禁用网址域名").FontSize(11).TextColor(pal.TextMuted)
-		a.buildPolicyRuleList(c, pal, "blocked-site", &a.blockedSiteRules, "例如：example.com")
-		ui.Text(c, "允许网址域名").FontSize(11).TextColor(pal.TextMuted)
-		a.buildPolicyRuleList(c, pal, "allowed-site", &a.allowedSiteRules, "例如：school.edu.cn")
-		ui.Text(c, "黑屏锁定提示语").FontSize(11).TextColor(pal.TextMuted)
-		ui.TextInput(c, &a.lockMessage)
-		ui.Row(c).Gap(6).Children(func() {
+		ui.Row(c).Gap(6).FillWidth().Children(func() {
 			if ui.PrimaryButton(c, "下发管控策略").Grow(1).Clicked() {
 				a.ApplyClassroomPolicy()
 				a.policyModal = false
@@ -1663,20 +1665,22 @@ func (a *App) buildSidePolicy(c *ui.Context, pal theme.Palette) {
 
 func (a *App) buildPolicyRuleList(c *ui.Context, pal theme.Palette, key string, rules *[]string, placeholder string) {
 	ui.Column(c).FillWidth().Gap(4).Children(func() {
-		if len(*rules) == 0 {
-			ui.Text(c, "暂无规则，点击右侧按钮添加").FontSize(11).TextColor(pal.TextMuted)
-		}
-		for i := range *rules {
-			idx := i
-			ui.Row(c).Key(fmt.Sprintf("policy-%s-%d", key, idx)).FillWidth().Gap(5).AlignItems(ui.Center).Children(func() {
-				ui.Text(c, fmt.Sprintf("%d", idx+1)).FontSize(11).TextColor(pal.TextMuted).Width(22)
-				ui.TextInput(c, &(*rules)[idx]).Placeholder(placeholder).Grow(1)
-				if ui.Button(c, "删除").Padding(3, 8).Clicked() {
-					*rules = append((*rules)[:idx], (*rules)[idx+1:]...)
-					a.syncPolicyRuleInputs()
-				}
-			})
-		}
+		ui.Scroll(c).FillWidth().Height(116).Gap(4).Children(func() {
+			if len(*rules) == 0 {
+				ui.Text(c, "暂无规则，点击右侧按钮添加").FontSize(11).TextColor(pal.TextMuted)
+			}
+			for i := range *rules {
+				idx := i
+				ui.Row(c).Key(fmt.Sprintf("policy-%s-%d", key, idx)).FillWidth().Gap(5).AlignItems(ui.Center).Children(func() {
+					ui.Text(c, fmt.Sprintf("%d", idx+1)).FontSize(11).TextColor(pal.TextMuted).Width(22)
+					ui.TextInput(c, &(*rules)[idx]).Placeholder(placeholder).Grow(1)
+					if ui.Button(c, "删除").Padding(3, 8).Clicked() {
+						*rules = append((*rules)[:idx], (*rules)[idx+1:]...)
+						a.syncPolicyRuleInputs()
+					}
+				})
+			}
+		})
 		if ui.Button(c, "＋ 添加规则").Padding(3, 9).Clicked() {
 			*rules = append(*rules, "")
 			a.syncPolicyRuleInputs()
