@@ -27,13 +27,14 @@ const (
 )
 
 var (
-	ErrSessionNotFound  = errors.New("filetransfer: session not found")
-	ErrNoTargets        = errors.New("filetransfer: no target student IDs provided")
-	ErrInvalidPath      = errors.New("filetransfer: invalid file path")
-	ErrChecksumMismatch = errors.New("filetransfer: sha256 checksum mismatch")
-	ErrTransferRejected = errors.New("filetransfer: transfer rejected by peer")
-	ErrTaskNotFound     = errors.New("filetransfer: task not found")
-	ErrTaskTerminal     = errors.New("filetransfer: task already finished")
+	ErrSessionNotFound    = errors.New("filetransfer: session not found")
+	ErrNoTargets          = errors.New("filetransfer: no target student IDs provided")
+	ErrInvalidPath        = errors.New("filetransfer: invalid file path")
+	ErrChecksumMismatch   = errors.New("filetransfer: sha256 checksum mismatch")
+	ErrTransferRejected   = errors.New("filetransfer: transfer rejected by peer")
+	ErrTaskNotFound       = errors.New("filetransfer: task not found")
+	ErrTaskTerminal       = errors.New("filetransfer: task already finished")
+	ErrInvalidChunkOffset = errors.New("filetransfer: invalid chunk offset")
 )
 
 type StudentMeta struct {
@@ -904,6 +905,9 @@ func (s *Service) sendOverStream(ctx context.Context, stream io.ReadWriter, loca
 }
 
 func (s *Service) receiveOffer(ctx context.Context, stream io.ReadWriter, offer FileOffer, destPath string, dir core.TransferDirection) (*core.TransferTask, error) {
+	if offer.TotalBytes < 0 {
+		return nil, ErrInvalidChunkOffset
+	}
 	task := s.newTask(dir, offer.FileName, destPath, offer.RemotePath, offer.TotalBytes, offer.SHA256, offer.StudentID, offer.AutoOpen)
 
 	if err := os.MkdirAll(filepath.Dir(destPath), 0o755); err != nil {
@@ -1016,16 +1020,17 @@ func (s *Service) receiveOffer(ctx context.Context, stream io.ReadWriter, offer 
 			if len(payload) < 8 {
 				return failReceive(errors.New("filetransfer: malformed chunk frame"), false, false)
 			}
-			chunkOffset := int64(binary.BigEndian.Uint64(payload[:8]))
+			rawOffset := binary.BigEndian.Uint64(payload[:8])
+			if rawOffset > uint64(^uint64(0)>>1) {
+				return failReceive(ErrInvalidChunkOffset, false, false)
+			}
+			chunkOffset := int64(rawOffset)
 			data := payload[8:]
+			if chunkOffset > offer.TotalBytes || int64(len(data)) > offer.TotalBytes-chunkOffset {
+				return failReceive(ErrInvalidChunkOffset, false, false)
+			}
 			if chunkOffset != doneBytes {
-				if err := bw.Flush(); err != nil {
-					return failReceive(err, false, false)
-				}
-				if _, err := outFile.Seek(chunkOffset, io.SeekStart); err != nil {
-					return failReceive(err, false, false)
-				}
-				doneBytes = chunkOffset
+				return failReceive(ErrInvalidChunkOffset, false, false)
 			}
 			if _, err := bw.Write(data); err != nil {
 				return failReceive(err, false, false)

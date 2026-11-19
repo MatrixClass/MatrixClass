@@ -603,3 +603,95 @@ func TestReceiveOfferFlushesPartialDataBeforeTransportFailure(t *testing.T) {
 		t.Fatalf("partial metadata mismatch: got %q want %q", strings.TrimSpace(string(meta)), offer.SHA256)
 	}
 }
+
+func TestReceiveOfferRejectsInvalidChunkOffsets(t *testing.T) {
+	tests := []struct {
+		name       string
+		offset     uint64
+		dataLength int
+		want       string
+	}{
+		{name: "offset exceeds total", offset: 11, dataLength: 0, want: "unchanged"},
+		{name: "data exceeds total", offset: 8, dataLength: 5, want: "unchanged"},
+		{name: "offset overflows int64", offset: uint64(^uint64(0)>>1) + 1, dataLength: 0, want: "unchanged"},
+		{name: "forward jump creates sparse file", offset: 4, dataLength: 1, want: "unchanged"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			destPath := filepath.Join(tmpDir, "invalid.bin")
+			service := NewService(Config{ReceiveDir: tmpDir})
+			offer := FileOffer{TaskID: "invalid-offset", FileName: "invalid.bin", TotalBytes: 10}
+			client, server := net.Pipe()
+			resultCh := make(chan error, 1)
+			go func() {
+				_, err := service.receiveOffer(context.Background(), server, offer, destPath, core.TransferSend)
+				resultCh <- err
+			}()
+			if _, msgType, _, err := protocol.ReadFrame(client); err != nil || msgType != protocol.MsgFileAck {
+				t.Fatalf("read resume ack: type=%d err=%v", msgType, err)
+			}
+			chunk := make([]byte, 8+test.dataLength)
+			binary.BigEndian.PutUint64(chunk[:8], test.offset)
+			if err := protocol.WriteFrame(client, protocol.StreamFile, protocol.MsgFileChunk, chunk); err != nil {
+				t.Fatalf("write invalid chunk: %v", err)
+			}
+			_ = client.Close()
+			if err := <-resultCh; !errors.Is(err, ErrInvalidChunkOffset) {
+				t.Fatalf("receiveOffer error = %v, want ErrInvalidChunkOffset", err)
+			}
+			if _, err := os.Stat(destPath); !os.IsNotExist(err) {
+				t.Fatalf("destination file exists after rejected chunk: %v", err)
+			}
+			partPath := destPath + ".part"
+			if info, err := os.Stat(partPath); err == nil && info.Size() != 0 {
+				t.Fatalf("partial file size = %d, want 0", info.Size())
+			}
+		})
+	}
+}
+
+func TestReceiveOfferAcceptsContinuousResumeAfterPartialFile(t *testing.T) {
+	tmpDir := t.TempDir()
+	destPath := filepath.Join(tmpDir, "resume.bin")
+	payload := []byte("abcdefghij")
+	if err := os.WriteFile(destPath+".part", payload[:4], 0o644); err != nil {
+		t.Fatalf("write partial file: %v", err)
+	}
+	service := NewService(Config{ReceiveDir: tmpDir})
+	offer := FileOffer{TaskID: "valid-resume", FileName: "resume.bin", TotalBytes: int64(len(payload)), SHA256: sha256Hex(payload)}
+	client, server := net.Pipe()
+	resultCh := make(chan error, 1)
+	go func() {
+		_, err := service.receiveOffer(context.Background(), server, offer, destPath, core.TransferSend)
+		resultCh <- err
+	}()
+	if _, msgType, ackPayload, err := protocol.ReadFrame(client); err != nil || msgType != protocol.MsgFileAck {
+		t.Fatalf("read resume ack: type=%d err=%v", msgType, err)
+	} else {
+		var ack FileAck
+		if err := json.Unmarshal(ackPayload, &ack); err != nil || ack.ResumeOffset != 4 {
+			t.Fatalf("unexpected resume ack: %+v err=%v", ack, err)
+		}
+	}
+	chunk := make([]byte, 8+len(payload)-4)
+	binary.BigEndian.PutUint64(chunk[:8], 4)
+	copy(chunk[8:], payload[4:])
+	if err := protocol.WriteFrame(client, protocol.StreamFile, protocol.MsgFileChunk, chunk); err != nil {
+		t.Fatalf("write resumed chunk: %v", err)
+	}
+	complete, _ := json.Marshal(FileComplete{TaskID: offer.TaskID, DoneBytes: int64(len(payload)), Success: true})
+	if err := protocol.WriteFrame(client, protocol.StreamFile, protocol.MsgFileComplete, complete); err != nil {
+		t.Fatalf("write complete: %v", err)
+	}
+	if _, msgType, _, err := protocol.ReadFrame(client); err != nil || msgType != protocol.MsgFileComplete {
+		t.Fatalf("read final complete: type=%d err=%v", msgType, err)
+	}
+	if err := <-resultCh; err != nil {
+		t.Fatalf("receiveOffer error = %v", err)
+	}
+	got, err := os.ReadFile(destPath)
+	if err != nil || !bytes.Equal(got, payload) {
+		t.Fatalf("resumed file mismatch: got %q err=%v", got, err)
+	}
+}
