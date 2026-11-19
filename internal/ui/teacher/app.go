@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"image"
 	"image/color"
@@ -24,6 +25,7 @@ import (
 
 	"nexlab/internal/core"
 	"nexlab/internal/protocol"
+	"nexlab/internal/remoteexec"
 	"nexlab/internal/store"
 	"nexlab/internal/ui/theme"
 )
@@ -110,6 +112,17 @@ type App struct {
 	monitoring        bool
 	remoteControlID   string
 	remoteControlOpen bool
+	remoteExecOpen    bool
+	remoteShell       string
+	remoteCommand     string
+	remoteExecutable  string
+	remoteArguments   string
+	remoteWorkDir     string
+	remoteTimeout     float64
+	remoteRequestID   string
+	remoteOutput      string
+	remoteResult      *remoteexec.CommandResult
+	remoteApps        []remoteexec.Application
 	screenLocked      bool
 	lockMessage       string
 	activeModeLabel   string
@@ -261,6 +274,8 @@ func New(opts Options) *App {
 		examPointsInput:   100,
 		distributePath:    "",
 		remoteDir:         "",
+		remoteShell:       string(remoteexec.ShellCMD),
+		remoteTimeout:     60,
 		collectSaveDir:    archiveDir,
 		autoOpenFile:      false,
 		fileTargetAll:     true,
@@ -838,6 +853,10 @@ func (a *App) View(c *ui.Context) {
 		a.buildRemoteControlModal(c, pal)
 	})
 
+	ui.Modal(c, &a.remoteExecOpen, func() {
+		a.buildRemoteExecModal(c, pal)
+	})
+
 	ui.Modal(c, &a.fileDistModal, func() {
 		ui.Column(c).Width(560).Height(500).Background(pal.Canvas).Border(1, pal.CardBorder).Radius(4).Children(func() {
 			a.buildFileDistributeContent(c, pal)
@@ -939,6 +958,11 @@ func (a *App) buildToolbar(c *ui.Context, pal theme.Palette) {
 			})
 			a.toolbarButton(c, pal, "远程控制", theme.IconRemoteControl, a.remoteControlID != "", func() {
 				a.StartRemoteControl(a.selectedID)
+			})
+			a.toolbarButton(c, pal, "远程操作", theme.IconSettings, a.remoteExecOpen, func() {
+				a.remoteExecOpen = true
+				a.remoteResult = nil
+				a.remoteOutput = ""
 			})
 			a.toolbarToggle(c, pal, "黑屏锁屏", theme.IconLockScreen, &a.screenLocked, func() {
 				a.applyScreenLock()
@@ -3446,6 +3470,180 @@ func (a *App) sendControlEnvelope(msgType protocol.MsgType, payload any, targetI
 			_ = a.opts.Transport.BroadcastControl(env, targets)
 		}()
 	}
+}
+
+func (a *App) openRemoteExecWindow() {
+	a.remoteExecOpen = true
+	a.remoteResult = nil
+	a.remoteOutput = ""
+}
+
+func (a *App) remoteTargetIDs() []string {
+	if len(a.selectedIDs) > 0 {
+		ids := make([]string, 0, len(a.selectedIDs))
+		for id, selected := range a.selectedIDs {
+			if selected {
+				ids = append(ids, id)
+			}
+		}
+		if len(ids) > 0 {
+			return ids
+		}
+	}
+	if a.selectedID != "" {
+		return []string{a.selectedID}
+	}
+	return nil
+}
+
+func (a *App) requestRemoteApps() {
+	a.remoteRequestID = fmt.Sprintf("apps-%d", time.Now().UnixNano())
+	a.remoteApps = nil
+	a.sendControlEnvelope(protocol.MsgRemoteAppListReq, nil, a.remoteTargetIDs())
+	a.statusNote = "正在获取学生端应用列表"
+}
+
+func (a *App) launchRemoteApp() {
+	targets := a.remoteTargetIDs()
+	if len(targets) == 0 {
+		a.statusNote = "请先选择学生设备"
+		return
+	}
+	a.remoteRequestID = fmt.Sprintf("app-%d", time.Now().UnixNano())
+	a.sendControlEnvelope(protocol.MsgRemoteAppLaunch, remoteexec.AppLaunchRequest{
+		RequestID:  a.remoteRequestID,
+		Executable: strings.TrimSpace(a.remoteExecutable),
+		Arguments:  a.remoteArguments,
+		WorkingDir: a.remoteWorkDir,
+		Wait:       false,
+	}, targets)
+	a.statusNote = "已发送远程启动请求"
+}
+
+func (a *App) runRemoteCommand() {
+	targets := a.remoteTargetIDs()
+	command := strings.TrimSpace(a.remoteCommand)
+	if len(targets) == 0 {
+		a.statusNote = "请先选择学生设备"
+		return
+	}
+	if command == "" {
+		a.statusNote = "请输入要执行的命令"
+		return
+	}
+	a.remoteRequestID = fmt.Sprintf("cmd-%d", time.Now().UnixNano())
+	shell := remoteexec.Shell(a.remoteShell)
+	a.sendControlEnvelope(protocol.MsgRemoteCommandStart, remoteexec.CommandRequest{
+		RequestID:  a.remoteRequestID,
+		Shell:      shell,
+		Command:    command,
+		WorkingDir: a.remoteWorkDir,
+		TimeoutSec: int(a.remoteTimeout),
+	}, targets)
+	a.remoteResult = &remoteexec.CommandResult{RequestID: a.remoteRequestID, Status: "running"}
+	a.remoteOutput = ""
+	a.statusNote = "远程命令执行中"
+}
+
+func (a *App) cancelRemoteCommand() {
+	if a.remoteRequestID == "" {
+		return
+	}
+	a.sendControlEnvelope(protocol.MsgRemoteCommandCancel, nil, a.remoteTargetIDs())
+	a.statusNote = "已发送取消远程命令请求"
+}
+
+func (a *App) handleRemoteEnvelope(env protocol.Envelope) {
+	switch env.Type {
+	case protocol.MsgRemoteAppListResp:
+		var apps []remoteexec.Application
+		if json.Unmarshal(env.Payload, &apps) == nil {
+			a.remoteApps = apps
+			a.statusNote = fmt.Sprintf("已获取 %d 个可用应用", len(apps))
+		}
+	case protocol.MsgRemoteCommandOutput:
+		var output remoteexec.CommandOutput
+		if json.Unmarshal(env.Payload, &output) == nil {
+			if a.remoteRequestID == "" || output.RequestID == a.remoteRequestID {
+				a.remoteOutput += output.Data
+			}
+		}
+	case protocol.MsgRemoteCommandResult, protocol.MsgRemoteAppResult:
+		var result remoteexec.CommandResult
+		if json.Unmarshal(env.Payload, &result) == nil {
+			a.remoteResult = &result
+			a.statusNote = "远程操作" + result.Status
+		}
+	}
+}
+
+func (a *App) HandleRemoteEnvelope(env protocol.Envelope) {
+	a.handleRemoteEnvelope(env)
+	a.Invalidate()
+}
+
+func (a *App) buildRemoteExecModal(c *ui.Context, pal theme.Palette) {
+	ui.Column(c).Width(720).Height(620).Background(pal.Canvas).Border(1, pal.CardBorder).Radius(4).Padding(14).Gap(8).Children(func() {
+		ui.Row(c).FillWidth().AlignItems(ui.Center).Children(func() {
+			ui.Text(c, "远程操作").FontSize(16).Bold()
+			ui.Spacer(c)
+			if ui.Button(c, "关闭").Clicked() {
+				a.remoteExecOpen = false
+			}
+		})
+		ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(8).Children(func() {
+			ui.Text(c, "目标").FontSize(12).Bold()
+			ui.Text(c, fmt.Sprintf("已选 %d 台设备", len(a.remoteTargetIDs()))).FontSize(12).TextColor(pal.TextMuted)
+			ui.Spacer(c)
+			if ui.Button(c, "刷新应用列表").Clicked() {
+				a.requestRemoteApps()
+			}
+		})
+		ui.Text(c, "应用列表（也可直接填写路径）").FontSize(12).Bold()
+		ui.Scroll(c).Height(130).FillWidth().ScrollbarAxes(false, true).Scrollbars(true).KeepScrollbars(true).Children(func() {
+			for _, app := range a.remoteApps {
+				appCopy := app
+				ui.Row(c).Key("remote-app-" + app.ID).FillWidth().AlignItems(ui.Center).Gap(6).Children(func() {
+					ui.Text(c, appCopy.Name).Width(180).SingleLine()
+					ui.Text(c, appCopy.Executable).Grow(1).SingleLine().TextColor(pal.TextMuted)
+					if ui.Button(c, "选择").Padding(2, 8).Clicked() {
+						a.remoteExecutable = appCopy.Executable
+						a.remoteWorkDir = appCopy.WorkingDir
+					}
+				})
+			}
+		})
+		ui.TextInput(c, &a.remoteExecutable).Placeholder("可执行文件路径，例如 C:\\Windows\\System32\\notepad.exe")
+		ui.TextInput(c, &a.remoteArguments).Placeholder("启动参数，可选")
+		if ui.Button(c, "启动程序").Clicked() {
+			a.launchRemoteApp()
+		}
+		ui.Divider(c)
+		ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(8).Children(func() {
+			ui.Text(c, "Shell").FontSize(12).Bold()
+			ui.Select(c, &a.remoteShell, []string{string(remoteexec.ShellCMD), string(remoteexec.ShellPowerShell)}).Width(130)
+			ui.Text(c, "超时秒数").FontSize(12).Bold()
+			ui.NumberInput(c, &a.remoteTimeout, 1, 600, 1).Width(90)
+		})
+		ui.TextInput(c, &a.remoteWorkDir).Placeholder("工作目录，可选")
+		ui.TextInput(c, &a.remoteCommand).Placeholder("输入 CMD 或 PowerShell 命令").FillWidth()
+		ui.Row(c).Gap(8).Children(func() {
+			if ui.PrimaryButton(c, "执行命令").Clicked() {
+				a.runRemoteCommand()
+			}
+			if ui.Button(c, "取消命令").Clicked() {
+				a.cancelRemoteCommand()
+			}
+		})
+		ui.Text(c, "输出").FontSize(12).Bold()
+		ui.Scroll(c).Grow(1).FillWidth().ScrollbarAxes(false, true).Scrollbars(true).KeepScrollbars(true).Background(pal.Card).Border(1, pal.CardBorder).Padding(8).Children(func() {
+			ui.Text(c, a.remoteOutput).FontSize(11).TextColor(pal.Text)
+			if a.remoteResult != nil {
+				ui.Divider(c)
+				ui.Text(c, fmt.Sprintf("状态：%s  退出码：%d  %s", a.remoteResult.Status, a.remoteResult.ExitCode, a.remoteResult.Error)).FontSize(11).TextColor(pal.TextMuted)
+			}
+		})
+	})
 }
 
 func (a *App) controlSendWorker() {

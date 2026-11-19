@@ -295,6 +295,8 @@ func (rt *Runtime) wireHandlers() {
 					}(targetID, req.FileName, req.RemotePath, req.SHA256, req.AutoOpen)
 				}
 			}
+		case protocol.MsgRemoteAppListResp, protocol.MsgRemoteAppResult, protocol.MsgRemoteCommandOutput, protocol.MsgRemoteCommandResult:
+			rt.App.HandleRemoteEnvelope(env)
 		case protocol.MsgVideoFrame:
 			var pkt videoStreamPacket
 			if err := json.Unmarshal(env.Payload, &pkt); err == nil && len(pkt.Data) > 0 {
