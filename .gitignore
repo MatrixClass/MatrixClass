@@ -24,3 +24,4 @@ Thumbs.db
 
 /build/darwin-stage-*
 /build/platform-check-*
+/build/linux-validation/
