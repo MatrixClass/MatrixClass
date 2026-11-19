@@ -688,7 +688,9 @@ func main() {
 		log.SetFlags(0)
 	}
 	log.Printf("student starting channel=%s id=%s", *channel, *studentID)
-	log.Printf("platform capabilities: %+v", platform.Detect())
+	capabilities := platform.Detect()
+	log.Printf("platform capabilities: %s", capabilities.Summary())
+	log.Printf("platform capabilities detail: %+v", capabilities)
 
 	if *recvDir == "" {
 		if home, err := os.UserHomeDir(); err == nil && home != "" {

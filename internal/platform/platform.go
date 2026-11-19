@@ -1,5 +1,7 @@
 package platform
 
+import "fmt"
+
 type Desktop string
 
 const (
@@ -8,18 +10,44 @@ const (
 	DesktopWayland Desktop = "wayland"
 )
 
+type CapabilityStatus string
+
+const (
+	StatusUnknown     CapabilityStatus = "unknown"
+	StatusAvailable   CapabilityStatus = "available"
+	StatusUnavailable CapabilityStatus = "unavailable"
+	StatusRestricted  CapabilityStatus = "restricted"
+)
+
 type Capabilities struct {
-	OS                string  `json:"os"`
-	Architecture      string  `json:"architecture"`
-	Desktop           Desktop `json:"desktop"`
-	ScreenCapture     bool    `json:"screen_capture"`
-	AudioCapture      bool    `json:"audio_capture"`
-	RemoteInput       bool    `json:"remote_input"`
-	ScreenLock        bool    `json:"screen_lock"`
-	PowerControl      bool    `json:"power_control"`
-	ProcessControl    bool    `json:"process_control"`
-	AppDiscovery      bool    `json:"app_discovery"`
-	CommandExecution  bool    `json:"command_execution"`
-	SystemTray        bool    `json:"system_tray"`
-	WaylandRestricted bool    `json:"wayland_restricted"`
+	OS                  string           `json:"os"`
+	Architecture        string           `json:"architecture"`
+	Desktop             Desktop          `json:"desktop"`
+	ScreenCapture       bool             `json:"screen_capture"`
+	AudioCapture        bool             `json:"audio_capture"`
+	RemoteInput         bool             `json:"remote_input"`
+	ScreenLock          bool             `json:"screen_lock"`
+	PowerControl        bool             `json:"power_control"`
+	ProcessControl      bool             `json:"process_control"`
+	AppDiscovery        bool             `json:"app_discovery"`
+	CommandExecution    bool             `json:"command_execution"`
+	SystemTray          bool             `json:"system_tray"`
+	WaylandRestricted   bool             `json:"wayland_restricted"`
+	ScreenCaptureStatus CapabilityStatus `json:"screen_capture_status"`
+	ScreenCaptureReason string           `json:"screen_capture_reason,omitempty"`
+	AudioCaptureStatus  CapabilityStatus `json:"audio_capture_status"`
+	AudioCaptureReason  string           `json:"audio_capture_reason,omitempty"`
+	RemoteInputStatus   CapabilityStatus `json:"remote_input_status"`
+	RemoteInputReason   string           `json:"remote_input_reason,omitempty"`
+	ScreenLockStatus    CapabilityStatus `json:"screen_lock_status"`
+	ScreenLockReason    string           `json:"screen_lock_reason,omitempty"`
+}
+
+func (c Capabilities) Summary() string {
+	return fmt.Sprintf("%s/%s desktop=%s screen=%s(%s) audio=%s(%s) input=%s(%s) lock=%s(%s)",
+		c.OS, c.Architecture, c.Desktop,
+		c.ScreenCaptureStatus, c.ScreenCaptureReason,
+		c.AudioCaptureStatus, c.AudioCaptureReason,
+		c.RemoteInputStatus, c.RemoteInputReason,
+		c.ScreenLockStatus, c.ScreenLockReason)
 }

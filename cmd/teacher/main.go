@@ -627,7 +627,9 @@ func main() {
 		log.SetFlags(0)
 	}
 	log.Printf("teacher starting channel=%s listen=%s", *channel, *listenAddr)
-	log.Printf("platform capabilities: %+v", platform.Detect())
+	capabilities := platform.Detect()
+	log.Printf("platform capabilities: %s", capabilities.Summary())
+	log.Printf("platform capabilities detail: %+v", capabilities)
 
 	if *archiveDir == "" {
 		if home, err := os.UserHomeDir(); err == nil && home != "" {
