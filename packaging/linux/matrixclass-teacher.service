@@ -1,0 +1,13 @@
+[Unit]
+Description=MatrixClass Teacher
+After=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/matrixclass-teacher
+Restart=on-failure
+RestartSec=3
+Environment=GOWORK=off
+
+[Install]
+WantedBy=default.target

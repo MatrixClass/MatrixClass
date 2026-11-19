@@ -1,0 +1,44 @@
+name: Linux build
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  linux-build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [amd64, arm64, loong64]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Verify forbidden copyleft dependency markers
+        shell: bash
+        run: |
+          ! grep -Eiq '(GPL|LGPL|AGPL)' go.mod go.sum
+      - name: Run tests on amd64
+        if: matrix.arch == 'amd64'
+        run: go test -tags mygo_nowebview -count=1 ./...
+      - name: Build Linux targets
+        shell: bash
+        run: |
+          mkdir -p dist/linux
+          GOOS=linux GOARCH=${{ matrix.arch }} CGO_ENABLED=0 go build -tags mygo_nowebview -o dist/linux/matrixclass-teacher-linux-${{ matrix.arch }} ./cmd/teacher
+          GOOS=linux GOARCH=${{ matrix.arch }} CGO_ENABLED=0 go build -tags mygo_nowebview -o dist/linux/matrixclass-student-linux-${{ matrix.arch }} ./cmd/student
+      - name: Build tar package
+        shell: bash
+        run: ./scripts/build-linux-package.sh dist/linux
+      - name: Generate checksums
+        shell: bash
+        run: find dist/linux -maxdepth 1 -type f -print0 | sort -z | xargs -0 sha256sum > dist/linux/SHA256SUMS.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: matrixclass-linux-${{ matrix.arch }}
+          path: dist/linux

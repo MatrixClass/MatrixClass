@@ -19,6 +19,8 @@ foreach ($arch in $architectures) {
     Copy-Item (Join-Path $repoRoot "packaging/linux/matrixclass-teacher.desktop") $stage
     Copy-Item (Join-Path $repoRoot "packaging/linux/matrixclass-student.desktop") $stage
     Copy-Item (Join-Path $repoRoot "packaging/linux/matrixclass.svg") $stage
+    Copy-Item (Join-Path $repoRoot "packaging/linux/matrixclass-teacher.service") $stage
+    Copy-Item (Join-Path $repoRoot "packaging/linux/matrixclass-student.service") $stage
     Copy-Item (Join-Path $repoRoot "packaging/linux/install.sh") $stage
     Copy-Item (Join-Path $repoRoot "packaging/linux/uninstall.sh") $stage
     Copy-Item (Join-Path $repoRoot "packaging/linux/README.md") $stage
@@ -27,3 +29,10 @@ foreach ($arch in $architectures) {
 }
 
 Write-Host "Linux packages completed: $($architectures -join ', ')"
+
+if (-not (Get-Command dpkg-deb -ErrorAction SilentlyContinue)) {
+    Write-Host "Skipping .deb generation: dpkg-deb is unavailable on this host."
+}
+if (-not (Get-Command rpmbuild -ErrorAction SilentlyContinue)) {
+    Write-Host "Skipping .rpm generation: rpmbuild is unavailable on this host."
+}
