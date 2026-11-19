@@ -829,7 +829,7 @@ func (a *App) View(c *ui.Context) {
 	})
 
 	ui.Modal(c, &a.policyModal, func() {
-		ui.Column(c).Width(520).MaxHeight(620).Background(pal.Canvas).Border(1, pal.CardBorder).Radius(6).Padding(16).Gap(10).Children(func() {
+		ui.Column(c).Width(520).Height(680).Background(pal.Canvas).Border(1, pal.CardBorder).Radius(6).Padding(16).Gap(10).Children(func() {
 			ui.Row(c).FillWidth().AlignItems(ui.Center).Children(func() {
 				ui.Text(c, "管控策略编排").FontSize(16).Bold()
 				ui.Spacer(c)
