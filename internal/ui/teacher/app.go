@@ -2652,13 +2652,28 @@ func (a *App) DistributeQueue() {
 		return
 	}
 	autoOpen := a.autoOpenFile
+	a.mu.Lock()
+	if a.fileSending {
+		a.statusNote = "已有文件分发任务正在进行"
+		a.mu.Unlock()
+		return
+	}
 	a.fileSending = true
 	a.statusNote = fmt.Sprintf("正在向 %d 台学生分发 %d 个文件...", len(targets), len(items))
+	a.mu.Unlock()
 	ctx, ok := a.lifecycleContext()
 	if !ok {
+		a.mu.Lock()
+		a.fileSending = false
+		a.mu.Unlock()
 		return
 	}
 	go func() {
+		defer func() {
+			a.mu.Lock()
+			a.fileSending = false
+			a.mu.Unlock()
+		}()
 		sent := 0
 		var lastErr error
 		for _, it := range items {
@@ -2676,7 +2691,6 @@ func (a *App) DistributeQueue() {
 			a.mu.Unlock()
 			return
 		}
-		a.fileSending = false
 		if lastErr != nil {
 			a.statusNote = fmt.Sprintf("分发完成 %d/%d（部分失败: %v）", sent, len(items), lastErr)
 		} else {

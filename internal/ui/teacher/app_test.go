@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -18,9 +19,11 @@ import (
 type blockingTeacherFiles struct {
 	started   chan struct{}
 	cancelled chan struct{}
+	calls     atomic.Int32
 }
 
 func (f *blockingTeacherFiles) DistributeFile(ctx context.Context, _ string, _ string, _ []string, _ bool) (*core.TransferTask, error) {
+	f.calls.Add(1)
 	select {
 	case <-f.started:
 	default:
@@ -33,6 +36,37 @@ func (f *blockingTeacherFiles) DistributeFile(ctx context.Context, _ string, _ s
 		close(f.cancelled)
 	}
 	return nil, ctx.Err()
+}
+
+func TestTeacherDistributeQueueDoesNotStartDuplicateBatch(t *testing.T) {
+	files := &blockingTeacherFiles{started: make(chan struct{}), cancelled: make(chan struct{})}
+	app := New(Options{Services: Services{
+		Transport: demo.NewTransport("301", 1),
+		Classroom: demo.NewClassroom(),
+		Files:     files,
+	}})
+	app.distributePath = "lesson.pdf"
+	app.fileTargetAll = true
+
+	app.DistributeQueue()
+	select {
+	case <-files.started:
+	case <-time.After(time.Second):
+		t.Fatal("first file batch did not start")
+	}
+	app.DistributeQueue()
+	if got := files.calls.Load(); got != 1 {
+		t.Fatalf("expected one active distribution batch, got %d", got)
+	}
+
+	if err := app.Close(); err != nil {
+		t.Fatalf("close app: %v", err)
+	}
+	select {
+	case <-files.cancelled:
+	case <-time.After(time.Second):
+		t.Fatal("active file batch was not cancelled")
+	}
 }
 func (f *blockingTeacherFiles) SubmitHomework(context.Context, string, string) (*core.TransferTask, error) {
 	return nil, nil
