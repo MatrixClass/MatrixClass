@@ -16,6 +16,7 @@ import (
 var ErrLinuxAudioUnavailable = errors.New("media: no PipeWire or PulseAudio command is available")
 
 var linuxLookPath = exec.LookPath
+var linuxExecCommand = exec.Command
 
 type linuxAudioCommand struct {
 	name string
@@ -30,6 +31,7 @@ type AudioEngine struct {
 	capture  *exec.Cmd
 	playback *exec.Cmd
 	playIn   io.WriteCloser
+	playDone chan struct{}
 }
 
 func NewAudioEngine() *AudioEngine { return &AudioEngine{volume: 1.0} }
@@ -63,7 +65,7 @@ func (a *AudioEngine) StartCapture(loopback bool, onFrame func(*core.AudioFrame)
 				return
 			default:
 			}
-			cmd := exec.Command(command.name, command.args...)
+			cmd := linuxExecCommand(command.name, command.args...)
 			stdout, err := cmd.StdoutPipe()
 			if err != nil {
 				return
@@ -186,7 +188,7 @@ func (a *AudioEngine) ensurePlaybackLocked(frame *core.AudioFrame) error {
 	if !ok {
 		return ErrLinuxAudioUnavailable
 	}
-	cmd := exec.Command(command.name, command.args...)
+	cmd := linuxExecCommand(command.name, command.args...)
 	input, err := cmd.StdinPipe()
 	if err != nil {
 		return err
@@ -195,7 +197,22 @@ func (a *AudioEngine) ensurePlaybackLocked(frame *core.AudioFrame) error {
 		return err
 	}
 	a.playback, a.playIn = cmd, input
+	done := make(chan struct{})
+	a.playDone = done
+	go a.watchPlayback(cmd, done)
 	return nil
+}
+
+func (a *AudioEngine) watchPlayback(cmd *exec.Cmd, done chan struct{}) {
+	_ = cmd.Wait()
+	a.mu.Lock()
+	if a.playback == cmd {
+		a.playback = nil
+		a.playIn = nil
+		a.playDone = nil
+	}
+	a.mu.Unlock()
+	close(done)
 }
 
 func (a *AudioEngine) resetPlaybackLocked() {
@@ -205,7 +222,7 @@ func (a *AudioEngine) resetPlaybackLocked() {
 	if a.playback != nil && a.playback.Process != nil {
 		_ = a.playback.Process.Kill()
 	}
-	a.playIn, a.playback = nil, nil
+	a.playIn, a.playback, a.playDone = nil, nil, nil
 }
 
 func (a *AudioEngine) SetVolume(vol float32) {
@@ -228,14 +245,19 @@ func (a *AudioEngine) Volume() float32 {
 func (a *AudioEngine) Close() error {
 	_ = a.StopCapture()
 	a.mu.Lock()
-	input, cmd := a.playIn, a.playback
-	a.playIn, a.playback = nil, nil
+	input, cmd, done := a.playIn, a.playback, a.playDone
+	a.playIn, a.playback, a.playDone = nil, nil, nil
 	a.mu.Unlock()
 	if input != nil {
 		_ = input.Close()
 	}
 	if cmd != nil {
-		_ = cmd.Wait()
+		if cmd.Process != nil {
+			_ = cmd.Process.Kill()
+		}
+	}
+	if done != nil {
+		<-done
 	}
 	return nil
 }
