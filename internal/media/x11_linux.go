@@ -119,7 +119,10 @@ func newNativeScreenCapture(opts CaptureOptions) nativeScreenCapture {
 func (x *x11Capture) Backend() CaptureBackend { return CaptureBackendX11 }
 
 func (x *x11Capture) Capture(maxW, maxH int, withNV12 bool) (*core.VideoFrame, bool, error) {
-	if x == nil || x.display == 0 {
+	if x == nil {
+		return nil, false, errors.New("media: X11 display is closed")
+	}
+	if x.display == 0 && !x.reopen() {
 		return nil, false, errors.New("media: X11 display is closed")
 	}
 	imagePtr := x.getImage(x.display, x.root, 0, 0, x.width, x.height, x11AllPlanes, x11ZPixmap)
@@ -127,7 +130,7 @@ func (x *x11Capture) Capture(maxW, maxH int, withNV12 bool) (*core.VideoFrame, b
 		imagePtr = x.getImage(x.display, x.root, 0, 0, x.width, x.height, x11AllPlanes, x11ZPixmap)
 	}
 	if imagePtr == 0 {
-		return nil, false, errors.New("media: XGetImage failed")
+		return nil, false, errors.New("media: XGetImage failed; X11 display reconnect did not produce an image")
 	}
 	defer x.destroyImage(imagePtr)
 	img := (*x11Image)(unsafe.Pointer(imagePtr))

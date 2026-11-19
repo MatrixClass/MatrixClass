@@ -29,3 +29,31 @@ func TestX11ReadPixelSupports24BPP(t *testing.T) {
 		t.Fatalf("unexpected big-endian 24bpp pixel: %#x", pixel)
 	}
 }
+
+func TestX11CaptureReconnectsWhenDisplayHandleIsLost(t *testing.T) {
+	opened := 0
+	closed := 0
+	capture := &x11Capture{
+		openDisplay: func(*byte) uintptr {
+			opened++
+			return 22
+		},
+		defaultRoot: func(uintptr) uintptr { return 33 },
+		closeDisplay: func(uintptr) int32 {
+			closed++
+			return 1
+		},
+		getGeometry: func(_ uintptr, _ uintptr, _ *uintptr, _ *int32, _ *int32, width, height, _, _ *uint32) int32 {
+			*width, *height = 1920, 1080
+			return 1
+		},
+		maxWidth:  640,
+		maxHeight: 360,
+	}
+	if !capture.reopen() {
+		t.Fatal("expected display reconnect")
+	}
+	if opened != 1 || closed != 0 || capture.display != 22 || capture.root != 33 || capture.width != 640 || capture.height != 360 {
+		t.Fatalf("unexpected reconnect state: opened=%d closed=%d capture=%+v", opened, closed, capture)
+	}
+}
