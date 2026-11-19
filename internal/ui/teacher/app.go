@@ -66,6 +66,11 @@ const (
 	SideTabPolicy
 )
 
+const (
+	remoteExecPanelLaunch = iota
+	remoteExecPanelCommand
+)
+
 // App is the MyGo native Teacher Console for 矩联电子教室 MatrixClass.
 type App struct {
 	mu sync.Mutex
@@ -113,6 +118,7 @@ type App struct {
 	remoteControlID   string
 	remoteControlOpen bool
 	remoteExecOpen    bool
+	remoteExecPanel   int
 	remoteShell       string
 	remoteCommand     string
 	remoteExecutable  string
@@ -276,6 +282,7 @@ func New(opts Options) *App {
 		remoteDir:         "",
 		remoteShell:       string(remoteexec.ShellCMD),
 		remoteTimeout:     60,
+		remoteExecPanel:   remoteExecPanelLaunch,
 		collectSaveDir:    archiveDir,
 		autoOpenFile:      false,
 		fileTargetAll:     true,
@@ -3583,66 +3590,99 @@ func (a *App) HandleRemoteEnvelope(env protocol.Envelope) {
 }
 
 func (a *App) buildRemoteExecModal(c *ui.Context, pal theme.Palette) {
-	ui.Column(c).Width(720).Height(620).Background(pal.Canvas).Border(1, pal.CardBorder).Radius(4).Padding(14).Gap(8).Children(func() {
+	ui.Column(c).Width(820).Height(620).Background(pal.Canvas).Border(1, pal.CardBorder).Radius(4).Padding(14).Gap(8).Children(func() {
 		ui.Row(c).FillWidth().AlignItems(ui.Center).Children(func() {
 			ui.Text(c, "远程操作").FontSize(16).Bold()
 			ui.Spacer(c)
+			ui.Text(c, fmt.Sprintf("已选 %d 台设备", len(a.remoteTargetIDs()))).FontSize(11).TextColor(pal.TextMuted)
 			if ui.Button(c, "关闭").Clicked() {
 				a.remoteExecOpen = false
 			}
 		})
-		ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(8).Children(func() {
-			ui.Text(c, "目标").FontSize(12).Bold()
-			ui.Text(c, fmt.Sprintf("已选 %d 台设备", len(a.remoteTargetIDs()))).FontSize(12).TextColor(pal.TextMuted)
-			ui.Spacer(c)
-			if ui.Button(c, "刷新应用列表").Clicked() {
-				a.requestRemoteApps()
-			}
-		})
-		ui.Text(c, "应用列表（也可直接填写路径）").FontSize(12).Bold()
-		ui.Scroll(c).Height(130).FillWidth().ScrollbarAxes(false, true).Scrollbars(true).KeepScrollbars(true).Children(func() {
-			for _, app := range a.remoteApps {
-				appCopy := app
-				ui.Row(c).Key("remote-app-" + app.ID).FillWidth().AlignItems(ui.Center).Gap(6).Children(func() {
-					ui.Text(c, appCopy.Name).Width(180).SingleLine()
-					ui.Text(c, appCopy.Executable).Grow(1).SingleLine().TextColor(pal.TextMuted)
-					if ui.Button(c, "选择").Padding(2, 8).Clicked() {
-						a.remoteExecutable = appCopy.Executable
-						a.remoteWorkDir = appCopy.WorkingDir
-					}
-				})
-			}
-		})
-		ui.TextInput(c, &a.remoteExecutable).Placeholder("可执行文件路径，例如 C:\\Windows\\System32\\notepad.exe")
-		ui.TextInput(c, &a.remoteArguments).Placeholder("启动参数，可选")
-		if ui.Button(c, "启动程序").Clicked() {
-			a.launchRemoteApp()
-		}
-		ui.Divider(c)
-		ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(8).Children(func() {
-			ui.Text(c, "Shell").FontSize(12).Bold()
-			ui.Select(c, &a.remoteShell, []string{string(remoteexec.ShellCMD), string(remoteexec.ShellPowerShell)}).Width(130)
-			ui.Text(c, "超时秒数").FontSize(12).Bold()
-			ui.NumberInput(c, &a.remoteTimeout, 1, 600, 1).Width(90)
-		})
-		ui.TextInput(c, &a.remoteWorkDir).Placeholder("工作目录，可选")
-		ui.TextInput(c, &a.remoteCommand).Placeholder("输入 CMD 或 PowerShell 命令").FillWidth()
-		ui.Row(c).Gap(8).Children(func() {
-			if ui.PrimaryButton(c, "执行命令").Clicked() {
-				a.runRemoteCommand()
-			}
-			if ui.Button(c, "取消命令").Clicked() {
-				a.cancelRemoteCommand()
-			}
-		})
-		ui.Text(c, "输出").FontSize(12).Bold()
-		ui.Scroll(c).Grow(1).FillWidth().ScrollbarAxes(false, true).Scrollbars(true).KeepScrollbars(true).Background(pal.Card).Border(1, pal.CardBorder).Padding(8).Children(func() {
-			ui.Text(c, a.remoteOutput).FontSize(11).TextColor(pal.Text)
-			if a.remoteResult != nil {
+		ui.Row(c).FillWidth().Grow(1).Gap(10).Children(func() {
+			ui.Column(c).Width(150).FillHeight().Background(pal.Card).Border(1, pal.CardBorder).Radius(4).Padding(8).Gap(6).Children(func() {
+				ui.Text(c, "操作类型").FontSize(12).Bold().TextColor(pal.TextMuted)
+				launchButton := ui.Button(c, "启动程序").FillWidth().Padding(6, 8).Radius(4)
+				if a.remoteExecPanel == remoteExecPanelLaunch {
+					launchButton.Background(pal.Selection).Border(1, pal.CardBorder)
+				}
+				if launchButton.Clicked() {
+					a.remoteExecPanel = remoteExecPanelLaunch
+				}
+				commandButton := ui.Button(c, "执行命令").FillWidth().Padding(6, 8).Radius(4)
+				if a.remoteExecPanel == remoteExecPanelCommand {
+					commandButton.Background(pal.Selection).Border(1, pal.CardBorder)
+				}
+				if commandButton.Clicked() {
+					a.remoteExecPanel = remoteExecPanelCommand
+				}
 				ui.Divider(c)
-				ui.Text(c, fmt.Sprintf("状态：%s  退出码：%d  %s", a.remoteResult.Status, a.remoteResult.ExitCode, a.remoteResult.Error)).FontSize(11).TextColor(pal.TextMuted)
-			}
+				if ui.Button(c, "刷新应用").FillWidth().Padding(5, 8).Clicked() {
+					a.requestRemoteApps()
+				}
+			})
+			ui.Column(c).Grow(1).FillHeight().Gap(8).Children(func() {
+				if a.remoteExecPanel == remoteExecPanelLaunch {
+					a.buildRemoteLaunchPanel(c, pal)
+				} else {
+					a.buildRemoteCommandPanel(c, pal)
+				}
+			})
 		})
+	})
+}
+
+func (a *App) buildRemoteLaunchPanel(c *ui.Context, pal theme.Palette) {
+	ui.Text(c, "启动程序").FontSize(14).Bold()
+	ui.Text(c, "应用列表来自学生端控制面板中的“程序和功能”").FontSize(11).TextColor(pal.TextMuted)
+	ui.Scroll(c).Grow(1).FillWidth().ScrollbarAxes(false, true).Scrollbars(true).KeepScrollbars(true).Background(pal.Card).Border(1, pal.CardBorder).Padding(8).Children(func() {
+		for _, app := range a.remoteApps {
+			appCopy := app
+			ui.Row(c).Key("remote-app-"+app.ID).FillWidth().AlignItems(ui.Center).Gap(6).Padding(4, 0).Children(func() {
+				ui.Column(c).Grow(1).Gap(2).Children(func() {
+					ui.Text(c, appCopy.Name).FontSize(12).SingleLine()
+					ui.Text(c, appCopy.Executable).FontSize(10).SingleLine().TextColor(pal.TextMuted)
+				})
+				if ui.Button(c, "选择").Padding(2, 8).Clicked() {
+					a.remoteExecutable = appCopy.Executable
+					a.remoteWorkDir = appCopy.WorkingDir
+				}
+			})
+		}
+	})
+	ui.TextInput(c, &a.remoteExecutable).Placeholder("可执行文件路径，例如 C:\\Program Files\\App\\App.exe")
+	ui.TextInput(c, &a.remoteArguments).Placeholder("启动参数，可选")
+	ui.TextInput(c, &a.remoteWorkDir).Placeholder("工作目录，可选")
+	if ui.PrimaryButton(c, "启动").Clicked() {
+		a.launchRemoteApp()
+	}
+}
+
+func (a *App) buildRemoteCommandPanel(c *ui.Context, pal theme.Palette) {
+	ui.Text(c, "执行命令").FontSize(14).Bold()
+	ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(8).Children(func() {
+		ui.Text(c, "Shell").FontSize(12).Bold()
+		ui.Select(c, &a.remoteShell, []string{string(remoteexec.ShellCMD), string(remoteexec.ShellPowerShell)}).Width(130)
+		ui.Text(c, "超时秒数").FontSize(12).Bold()
+		ui.NumberInput(c, &a.remoteTimeout, 1, 600, 1).Width(90)
+	})
+	ui.TextInput(c, &a.remoteWorkDir).Placeholder("工作目录，可选")
+	ui.TextInput(c, &a.remoteCommand).Placeholder("输入 CMD 或 PowerShell 命令").FillWidth()
+	ui.Row(c).Gap(8).Children(func() {
+		if ui.PrimaryButton(c, "开始执行").Clicked() {
+			a.runRemoteCommand()
+		}
+		if ui.Button(c, "取消命令").Clicked() {
+			a.cancelRemoteCommand()
+		}
+	})
+	ui.Text(c, "输出").FontSize(12).Bold()
+	ui.Scroll(c).Grow(1).FillWidth().ScrollbarAxes(false, true).Scrollbars(true).KeepScrollbars(true).Background(pal.Card).Border(1, pal.CardBorder).Padding(8).Children(func() {
+		ui.Text(c, a.remoteOutput).FontSize(11).TextColor(pal.Text)
+		if a.remoteResult != nil {
+			ui.Divider(c)
+			ui.Text(c, fmt.Sprintf("状态：%s  退出码：%d  %s", a.remoteResult.Status, a.remoteResult.ExitCode, a.remoteResult.Error)).FontSize(11).TextColor(pal.TextMuted)
+		}
 	})
 }
 

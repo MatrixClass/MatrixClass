@@ -108,6 +108,26 @@ func TestTeacherConsoleViewsAndTabs(t *testing.T) {
 	}
 }
 
+func TestRemoteExecUsesSplitPanelNavigation(t *testing.T) {
+	app, _, _, _ := newTestTeacherApp()
+	if app.remoteExecPanel != remoteExecPanelLaunch {
+		t.Fatalf("expected launch panel by default, got %d", app.remoteExecPanel)
+	}
+	app.remoteExecOpen = true
+	tester := ui.NewTester(app.View, 1280, 820)
+	tester.Frame()
+	if !tester.HasText("启动程序") || !tester.HasText("执行命令") {
+		t.Fatal("expected split remote operation navigation")
+	}
+	if err := tester.Click("执行命令"); err != nil {
+		t.Fatalf("click execute command navigation failed: %v", err)
+	}
+	tester.Frame()
+	if app.remoteExecPanel != remoteExecPanelCommand {
+		t.Fatalf("expected command panel, got %d", app.remoteExecPanel)
+	}
+}
+
 func TestTeacherRightSidebarAndActions(t *testing.T) {
 	app, _, cr, ctrl := newTestTeacherApp()
 	tester := ui.NewTester(app.View, 1280, 820)
