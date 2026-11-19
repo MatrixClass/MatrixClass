@@ -21,3 +21,13 @@ go build -tags mygo_nowebview -o dist/nexlab-student.exe ./cmd/student
 .\dist\nexlab-teacher.exe --demo
 .\dist\nexlab-student.exe --demo
 ```
+
+### Linux 多架构构建
+
+当前提供 `linux/amd64`、`linux/arm64` 和 `linux/loong64` 的 `CGO_ENABLED=0` 交叉构建：
+
+```powershell
+.\scripts\build-linux.ps1
+```
+
+Linux 端当前已支持基础窗口启动、KCP/SMUX 网络、文件传输、课堂消息、Linux Shell 远程命令和 XDG `.desktop` 应用列表解析。屏幕采集、音频采集、Wayland 授权、远程输入和桌面锁定仍需在对应发行版与桌面环境上进行原生适配和实机验证；非 Windows 的媒体采集当前使用测试回退实现，不应作为生产屏幕广播能力使用。
