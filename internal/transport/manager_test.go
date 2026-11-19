@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"errors"
 	"fmt"
 	"net"
 	"sync"
@@ -23,6 +24,24 @@ func freeUDPPort(t *testing.T) int {
 	port := pc.LocalAddr().(*net.UDPAddr).Port
 	_ = pc.Close()
 	return port
+}
+
+func waitForManagerCondition(t *testing.T, timeout time.Duration, condition func() bool) {
+	t.Helper()
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	ticker := time.NewTicker(time.Millisecond)
+	defer ticker.Stop()
+	for {
+		if condition() {
+			return
+		}
+		select {
+		case <-timer.C:
+			t.Fatalf("manager condition not met within %s", timeout)
+		case <-ticker.C:
+		}
+	}
 }
 
 func TestManagerDiscoveryAndEnvelopeDelivery(t *testing.T) {
@@ -133,11 +152,9 @@ func TestManagerDiscoveryAndEnvelopeDelivery(t *testing.T) {
 		t.Fatalf("timed out waiting for BroadcastControl")
 	}
 
-	time.Sleep(120 * time.Millisecond)
-	stats := teacher.Stats()
-	if stats.ActiveSessions != 1 {
-		t.Fatalf("expected 1 active session on teacher, got %d", stats.ActiveSessions)
-	}
+	waitForManagerCondition(t, time.Second, func() bool {
+		return teacher.Stats().ActiveSessions == 1
+	})
 }
 
 func TestManagerMulticastFECAndEncryptedDelivery(t *testing.T) {
@@ -317,7 +334,6 @@ func TestManagerMulticastNACKFallbackAndPureUnicastFallback(t *testing.T) {
 		if err := teacher.BroadcastMulticast([]byte(tag)); err != nil {
 			t.Fatalf("BroadcastMulticast(%d): %v", i+1, err)
 		}
-		time.Sleep(10 * time.Millisecond)
 	}
 
 	select {
@@ -452,14 +468,15 @@ func TestControlEnvelopeNotBlockedByMediaBurst(t *testing.T) {
 		t.Fatalf("BroadcastControl took too long under media burst: %v", elapsed)
 	}
 
-	deadline := time.After(3 * time.Second)
+	deadline := time.NewTimer(3 * time.Second)
+	defer deadline.Stop()
 	for {
 		select {
 		case mt := <-ctrlCh:
 			if mt == protocol.MsgBroadcastStop {
 				return
 			}
-		case <-deadline:
+		case <-deadline.C:
 			t.Fatalf("timed out waiting for MsgBroadcastStop during media burst")
 		}
 	}
@@ -526,5 +543,74 @@ func TestStudentAutoReconnectOnSessionDrop(t *testing.T) {
 	case <-tSessCh:
 	case <-ctx.Done():
 		t.Fatalf("timed out waiting for reconnected teacher session")
+	}
+}
+
+func TestConcurrentTeacherStartOnlyStartsOnce(t *testing.T) {
+	m := NewManager(WithDiscoveryConfig(DiscoveryConfig{Port: 0}))
+	defer m.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	results := make(chan error, 2)
+	for i := 0; i < 2; i++ {
+		go func() {
+			results <- m.StartTeacher(ctx, "127.0.0.1:0", protocol.DiscoveryBeacon{Channel: "start-once"})
+		}()
+	}
+
+	var successes int
+	var alreadyStarted int
+	for i := 0; i < 2; i++ {
+		switch err := <-results; {
+		case err == nil:
+			successes++
+		case errors.Is(err, ErrAlreadyStarted):
+			alreadyStarted++
+		default:
+			t.Fatalf("unexpected StartTeacher error: %v", err)
+		}
+	}
+	if successes != 1 || alreadyStarted != 1 {
+		t.Fatalf("start results = successes %d, already started %d", successes, alreadyStarted)
+	}
+}
+
+func TestMulticastReceiverStartIsSerialized(t *testing.T) {
+	m := NewManager()
+	ctx, cancel := context.WithCancel(context.Background())
+	m.ctx = ctx
+	defer cancel()
+	defer m.Close()
+
+	const address = "239.255.42.99:39199"
+	results := make(chan error, 16)
+	for i := 0; i < cap(results); i++ {
+		go func() { results <- m.startMulticastReceiver(address) }()
+	}
+	for i := 0; i < cap(results); i++ {
+		if err := <-results; err != nil {
+			t.Fatalf("startMulticastReceiver: %v", err)
+		}
+	}
+	if m.mcastRxConn == nil {
+		t.Fatal("expected one multicast receiver")
+	}
+}
+
+func TestFallbackLoopStopsBeforeProcessingAfterClose(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	m := NewManager()
+	m.ctx = ctx
+	done := make(chan struct{})
+	go func() {
+		m.fallbackLoop()
+		close(done)
+	}()
+	cancel()
+	select {
+	case <-done:
+	case <-time.NewTimer(time.Second).C:
+		t.Fatal("fallbackLoop did not stop after context cancellation")
 	}
 }

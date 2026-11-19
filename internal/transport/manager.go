@@ -34,6 +34,7 @@ const (
 var (
 	ErrNoSession       = errors.New("transport: session not found")
 	ErrNotStarted      = errors.New("transport: manager not started")
+	ErrAlreadyStarted  = errors.New("transport: manager already started")
 	ErrInvalidMcastPkt = errors.New("transport: invalid multicast packet")
 )
 
@@ -140,6 +141,8 @@ type mcastReassembly struct {
 // Manager implements core.TransportManager for both Teacher and Student roles.
 type Manager struct {
 	mu                  sync.RWMutex
+	startMu             sync.Mutex
+	mcastStartMu        sync.Mutex
 	role                core.Role
 	kcpCfg              KCPConfig
 	discoveryCfg        DiscoveryConfig
@@ -206,9 +209,11 @@ type Manager struct {
 	lastTxRate    uint64
 	lastRxRate    uint64
 
-	ctx    context.Context
-	cancel context.CancelFunc
-	closed bool
+	ctx      context.Context
+	cancel   context.CancelFunc
+	closed   bool
+	started  bool
+	starting bool
 }
 
 // NetworkStatus describes the transport's current interface and reconnect state.
@@ -297,17 +302,24 @@ func (m *Manager) NetworkStatus() NetworkStatus {
 
 // StartTeacher starts KCP listener, discovery beacon broadcaster, and optional UDP multicast sender.
 func (m *Manager) StartTeacher(ctx context.Context, listenAddr string, beacon protocol.DiscoveryBeacon) error {
+	m.startMu.Lock()
+	defer m.startMu.Unlock()
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	if m.closed {
 		return ErrConnClosed
 	}
+	if m.started || m.starting {
+		return ErrAlreadyStarted
+	}
+	m.starting = true
 	m.role = core.RoleTeacher
 	m.ctx, m.cancel = context.WithCancel(ctx)
 
 	listener, err := ListenKCP(listenAddr, m.kcpCfg)
 	if err != nil {
+		m.starting = false
 		return err
 	}
 	m.listener = listener
@@ -324,6 +336,7 @@ func (m *Manager) StartTeacher(ctx context.Context, listenAddr string, beacon pr
 		target, err := net.ResolveUDPAddr("udp4", net.JoinHostPort(beacon.MulticastIP, strconv.Itoa(beacon.McastPort)))
 		if err != nil {
 			_ = listener.Close()
+			m.starting = false
 			return err
 		}
 		mcastConn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4zero, Port: 0})
@@ -343,22 +356,42 @@ func (m *Manager) StartTeacher(ctx context.Context, listenAddr string, beacon pr
 			if m.mcastConn != nil {
 				_ = m.mcastConn.Close()
 			}
+			m.starting = false
 			return err
 		}
 		m.broadcaster = bc
 	}
 
 	go m.acceptLoop()
+	m.started = true
+	m.starting = false
 	go m.fallbackLoop()
 	return nil
 }
 
 func (m *Manager) fallbackLoop() {
+	m.mu.RLock()
+	ctx := m.ctx
+	m.mu.RUnlock()
+	if ctx == nil {
+		return
+	}
 	for {
 		select {
-		case <-m.ctx.Done():
+		case <-ctx.Done():
 			return
-		case task := <-m.fallbackCh:
+		default:
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case task, ok := <-m.fallbackCh:
+			if !ok {
+				return
+			}
+			if ctx.Err() != nil {
+				return
+			}
 			if len(task.targets) > 0 {
 				_ = m.sendFallbackToSessions(task.targets, task.seq, task.data)
 			}
@@ -406,17 +439,38 @@ func (m *Manager) acceptLoop() {
 
 // StartStudent discovers the teacher on channel (or uses explicit addr), connects via KCP+smux, and listens for multicast.
 func (m *Manager) StartStudent(ctx context.Context, channel string) error {
+	m.startMu.Lock()
+	defer m.startMu.Unlock()
 	m.mu.Lock()
 	if m.closed {
 		m.mu.Unlock()
 		return ErrConnClosed
 	}
+	if m.started || m.starting {
+		m.mu.Unlock()
+		return ErrAlreadyStarted
+	}
+	m.starting = true
 	m.role = core.RoleStudent
 	m.ctx, m.cancel = context.WithCancel(ctx)
 	m.studentChannel = channel
 	m.mu.Unlock()
 
-	return m.connectStudentOnce(channel)
+	if err := m.connectStudentOnce(channel); err != nil {
+		m.mu.Lock()
+		if !m.closed {
+			m.cancel = nil
+			m.ctx = nil
+		}
+		m.starting = false
+		m.mu.Unlock()
+		return err
+	}
+	m.mu.Lock()
+	m.started = true
+	m.starting = false
+	m.mu.Unlock()
+	return nil
 }
 
 func (m *Manager) connectStudentOnce(channel string) error {
@@ -527,9 +581,15 @@ func (m *Manager) scheduleStudentReconnect() {
 }
 
 func (m *Manager) startMulticastReceiver(addrStr string) error {
+	m.mcastStartMu.Lock()
+	defer m.mcastStartMu.Unlock()
 	m.mu.RLock()
 	alreadyStarted := m.mcastRxConn != nil
+	closed := m.closed
 	m.mu.RUnlock()
+	if closed {
+		return ErrConnClosed
+	}
 	if alreadyStarted {
 		return nil
 	}
@@ -559,6 +619,11 @@ func (m *Manager) startMulticastReceiver(addrStr string) error {
 	}
 
 	m.mu.Lock()
+	if m.closed {
+		m.mu.Unlock()
+		_ = pc.Close()
+		return ErrConnClosed
+	}
 	if m.mcastRxConn != nil {
 		m.mu.Unlock()
 		_ = pc.Close()
@@ -1426,6 +1491,8 @@ func (m *Manager) Close() error {
 		return nil
 	}
 	m.closed = true
+	m.started = false
+	m.starting = false
 	cancel := m.cancel
 	listener := m.listener
 	broadcaster := m.broadcaster
