@@ -102,7 +102,7 @@ Commit：`feat(platform): add macOS capability and permission status`
 - `scripts/build-darwin-package.sh`
 - `scripts/build-darwin-package.ps1`
 
-当前阶段已完成构建和未签名发布骨架：PowerShell 与 POSIX 脚本均支持 `darwin/amd64`、`darwin/arm64` 教师端/学生端交叉构建；打包脚本会生成独立 `.app`、`Info.plist`、权限说明和可选 Universal 2/DMG。Windows 主机缺少 `lipo` 或 `hdiutil` 时会清晰跳过对应步骤，不把跨编译结果误报为 macOS 原生能力已验证。
+当前阶段已完成构建和未签名发布骨架：PowerShell 与 POSIX 脚本均支持 `darwin/amd64`、`darwin/arm64` 教师端/学生端交叉构建；打包脚本会生成独立 `.app`、`Info.plist`、权限说明和可选 Universal 2/DMG。新增 `scripts/check-darwin-build.*` 负责四个架构产物和 SHA-256 校验，新增 `scripts/diagnose-darwin-network.*` 负责接口、路由、DNS、防火墙和教师地址连通性诊断。Windows 主机缺少 `lipo` 或 `hdiutil` 时会清晰跳过对应步骤，不把跨编译结果误报为 macOS 原生能力已验证。
 
 输出：
 
@@ -395,6 +395,12 @@ Commit：`build(darwin): package unsigned macOS apps`
 - 后续可选的签名、公证 `.dmg`。
 - SHA-256 校验和和构建日志。
 
+补充工具和证据清单：
+
+- `scripts/check-darwin-build.ps1` / `scripts/check-darwin-build.sh` 检查四个架构产物、生成 `SHA256SUMS.txt`，并可强制要求 Universal 2 或 DMG。
+- `scripts/diagnose-darwin-network.ps1` / `scripts/diagnose-darwin-network.sh` 输出接口、路由、DNS、防火墙和教师地址连通性信息。
+- `docs/mac-testing-matrix.md` 记录 macOS 真机权限、屏幕、音频、控制、网络、数据恢复和发布验证证据。
+
 ## 推荐执行顺序
 
 1. 权限状态和 Darwin 平台能力探测。
@@ -421,3 +427,5 @@ macOS 适配完成必须同时满足：
 - 未签名包有清晰的首次启动、权限授权和 Gatekeeper 说明；具备账号后再验收正式签名包。
 - 许可证扫描继续保持 0 GPL/LGPL/AGPL 传染性依赖。
 - 所有阶段均有测试证据和独立 Git commit。
+
+> 当前文档中勾选的构建/打包项只表示脚本和 staging 已完成；没有 macOS 真机证据时，不得将 ScreenCaptureKit、CoreAudio、CGEvent、Universal 2、DMG 或网络自动重连标记为已验证。
