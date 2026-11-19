@@ -218,6 +218,7 @@ func (rt *Runtime) wireHandlers() {
 							Height:       180,
 							FPS:          int(rt.App.MonitorFPS()),
 							Quality:      int(rt.App.MonitorQual()),
+							Reset:        true,
 						},
 					}); err == nil {
 						mEnv.Channel = rt.channel
@@ -316,6 +317,7 @@ func (rt *Runtime) wireHandlers() {
 								Height:  180,
 								FPS:     int(rt.App.MonitorFPS()),
 								Quality: int(rt.App.MonitorQual()),
+								Reset:   true,
 							},
 						}); mErr == nil {
 							mEnv.Channel = rt.channel

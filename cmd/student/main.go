@@ -254,7 +254,7 @@ func (rt *Runtime) wireHandlers() {
 					if h <= 0 {
 						h = 180
 					}
-					rt.startMonitorStream(w, h, req.FPS, req.Quality)
+					rt.startMonitorStreamWithReset(w, h, req.FPS, req.Quality, req.Reset)
 					rt.App.SetMonitoring(true)
 				} else {
 					rt.stopMonitorStream()
@@ -347,6 +347,14 @@ func (rt *Runtime) wireHandlers() {
 }
 
 func (rt *Runtime) startMonitorStream(maxW, maxH, fps, quality int) {
+	rt.startMonitorStreamWithReset(maxW, maxH, fps, quality, false)
+}
+
+func shouldRestartMonitorStream(current, requested monitorStreamConfig, reset bool) bool {
+	return reset || current != requested
+}
+
+func (rt *Runtime) startMonitorStreamWithReset(maxW, maxH, fps, quality int, reset bool) {
 	if maxW <= 0 {
 		maxW = 320
 	}
@@ -365,7 +373,7 @@ func (rt *Runtime) startMonitorStream(maxW, maxH, fps, quality int) {
 	cfg := monitorStreamConfig{maxW: maxW, maxH: maxH, fps: fps, quality: quality}
 
 	rt.streamMu.Lock()
-	if rt.monitorStop != nil && rt.monitorCfg == cfg {
+	if rt.monitorStop != nil && !shouldRestartMonitorStream(rt.monitorCfg, cfg, reset) {
 		rt.streamMu.Unlock()
 		return
 	}

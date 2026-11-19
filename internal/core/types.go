@@ -114,6 +114,7 @@ type MonitorConfig struct {
 	Height    int      `json:"height"`
 	FPS       int      `json:"fps"`
 	Quality   int      `json:"quality"`
+	Reset     bool     `json:"reset,omitempty"`
 }
 
 type TheatreState struct {

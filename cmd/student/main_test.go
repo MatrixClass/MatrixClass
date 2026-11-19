@@ -53,3 +53,13 @@ func TestStudentRuntimeMessageHandlers(t *testing.T) {
 	_ = localPrimaryMAC()
 	_ = protocol.MsgPing
 }
+
+func TestMonitorControlResetRestartsUnchangedStream(t *testing.T) {
+	current := monitorStreamConfig{maxW: 320, maxH: 180, fps: 15, quality: 75}
+	if shouldRestartMonitorStream(current, current, false) {
+		t.Fatal("unchanged monitor configuration should not restart without reset")
+	}
+	if !shouldRestartMonitorStream(current, current, true) {
+		t.Fatal("reset monitor control should restart an unchanged stream")
+	}
+}
