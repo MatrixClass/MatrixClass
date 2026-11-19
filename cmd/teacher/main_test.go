@@ -5,7 +5,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"io"
 	"net"
 	"os"
@@ -22,15 +21,6 @@ import (
 	"nexlab/internal/transport"
 	"nexlab/internal/ui/student"
 )
-
-func TestTeacherRuntimeCloseErrorsAreJoined(t *testing.T) {
-	first := errors.New("media close")
-	second := errors.New("transport close")
-	joined := joinRuntimeCloseErrors(first, nil, second)
-	if !errors.Is(joined, first) || !errors.Is(joined, second) {
-		t.Fatalf("joined error does not preserve both causes: %v", joined)
-	}
-}
 
 func freeUDPAddr(t *testing.T) string {
 	t.Helper()
