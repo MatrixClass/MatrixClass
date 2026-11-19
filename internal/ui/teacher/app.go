@@ -2186,6 +2186,7 @@ func (a *App) OpenFileDistributeWindow() {
 		Height:    500,
 		MinWidth:  460,
 		MinHeight: 400,
+		Frameless: false,
 		Content:   ui.View(a.FileDistributeView),
 	})
 	fw.OnFileDrop(func(e *mygo.FileDropEvent) {

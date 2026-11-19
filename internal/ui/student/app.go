@@ -528,7 +528,7 @@ func (a *App) ShowTeacherNotice(sender, text string) {
 				Height:        toastH,
 				X:             x,
 				Y:             y,
-				Frameless:     true,
+				Frameless:     false,
 				AlwaysOnTop:   true,
 				SkipTaskbar:   true,
 				DisableResize: true,
@@ -1378,6 +1378,7 @@ func (a *App) ensureFileReceiveWindowOnMain() {
 		Height:      420,
 		MinWidth:    420,
 		MinHeight:   320,
+		Frameless:   false,
 		AlwaysOnTop: true,
 		Content:     ui.View(a.FileReceiveView),
 	})
@@ -1696,6 +1697,7 @@ func (a *App) OpenHomeworkSubmitWindow() {
 			Height:      420,
 			MinWidth:    380,
 			MinHeight:   340,
+			Frameless:   false,
 			AlwaysOnTop: true,
 			Content:     ui.View(a.HomeworkSubmitView),
 		})
