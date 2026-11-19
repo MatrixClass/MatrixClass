@@ -102,6 +102,8 @@ Commit：`feat(platform): add macOS capability and permission status`
 - `scripts/build-darwin-package.sh`
 - `scripts/build-darwin-package.ps1`
 
+当前阶段已完成构建和未签名发布骨架：PowerShell 与 POSIX 脚本均支持 `darwin/amd64`、`darwin/arm64` 教师端/学生端交叉构建；打包脚本会生成独立 `.app`、`Info.plist`、权限说明和可选 Universal 2/DMG。Windows 主机缺少 `lipo` 或 `hdiutil` 时会清晰跳过对应步骤，不把跨编译结果误报为 macOS 原生能力已验证。
+
 输出：
 
 ```text
