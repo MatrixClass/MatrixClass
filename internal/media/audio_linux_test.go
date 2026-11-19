@@ -7,6 +7,8 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -14,6 +16,24 @@ import (
 )
 
 var errCommandMissing = errors.New("command missing")
+
+func waitForLinuxAudioCondition(t *testing.T, timeout time.Duration, condition func() bool) {
+	t.Helper()
+	deadline := time.NewTimer(timeout)
+	defer deadline.Stop()
+	ticker := time.NewTicker(time.Millisecond)
+	defer ticker.Stop()
+	for {
+		if condition() {
+			return
+		}
+		select {
+		case <-deadline.C:
+			t.Fatalf("condition not met within %s", timeout)
+		case <-ticker.C:
+		}
+	}
+}
 
 func TestLinuxAudioCommandSelectionUsesAvailableFallback(t *testing.T) {
 	original := linuxLookPath
@@ -116,9 +136,9 @@ func TestLinuxAudioPlaybackRebuildsAfterProcessExit(t *testing.T) {
 		}
 		return "", errCommandMissing
 	}
-	starts := 0
+	var starts atomic.Int32
 	linuxExecCommand = func(_ string, args ...string) *exec.Cmd {
-		starts++
+		starts.Add(1)
 		cmd := exec.Command(os.Args[0], "-test.run=TestLinuxAudioHelperProcess", "--")
 		cmd.Env = append(os.Environ(), "NEXLAB_AUDIO_HELPER=playback")
 		return cmd
@@ -130,18 +150,19 @@ func TestLinuxAudioPlaybackRebuildsAfterProcessExit(t *testing.T) {
 	if err := engine.PlayFrame(frame); err != nil {
 		t.Fatalf("first PlayFrame: %v", err)
 	}
-	deadline := time.Now().Add(2 * time.Second)
-	for starts < 1 && time.Now().Before(deadline) {
-		time.Sleep(5 * time.Millisecond)
-	}
-	for engine.playIn != nil && time.Now().Before(deadline) {
-		time.Sleep(5 * time.Millisecond)
-	}
+	waitForLinuxAudioCondition(t, 2*time.Second, func() bool {
+		return starts.Load() >= 1
+	})
+	waitForLinuxAudioCondition(t, 2*time.Second, func() bool {
+		engine.mu.Lock()
+		defer engine.mu.Unlock()
+		return engine.playIn == nil
+	})
 	if err := engine.PlayFrame(frame); err != nil {
 		t.Fatalf("second PlayFrame after playback exit: %v", err)
 	}
-	if starts < 2 {
-		t.Fatalf("expected playback process rebuild, started %d times", starts)
+	if starts.Load() < 2 {
+		t.Fatalf("expected playback process rebuild, started %d times", starts.Load())
 	}
 }
 
@@ -172,6 +193,12 @@ func TestLinuxAudioHelperProcess(t *testing.T) {
 		_, _ = os.Stdin.Read(buffer)
 		return
 	}
+	if os.Getenv("NEXLAB_AUDIO_HELPER") == "playback-race" {
+		buffer := make([]byte, 4)
+		_, _ = os.Stdin.Read(buffer)
+		time.Sleep(10 * time.Millisecond)
+		return
+	}
 	t.Fatalf("unknown helper mode %q", os.Getenv("NEXLAB_AUDIO_HELPER"))
 }
 
@@ -187,5 +214,123 @@ func TestLinuxAudioCommandArgumentsUsePortableFormats(t *testing.T) {
 	command, ok := linuxCaptureCommand(true)
 	if !ok || !containsArgPair(command.args, "--format", "s16") || !containsArgPair(command.args, "--rate", "48000") {
 		t.Fatalf("unexpected loopback capture command: %+v ok=%v", command, ok)
+	}
+}
+
+func TestLinuxAudioPlayFrameAndCloseCanRaceWithPlaybackWatcher(t *testing.T) {
+	originalLookPath, originalCommand := linuxLookPath, linuxExecCommand
+	defer func() { linuxLookPath, linuxExecCommand = originalLookPath, originalCommand }()
+	linuxLookPath = func(name string) (string, error) {
+		if name == "paplay" {
+			return "/test/paplay", nil
+		}
+		return "", errCommandMissing
+	}
+	linuxExecCommand = func(_ string, _ ...string) *exec.Cmd {
+		cmd := exec.Command(os.Args[0], "-test.run=TestLinuxAudioHelperProcess", "--")
+		cmd.Env = append(os.Environ(), "NEXLAB_AUDIO_HELPER=playback-race")
+		return cmd
+	}
+
+	engine := NewAudioEngine()
+	frame := &core.AudioFrame{SampleRate: 48000, Channels: 2, Data: []byte{1, 0, 2, 0}}
+	if err := engine.PlayFrame(frame); err != nil {
+		t.Fatalf("initial PlayFrame: %v", err)
+	}
+
+	var calls atomic.Int32
+	var wg sync.WaitGroup
+	for index := 0; index < 32; index++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			calls.Add(1)
+			_ = engine.PlayFrame(frame)
+		}()
+	}
+	closeDone := make(chan struct{})
+	go func() {
+		_ = engine.Close()
+		close(closeDone)
+	}()
+	wg.Wait()
+	select {
+	case <-closeDone:
+	case <-time.After(3 * time.Second):
+		t.Fatal("Close did not finish while PlayFrame calls raced with playback watcher")
+	}
+	if calls.Load() != 32 {
+		t.Fatalf("expected all PlayFrame calls to start, got %d", calls.Load())
+	}
+	engine.mu.Lock()
+	defer engine.mu.Unlock()
+	if engine.playback != nil || engine.playIn != nil || engine.playDone != nil {
+		t.Fatalf("playback state leaked after concurrent Close: playback=%v input=%v done=%v", engine.playback, engine.playIn, engine.playDone)
+	}
+}
+
+func TestLinuxAudioPlaybackWatcherDoesNotInvalidateReplacement(t *testing.T) {
+	originalLookPath, originalCommand := linuxLookPath, linuxExecCommand
+	defer func() { linuxLookPath, linuxExecCommand = originalLookPath, originalCommand }()
+	linuxLookPath = func(name string) (string, error) {
+		if name == "paplay" {
+			return "/test/paplay", nil
+		}
+		return "", errCommandMissing
+	}
+	var starts atomic.Int32
+	linuxExecCommand = func(_ string, _ ...string) *exec.Cmd {
+		starts.Add(1)
+		cmd := exec.Command(os.Args[0], "-test.run=TestLinuxAudioHelperProcess", "--")
+		cmd.Env = append(os.Environ(), "NEXLAB_AUDIO_HELPER=playback-race")
+		return cmd
+	}
+
+	engine := NewAudioEngine()
+	frame := &core.AudioFrame{SampleRate: 48000, Channels: 2, Data: []byte{1, 0, 2, 0}}
+	if err := engine.PlayFrame(frame); err != nil {
+		t.Fatalf("first PlayFrame: %v", err)
+	}
+	waitForLinuxAudioCondition(t, 3*time.Second, func() bool {
+		return starts.Load() >= 1
+	})
+	waitForLinuxAudioCondition(t, 3*time.Second, func() bool {
+		engine.mu.Lock()
+		defer engine.mu.Unlock()
+		return engine.playIn == nil && engine.playback == nil
+	})
+	if err := engine.PlayFrame(frame); err != nil {
+		t.Fatalf("replacement PlayFrame: %v", err)
+	}
+	if starts.Load() < 2 {
+		t.Fatalf("expected a replacement playback process, started %d times", starts.Load())
+	}
+	if err := engine.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+}
+
+func TestLinuxAudioCloseIsIdempotentAndPreventsRestart(t *testing.T) {
+	originalLookPath := linuxLookPath
+	defer func() { linuxLookPath = originalLookPath }()
+	linuxLookPath = func(name string) (string, error) {
+		if name == "paplay" || name == "arecord" {
+			return "/test/" + name, nil
+		}
+		return "", errCommandMissing
+	}
+
+	engine := NewAudioEngine()
+	if err := engine.Close(); err != nil {
+		t.Fatalf("first Close: %v", err)
+	}
+	if err := engine.Close(); err != nil {
+		t.Fatalf("second Close: %v", err)
+	}
+	if err := engine.PlayFrame(&core.AudioFrame{SampleRate: 48000, Channels: 2, Data: []byte{0, 0}}); !errors.Is(err, ErrLinuxAudioClosed) {
+		t.Fatalf("expected closed playback error, got %v", err)
+	}
+	if err := engine.StartCapture(false, func(*core.AudioFrame) {}); !errors.Is(err, ErrLinuxAudioClosed) {
+		t.Fatalf("expected closed capture error, got %v", err)
 	}
 }

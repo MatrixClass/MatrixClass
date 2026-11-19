@@ -14,6 +14,7 @@ import (
 )
 
 var ErrLinuxAudioUnavailable = errors.New("media: no PipeWire or PulseAudio command is available")
+var ErrLinuxAudioClosed = errors.New("media: audio engine is closed")
 
 var linuxLookPath = exec.LookPath
 var linuxExecCommand = exec.Command
@@ -32,6 +33,7 @@ type AudioEngine struct {
 	playback *exec.Cmd
 	playIn   io.WriteCloser
 	playDone chan struct{}
+	closed   bool
 }
 
 func NewAudioEngine() *AudioEngine { return &AudioEngine{volume: 1.0} }
@@ -41,6 +43,12 @@ func (a *AudioEngine) StartCapture(loopback bool, onFrame func(*core.AudioFrame)
 		return nil
 	}
 	_ = a.StopCapture()
+	a.mu.Lock()
+	if a.closed {
+		a.mu.Unlock()
+		return ErrLinuxAudioClosed
+	}
+	a.mu.Unlock()
 	command, ok := linuxCaptureCommand(loopback)
 	if !ok {
 		return ErrLinuxAudioUnavailable
@@ -48,6 +56,10 @@ func (a *AudioEngine) StartCapture(loopback bool, onFrame func(*core.AudioFrame)
 	stopCh := make(chan struct{})
 	doneCh := make(chan struct{})
 	a.mu.Lock()
+	if a.closed {
+		a.mu.Unlock()
+		return ErrLinuxAudioClosed
+	}
 	a.stopCh = stopCh
 	a.doneCh = doneCh
 	a.capture = nil
@@ -141,13 +153,14 @@ func (a *AudioEngine) PlayFrame(frame *core.AudioFrame) error {
 		return nil
 	}
 	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.closed {
+		return ErrLinuxAudioClosed
+	}
 	if err := a.ensurePlaybackLocked(frame); err != nil {
-		a.mu.Unlock()
 		return err
 	}
 	volume := a.volume
-	input := a.playIn
-	a.mu.Unlock()
 	if volume <= 0 {
 		return nil
 	}
@@ -166,15 +179,13 @@ func (a *AudioEngine) PlayFrame(frame *core.AudioFrame) error {
 			adjusted[i], adjusted[i+1] = byte(scaled), byte(uint16(scaled)>>8)
 		}
 	}
-	_, err := input.Write(adjusted)
+	_, err := a.playIn.Write(adjusted)
 	if err != nil {
-		a.mu.Lock()
 		a.resetPlaybackLocked()
 		retryErr := a.ensurePlaybackLocked(frame)
 		if retryErr == nil {
 			_, retryErr = a.playIn.Write(adjusted)
 		}
-		a.mu.Unlock()
 		return retryErr
 	}
 	return err
@@ -245,6 +256,11 @@ func (a *AudioEngine) Volume() float32 {
 func (a *AudioEngine) Close() error {
 	_ = a.StopCapture()
 	a.mu.Lock()
+	if a.closed {
+		a.mu.Unlock()
+		return nil
+	}
+	a.closed = true
 	input, cmd, done := a.playIn, a.playback, a.playDone
 	a.playIn, a.playback, a.playDone = nil, nil, nil
 	a.mu.Unlock()
