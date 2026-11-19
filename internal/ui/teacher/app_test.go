@@ -1,6 +1,7 @@
 package teacher
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"sync"
@@ -13,6 +14,34 @@ import (
 	"nexlab/internal/store"
 	"nexlab/internal/ui/demo"
 )
+
+type blockingTeacherFiles struct {
+	started   chan struct{}
+	cancelled chan struct{}
+}
+
+func (f *blockingTeacherFiles) DistributeFile(ctx context.Context, _ string, _ string, _ []string, _ bool) (*core.TransferTask, error) {
+	select {
+	case <-f.started:
+	default:
+		close(f.started)
+	}
+	<-ctx.Done()
+	select {
+	case <-f.cancelled:
+	default:
+		close(f.cancelled)
+	}
+	return nil, ctx.Err()
+}
+func (f *blockingTeacherFiles) SubmitHomework(context.Context, string, string) (*core.TransferTask, error) {
+	return nil, nil
+}
+func (f *blockingTeacherFiles) CollectFiles(context.Context, string, string, []string) ([]*core.TransferTask, error) {
+	return nil, nil
+}
+func (f *blockingTeacherFiles) ListTasks() []*core.TransferTask { return nil }
+func (f *blockingTeacherFiles) CancelTask(string) error         { return nil }
 
 func newTestTeacherApp() (*App, *demo.Transport, *demo.Classroom, *demo.Control) {
 	tr := demo.NewTransport("301机房", 6)
@@ -123,6 +152,41 @@ func TestTeacherConsoleViewsAndTabs(t *testing.T) {
 	tester.Frame()
 	if !app.ScreenLocked() {
 		t.Fatalf("expected screenLocked=true")
+	}
+}
+
+func TestTeacherAppStartCloseIsIdempotentAndCancelsFileWork(t *testing.T) {
+	files := &blockingTeacherFiles{started: make(chan struct{}), cancelled: make(chan struct{})}
+	app := New(Options{Services: Services{Files: files, Classroom: demo.NewClassroom()}})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := app.Start(ctx); err != nil {
+		t.Fatalf("first Start: %v", err)
+	}
+	if err := app.Start(ctx); err != nil {
+		t.Fatalf("second Start: %v", err)
+	}
+	app.distributePath = "lesson.pdf"
+	app.fileTargetAll = true
+	app.DistributeFile()
+	select {
+	case <-files.started:
+	case <-time.After(time.Second):
+		t.Fatal("file task did not start")
+	}
+	if err := app.Close(); err != nil {
+		t.Fatalf("first Close: %v", err)
+	}
+	if err := app.Close(); err != nil {
+		t.Fatalf("second Close: %v", err)
+	}
+	if err := app.Start(ctx); err == nil {
+		t.Fatal("expected Start after Close to fail")
+	}
+	select {
+	case <-files.cancelled:
+	case <-time.After(time.Second):
+		t.Fatal("file task was not cancelled")
 	}
 }
 

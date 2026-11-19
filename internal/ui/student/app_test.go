@@ -1,6 +1,7 @@
 package student
 
 import (
+	"context"
 	"runtime"
 	"sync"
 	"testing"
@@ -13,6 +14,34 @@ import (
 	"nexlab/internal/protocol"
 	"nexlab/internal/ui/demo"
 )
+
+type blockingStudentFiles struct {
+	started   chan struct{}
+	cancelled chan struct{}
+}
+
+func (f *blockingStudentFiles) DistributeFile(context.Context, string, string, []string, bool) (*core.TransferTask, error) {
+	return nil, nil
+}
+func (f *blockingStudentFiles) SubmitHomework(ctx context.Context, _ string, _ string) (*core.TransferTask, error) {
+	select {
+	case <-f.started:
+	default:
+		close(f.started)
+	}
+	<-ctx.Done()
+	select {
+	case <-f.cancelled:
+	default:
+		close(f.cancelled)
+	}
+	return nil, ctx.Err()
+}
+func (f *blockingStudentFiles) CollectFiles(context.Context, string, string, []string) ([]*core.TransferTask, error) {
+	return nil, nil
+}
+func (f *blockingStudentFiles) ListTasks() []*core.TransferTask { return nil }
+func (f *blockingStudentFiles) CancelTask(string) error         { return nil }
 
 func newTestStudentApp() *App {
 	return New(Options{
@@ -35,6 +64,39 @@ func TestStudentHomeworkPathStartsEmpty(t *testing.T) {
 	app := newTestStudentApp()
 	if app.homeworkPath != "" {
 		t.Fatalf("expected homework path to start empty, got %q", app.homeworkPath)
+	}
+}
+
+func TestStudentAppStartCloseIsIdempotentAndCancelsHomework(t *testing.T) {
+	files := &blockingStudentFiles{started: make(chan struct{}), cancelled: make(chan struct{})}
+	app := New(Options{StudentID: "stu", Services: Services{Files: files}})
+	ctx := context.Background()
+	if err := app.Start(ctx); err != nil {
+		t.Fatalf("first Start: %v", err)
+	}
+	if err := app.Start(ctx); err != nil {
+		t.Fatalf("second Start: %v", err)
+	}
+	app.homeworkPath = "homework.txt"
+	app.SubmitHomework()
+	select {
+	case <-files.started:
+	case <-time.After(time.Second):
+		t.Fatal("homework task did not start")
+	}
+	if err := app.Close(); err != nil {
+		t.Fatalf("first Close: %v", err)
+	}
+	if err := app.Close(); err != nil {
+		t.Fatalf("second Close: %v", err)
+	}
+	if err := app.Start(ctx); err == nil {
+		t.Fatal("expected Start after Close to fail")
+	}
+	select {
+	case <-files.cancelled:
+	case <-time.After(time.Second):
+		t.Fatal("homework task was not cancelled")
 	}
 }
 

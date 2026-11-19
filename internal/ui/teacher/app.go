@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"image"
 	"image/color"
@@ -73,7 +74,12 @@ const (
 
 // App is the MyGo native Teacher Console for 矩联电子教室 MatrixClass.
 type App struct {
-	mu sync.Mutex
+	mu               sync.Mutex
+	lifecycleCtx     context.Context
+	lifecycleCancel  context.CancelFunc
+	lifecycleClosed  bool
+	lifecycleStarted bool
+	lifecycleWG      sync.WaitGroup
 
 	opts        Services
 	win         *mygo.Window
@@ -292,11 +298,75 @@ func New(opts Options) *App {
 		blockedSitesInput: "",
 		allowedSitesInput: "",
 	}
+	app.Start(context.Background())
 	app.loadPersistedState()
 	app.syncRuntimeFlags()
-	app.ctrlCh = make(chan ctrlOutbound, 64)
-	go app.controlSendWorker()
 	return app
+}
+
+// Start begins UI-owned background work. Repeated calls are harmless.
+func (a *App) Start(parent context.Context) error {
+	if parent == nil {
+		parent = context.Background()
+	}
+	a.mu.Lock()
+	if a.lifecycleClosed {
+		a.mu.Unlock()
+		return errors.New("teacher ui app is closed")
+	}
+	if a.lifecycleStarted {
+		a.mu.Unlock()
+		return nil
+	}
+	a.lifecycleCtx, a.lifecycleCancel = context.WithCancel(parent)
+	a.ctrlCh = make(chan ctrlOutbound, 64)
+	a.lifecycleStarted = true
+	a.lifecycleWG.Add(1)
+	a.mu.Unlock()
+	go func() {
+		defer a.lifecycleWG.Done()
+		a.controlSendWorker()
+	}()
+	return nil
+}
+
+// Close stops UI-owned work and is safe to call more than once.
+func (a *App) Close() error {
+	a.mu.Lock()
+	if a.lifecycleClosed {
+		a.mu.Unlock()
+		return nil
+	}
+	a.lifecycleClosed = true
+	cancel := a.lifecycleCancel
+	fw := a.fileDistWin
+	a.fileDistWin = nil
+	win := a.win
+	a.win = nil
+	a.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+	if fw != nil {
+		fw.Destroy()
+	}
+	if win != nil {
+		win.Destroy()
+	}
+	a.lifecycleWG.Wait()
+	return nil
+}
+
+func (a *App) lifecycleContext() (context.Context, bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.lifecycleClosed {
+		return nil, false
+	}
+	if a.lifecycleCtx == nil {
+		a.lifecycleCtx, a.lifecycleCancel = context.WithCancel(context.Background())
+	}
+	return a.lifecycleCtx, true
 }
 
 func (a *App) loadPersistedState() {
@@ -2181,9 +2251,20 @@ func (a *App) DistributeFile() {
 	remoteDir := a.remoteDir
 	autoOpen := a.autoOpenFile
 	a.statusNote = "正在分发文件..."
+	ctx, ok := a.lifecycleContext()
+	if !ok {
+		return
+	}
 	go func() {
-		task, err := a.opts.Files.DistributeFile(context.Background(), localPath, remoteDir, targets, autoOpen)
+		task, err := a.opts.Files.DistributeFile(ctx, localPath, remoteDir, targets, autoOpen)
+		if ctx.Err() != nil {
+			return
+		}
 		a.mu.Lock()
+		if a.lifecycleClosed {
+			a.mu.Unlock()
+			return
+		}
 		if err != nil {
 			a.statusNote = "文件分发失败: " + err.Error()
 		} else {
@@ -2573,17 +2654,28 @@ func (a *App) DistributeQueue() {
 	autoOpen := a.autoOpenFile
 	a.fileSending = true
 	a.statusNote = fmt.Sprintf("正在向 %d 台学生分发 %d 个文件...", len(targets), len(items))
+	ctx, ok := a.lifecycleContext()
+	if !ok {
+		return
+	}
 	go func() {
 		sent := 0
 		var lastErr error
 		for _, it := range items {
-			if _, err := a.opts.Files.DistributeFile(context.Background(), it.localPath, it.remoteDir, targets, autoOpen); err != nil {
+			if _, err := a.opts.Files.DistributeFile(ctx, it.localPath, it.remoteDir, targets, autoOpen); err != nil {
+				if ctx.Err() != nil {
+					return
+				}
 				lastErr = err
 			} else {
 				sent++
 			}
 		}
 		a.mu.Lock()
+		if a.lifecycleClosed {
+			a.mu.Unlock()
+			return
+		}
 		a.fileSending = false
 		if lastErr != nil {
 			a.statusNote = fmt.Sprintf("分发完成 %d/%d（部分失败: %v）", sent, len(items), lastErr)
@@ -3446,6 +3538,13 @@ func (a *App) loadLocalVideo(path string) {
 }
 
 func (a *App) sendControlEnvelope(msgType protocol.MsgType, payload any, targetIDs []string) {
+	a.mu.Lock()
+	closed := a.lifecycleClosed
+	ctrlCh := a.ctrlCh
+	a.mu.Unlock()
+	if closed {
+		return
+	}
 	if a.opts.Transport == nil {
 		return
 	}
@@ -3461,17 +3560,17 @@ func (a *App) sendControlEnvelope(msgType protocol.MsgType, payload any, targetI
 	}
 	if msgType == protocol.MsgRemoteInputEvent {
 		select {
-		case a.ctrlCh <- ctrlOutbound{env: env, targetIDs: targets}:
+		case ctrlCh <- ctrlOutbound{env: env, targetIDs: targets}:
 		default:
 		}
 		return
 	}
-	if a.ctrlCh == nil {
+	if ctrlCh == nil {
 		_ = a.opts.Transport.BroadcastControl(env, targets)
 		return
 	}
 	select {
-	case a.ctrlCh <- ctrlOutbound{env: env, targetIDs: targets}:
+	case ctrlCh <- ctrlOutbound{env: env, targetIDs: targets}:
 	default:
 		go func() {
 			_ = a.opts.Transport.BroadcastControl(env, targets)
@@ -3687,9 +3786,18 @@ func (a *App) buildRemoteCommandPanel(c *ui.Context, pal theme.Palette) {
 }
 
 func (a *App) controlSendWorker() {
-	for item := range a.ctrlCh {
-		if a.opts.Transport != nil {
-			_ = a.opts.Transport.BroadcastControl(item.env, item.targetIDs)
+	a.mu.Lock()
+	ctx := a.lifecycleCtx
+	ch := a.ctrlCh
+	a.mu.Unlock()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case item := <-ch:
+			if a.opts.Transport != nil {
+				_ = a.opts.Transport.BroadcastControl(item.env, item.targetIDs)
+			}
 		}
 	}
 }

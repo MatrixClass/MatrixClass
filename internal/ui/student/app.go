@@ -2,6 +2,7 @@ package student
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"image"
 	"path/filepath"
@@ -50,7 +51,11 @@ const (
 
 // App implements the MyGo native Student Client (tray + floating bar + broadcast/lock/exam/check-in views).
 type App struct {
-	mu sync.Mutex
+	mu               sync.Mutex
+	lifecycleCtx     context.Context
+	lifecycleCancel  context.CancelFunc
+	lifecycleClosed  bool
+	lifecycleStarted bool
 
 	opts     Services
 	win      *mygo.Window
@@ -134,7 +139,7 @@ func New(opts Options) *App {
 	if opts.Channel == "" {
 		opts.Channel = "301机房"
 	}
-	return &App{
+	app := &App{
 		opts:            opts.Services,
 		studentID:       opts.StudentID,
 		studentNo:       opts.StudentNo,
@@ -153,6 +158,66 @@ func New(opts Options) *App {
 		recentNotices:   []string{"欢迎加入 矩联电子教室 MatrixClass"},
 		lastWinMode:     -1,
 	}
+	_ = app.Start(context.Background())
+	return app
+}
+
+// Start begins UI-owned background work. Repeated calls are harmless.
+func (a *App) Start(parent context.Context) error {
+	if parent == nil {
+		parent = context.Background()
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.lifecycleClosed {
+		return errors.New("student ui app is closed")
+	}
+	if a.lifecycleStarted {
+		return nil
+	}
+	a.lifecycleCtx, a.lifecycleCancel = context.WithCancel(parent)
+	a.lifecycleStarted = true
+	return nil
+}
+
+// Close cancels UI-owned work and closes standalone windows. It is idempotent.
+func (a *App) Close() error {
+	a.mu.Lock()
+	if a.lifecycleClosed {
+		a.mu.Unlock()
+		return nil
+	}
+	a.lifecycleClosed = true
+	cancel := a.lifecycleCancel
+	toast := a.toastWin
+	fileWin := a.fileReceiveWin
+	homeworkWin := a.homeworkSubmitWin
+	a.toastWin = nil
+	a.fileReceiveWin = nil
+	a.homeworkSubmitWin = nil
+	a.win = nil
+	a.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+	for _, w := range []*mygo.Window{toast, fileWin, homeworkWin} {
+		if w != nil {
+			w.Destroy()
+		}
+	}
+	return nil
+}
+
+func (a *App) lifecycleContext() (context.Context, bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.lifecycleClosed {
+		return nil, false
+	}
+	if a.lifecycleCtx == nil {
+		a.lifecycleCtx, a.lifecycleCancel = context.WithCancel(context.Background())
+	}
+	return a.lifecycleCtx, true
 }
 
 // AttachWindow binds the floating/main window.
@@ -1156,8 +1221,16 @@ func (a *App) SubmitHomework() {
 	}
 	a.homeworkSubmitting = true
 	a.statusNote = "正在上传作业..."
+	ctx, ok := a.lifecycleContext()
+	if !ok {
+		a.homeworkSubmitting = false
+		return
+	}
 	go func() {
-		task, err := a.opts.Files.SubmitHomework(context.Background(), a.studentID, path)
+		task, err := a.opts.Files.SubmitHomework(ctx, a.studentID, path)
+		if ctx.Err() != nil {
+			return
+		}
 		note := ""
 		if err != nil {
 			note = "作业上传失败: " + err.Error()
@@ -1165,6 +1238,10 @@ func (a *App) SubmitHomework() {
 			note = "作业已提交: " + task.FileName
 		}
 		a.mu.Lock()
+		if a.lifecycleClosed {
+			a.mu.Unlock()
+			return
+		}
 		a.homeworkSubmitting = false
 		a.mu.Unlock()
 		a.SetStatusNote(note)
@@ -1740,15 +1817,25 @@ func (a *App) CloseHomeworkSubmitWindow() {
 		hw.Update(func() {
 			a.homeworkSubmitNote = "教师已结束作业收取，窗口将关闭"
 		})
-		go func() {
-			time.Sleep(1500 * time.Millisecond)
-			a.mu.Lock()
-			curHW := a.homeworkSubmitWin
-			a.mu.Unlock()
-			if curHW == hw {
-				hw.Close()
-			}
-		}()
+		ctx, ok := a.lifecycleContext()
+		if ok {
+			go func() {
+				timer := time.NewTimer(1500 * time.Millisecond)
+				defer timer.Stop()
+				select {
+				case <-ctx.Done():
+					return
+				case <-timer.C:
+				}
+				a.mu.Lock()
+				curHW := a.homeworkSubmitWin
+				closed := a.lifecycleClosed
+				a.mu.Unlock()
+				if !closed && curHW == hw {
+					hw.Close()
+				}
+			}()
+		}
 	}
 
 	a.mu.Lock()
@@ -1884,17 +1971,28 @@ func (a *App) SubmitHomeworkQueue() {
 	}
 	queue := append([]string(nil), a.homeworkQueue...)
 	a.homeworkSubmitNote = fmt.Sprintf("正在上传 %d 个作业文件...", len(queue))
+	ctx, ok := a.lifecycleContext()
+	if !ok {
+		return
+	}
 	go func() {
 		sent := 0
 		var lastErr error
 		for _, p := range queue {
-			if _, err := a.opts.Files.SubmitHomework(context.Background(), a.studentID, p); err != nil {
+			if _, err := a.opts.Files.SubmitHomework(ctx, a.studentID, p); err != nil {
+				if ctx.Err() != nil {
+					return
+				}
 				lastErr = err
 			} else {
 				sent++
 			}
 		}
 		a.mu.Lock()
+		if a.lifecycleClosed {
+			a.mu.Unlock()
+			return
+		}
 		if lastErr != nil {
 			a.homeworkSubmitNote = fmt.Sprintf("提交完成 %d/%d（部分失败: %v）", sent, len(queue), lastErr)
 		} else {
