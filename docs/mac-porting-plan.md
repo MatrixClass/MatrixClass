@@ -330,16 +330,26 @@ lipo -info MatrixClass\ Teacher.app/Contents/MacOS/matrixclass-teacher
 lipo -info MatrixClass\ Student.app/Contents/MacOS/matrixclass-student
 ```
 
-### Task 8.3：签名、公证和分发
+### Task 8.3：无开发者账号的分发方案
 
-- 未配置 Apple Developer 账号时先生成未签名测试包，并明确 Gatekeeper 操作说明。
-- 有账号后增加 Developer ID Application 签名。
-- 使用 `codesign --deep --strict --options runtime` 检查签名。
-- 使用 `notarytool` 公证并 `stapler` 固化票据。
-- 生成 `.dmg`，包含教师端、学生端、README 和权限说明。
-- 不把签名证书、私钥或公证凭据提交到仓库。
+当前没有 Apple Developer 账号，因此第一阶段只实现未签名或本机自签名测试包，不把 Apple 签名和公证作为阻塞条件。
 
-Commit：`build(darwin): package signed and unsigned macOS apps`
+- [ ] 生成未签名教师端和学生端 `.app`。
+- [ ] 生成包含两个 `.app`、README 和权限说明的 `.dmg`。
+- [ ] 在 README 中说明首次启动方式：Finder 中右键应用，选择“打开”，再确认打开。
+- [ ] 对本机自编译包提供可选的 ad-hoc 签名：`codesign --deep --force --sign -`。
+- [ ] 验证 ad-hoc 签名只用于本机或测试环境，不能当作公证签名。
+- [ ] 仅针对用户明确下载且确认来源的文件提供去除隔离标记说明：`xattr -d com.apple.quarantine <应用路径>`；不建议关闭系统 Gatekeeper。
+- [ ] 不把签名证书、私钥或任何凭据提交到仓库。
+
+后续具备 Apple Developer 账号后再增加：
+
+- [ ] Developer ID Application 签名。
+- [ ] 使用 `codesign --deep --strict --options runtime` 校验。
+- [ ] 使用 `notarytool` 公证并 `stapler` 固化票据。
+- [ ] 公证后的正式 `.dmg` 发布流程。
+
+Commit：`build(darwin): package unsigned macOS apps`
 
 ## 阶段 9：测试和 CI
 
@@ -380,7 +390,7 @@ Commit：`build(darwin): package signed and unsigned macOS apps`
 - `darwin/arm64` 构建产物。
 - Universal 2 `.app`。
 - 未签名 `.dmg`。
-- 可选的签名、公证 `.dmg`。
+- 后续可选的签名、公证 `.dmg`。
 - SHA-256 校验和和构建日志。
 
 ## 推荐执行顺序
@@ -393,7 +403,7 @@ Commit：`build(darwin): package signed and unsigned macOS apps`
 6. 锁屏、进程和电源控制。
 7. MyGo 窗口、菜单栏和权限引导。
 8. 多网卡、网络重连和 macOS 数据目录。
-9. `.app`、Universal 2、`.dmg`、签名和公证。
+9. `.app`、Universal 2、未签名 `.dmg` 和首次启动说明。
 10. Intel/Apple Silicon 实机矩阵和 macOS CI。
 
 ## 验收标准
@@ -406,6 +416,6 @@ macOS 适配完成必须同时满足：
 - 权限拒绝不会伪造功能成功，也不会让监控永久卡住。
 - Wi-Fi/有线/VPN 切换后连接可恢复。
 - `.app` 可正常启动，窗口、菜单栏、独立弹窗和退出行为正常。
-- 未签名包和签名包均有清晰发布说明。
+- 未签名包有清晰的首次启动、权限授权和 Gatekeeper 说明；具备账号后再验收正式签名包。
 - 许可证扫描继续保持 0 GPL/LGPL/AGPL 传染性依赖。
 - 所有阶段均有测试证据和独立 Git commit。
