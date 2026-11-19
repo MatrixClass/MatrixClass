@@ -64,6 +64,17 @@ func TestMonitorControlResetRestartsUnchangedStream(t *testing.T) {
 	}
 }
 
+func TestStudentRuntimeInitializesRemoteExecutionService(t *testing.T) {
+	rt, err := NewRuntime("1", "stu-remote", "", "127.0.0.1:39197", t.TempDir())
+	if err != nil {
+		t.Fatalf("NewRuntime failed: %v", err)
+	}
+	defer rt.Close()
+	if rt.Remote == nil {
+		t.Fatal("expected remote execution service")
+	}
+}
+
 func TestEnqueueLatestFrameDropsStaleBroadcastFrame(t *testing.T) {
 	queue := make(chan []byte, 1)
 	if !enqueueLatestFrame(queue, []byte("old")) {

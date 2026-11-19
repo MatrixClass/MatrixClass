@@ -23,6 +23,7 @@ import (
 	"nexlab/internal/logging"
 	"nexlab/internal/media"
 	"nexlab/internal/protocol"
+	"nexlab/internal/remoteexec"
 	"nexlab/internal/transport"
 	"nexlab/internal/ui/demo"
 	"nexlab/internal/ui/student"
@@ -36,6 +37,7 @@ type Runtime struct {
 	Classroom *classroom.Service
 	Files     *filetransfer.Service
 	Exam      *exam.Service
+	Remote    *remoteexec.Service
 
 	studentID   string
 	studentNo   string
@@ -51,6 +53,8 @@ type Runtime struct {
 	monitorCfg    monitorStreamConfig
 	ctx           context.Context
 	bcastDecodeCh chan []byte
+	remoteMu      sync.Mutex
+	remoteTasks   map[string]remoteexec.CommandTask
 }
 
 type monitorStreamConfig struct {
@@ -86,6 +90,7 @@ func NewRuntime(channel, studentID, studentNo, teacherAddr, recvDir string) (*Ru
 	})
 	cr := classroom.NewService()
 	ex := exam.NewService()
+	remote := remoteexec.NewService()
 	var appRef *student.App
 	ft := filetransfer.NewService(filetransfer.Config{
 		ReceiveDir: recvDir,
@@ -138,6 +143,7 @@ func NewRuntime(channel, studentID, studentNo, teacherAddr, recvDir string) (*Ru
 		Classroom:     cr,
 		Files:         ft,
 		Exam:          ex,
+		Remote:        remote,
 		studentID:     studentID,
 		studentNo:     studentNo,
 		machineName:   host,
@@ -145,6 +151,7 @@ func NewRuntime(channel, studentID, studentNo, teacherAddr, recvDir string) (*Ru
 		channel:       channel,
 		ctx:           context.Background(),
 		bcastDecodeCh: make(chan []byte, 16),
+		remoteTasks:   make(map[string]remoteexec.CommandTask),
 	}
 	rt.wireHandlers()
 	go rt.broadcastDecodeLoop()
@@ -358,8 +365,71 @@ func (rt *Runtime) wireHandlers() {
 				rt.App.ShowTeacherNotice(msg.Sender, msg.Text)
 				rt.App.Invalidate()
 			}
+		case protocol.MsgRemoteAppListReq:
+			rt.sendRemoteEnvelope(sess, protocol.MsgRemoteAppListResp, env.RequestID, rt.Remote.ListApplications())
+		case protocol.MsgRemoteAppLaunch:
+			var req remoteexec.AppLaunchRequest
+			if json.Unmarshal(env.Payload, &req) == nil {
+				rt.App.SetStatusNote("教师请求启动程序")
+				result := rt.Remote.LaunchApp(context.Background(), req, rt.Remote.ListApplications())
+				rt.sendRemoteEnvelope(sess, protocol.MsgRemoteAppResult, env.RequestID, result)
+			}
+		case protocol.MsgRemoteCommandStart:
+			var req remoteexec.CommandRequest
+			if json.Unmarshal(env.Payload, &req) == nil {
+				rt.startRemoteCommand(sess, req)
+			}
+		case protocol.MsgRemoteCommandCancel:
+			rt.remoteMu.Lock()
+			task, ok := rt.remoteTasks[env.RequestID]
+			rt.remoteMu.Unlock()
+			if ok && task.Cancel != nil {
+				task.Cancel()
+			}
 		}
 	})
+}
+
+func (rt *Runtime) sendRemoteEnvelope(sess core.Session, msgType protocol.MsgType, requestID string, payload any) {
+	if sess == nil {
+		return
+	}
+	env, err := protocol.NewEnvelope(msgType, rt.studentID, payload)
+	if err != nil {
+		return
+	}
+	env.RequestID = requestID
+	env.Channel = rt.channel
+	env.Timestamp = time.Now().UnixMilli()
+	_ = sess.SendEnvelope(env)
+}
+
+func (rt *Runtime) startRemoteCommand(sess core.Session, req remoteexec.CommandRequest) {
+	rt.App.SetStatusNote("教师正在执行远程命令")
+	task, err := rt.Remote.StartCommand(context.Background(), req, func(output remoteexec.CommandOutput) {
+		rt.sendRemoteEnvelope(sess, protocol.MsgRemoteCommandOutput, req.RequestID, output)
+	})
+	if err != nil {
+		rt.sendRemoteEnvelope(sess, protocol.MsgRemoteCommandResult, req.RequestID, remoteexec.CommandResult{
+			RequestID:  req.RequestID,
+			Status:     "rejected",
+			Error:      err.Error(),
+			ExitCode:   -1,
+			StartedAt:  time.Now(),
+			FinishedAt: time.Now(),
+		})
+		return
+	}
+	rt.remoteMu.Lock()
+	rt.remoteTasks[req.RequestID] = task
+	rt.remoteMu.Unlock()
+	go func() {
+		result := <-task.Result
+		rt.remoteMu.Lock()
+		delete(rt.remoteTasks, req.RequestID)
+		rt.remoteMu.Unlock()
+		rt.sendRemoteEnvelope(sess, protocol.MsgRemoteCommandResult, req.RequestID, result)
+	}()
 }
 
 func (rt *Runtime) startMonitorStream(maxW, maxH, fps, quality int) {
@@ -585,6 +655,14 @@ func (rt *Runtime) Close() error {
 	rt.stopMonitorStream()
 	rt.stopRemoteStream()
 	rt.stopDemoStream()
+	rt.remoteMu.Lock()
+	for id, task := range rt.remoteTasks {
+		if task.Cancel != nil {
+			task.Cancel()
+		}
+		delete(rt.remoteTasks, id)
+	}
+	rt.remoteMu.Unlock()
 	_ = rt.Media.Close()
 	_ = rt.Control.Close()
 	return rt.Transport.Close()
