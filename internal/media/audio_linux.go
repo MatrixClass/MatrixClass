@@ -15,6 +15,8 @@ import (
 
 var ErrLinuxAudioUnavailable = errors.New("media: no PipeWire or PulseAudio command is available")
 
+var linuxLookPath = exec.LookPath
+
 type linuxAudioCommand struct {
 	name string
 	args []string
@@ -41,24 +43,15 @@ func (a *AudioEngine) StartCapture(loopback bool, onFrame func(*core.AudioFrame)
 	if !ok {
 		return ErrLinuxAudioUnavailable
 	}
-	cmd := exec.Command(command.name, command.args...)
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return err
-	}
-	if err := cmd.Start(); err != nil {
-		return err
-	}
 	stopCh := make(chan struct{})
 	doneCh := make(chan struct{})
 	a.mu.Lock()
 	a.stopCh = stopCh
 	a.doneCh = doneCh
-	a.capture = cmd
+	a.capture = nil
 	a.mu.Unlock()
 	go func() {
 		defer close(doneCh)
-		defer cmd.Wait()
 		const sampleRate = 48000
 		const channels = 2
 		const bytesPerFrame = 2
@@ -70,15 +63,58 @@ func (a *AudioEngine) StartCapture(loopback bool, onFrame func(*core.AudioFrame)
 				return
 			default:
 			}
-			if _, err := io.ReadFull(stdout, buffer); err != nil {
+			cmd := exec.Command(command.name, command.args...)
+			stdout, err := cmd.StdoutPipe()
+			if err != nil {
 				return
 			}
-			sequence++
-			data := append([]byte(nil), buffer...)
-			onFrame(&core.AudioFrame{Seq: sequence, SampleRate: sampleRate, Channels: channels, Timestamp: time.Now().UnixMilli(), Data: data})
+			if err := cmd.Start(); err != nil {
+				if !waitLinuxAudioRetry(stopCh, 250*time.Millisecond) {
+					return
+				}
+				continue
+			}
+			a.mu.Lock()
+			if a.stopCh == stopCh {
+				a.capture = cmd
+			}
+			a.mu.Unlock()
+			for {
+				if _, err := io.ReadFull(stdout, buffer); err != nil {
+					break
+				}
+				sequence++
+				data := append([]byte(nil), buffer...)
+				onFrame(&core.AudioFrame{Seq: sequence, SampleRate: sampleRate, Channels: channels, Timestamp: time.Now().UnixMilli(), Data: data})
+			}
+			_ = cmd.Wait()
+			a.mu.Lock()
+			if a.capture == cmd {
+				a.capture = nil
+			}
+			a.mu.Unlock()
+			select {
+			case <-stopCh:
+				return
+			default:
+			}
+			if !waitLinuxAudioRetry(stopCh, 250*time.Millisecond) {
+				return
+			}
 		}
 	}()
 	return nil
+}
+
+func waitLinuxAudioRetry(stopCh <-chan struct{}, delay time.Duration) bool {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-stopCh:
+		return false
+	case <-timer.C:
+		return true
+	}
 }
 
 func (a *AudioEngine) StopCapture() error {
@@ -103,47 +139,73 @@ func (a *AudioEngine) PlayFrame(frame *core.AudioFrame) error {
 		return nil
 	}
 	a.mu.Lock()
-	if a.playIn == nil {
-		command, ok := linuxPlaybackCommand(frame)
-		if !ok {
-			a.mu.Unlock()
-			return ErrLinuxAudioUnavailable
-		}
-		cmd := exec.Command(command.name, command.args...)
-		input, err := cmd.StdinPipe()
-		if err != nil {
-			a.mu.Unlock()
-			return err
-		}
-		if err := cmd.Start(); err != nil {
-			a.mu.Unlock()
-			return err
-		}
-		a.playback, a.playIn = cmd, input
+	if err := a.ensurePlaybackLocked(frame); err != nil {
+		a.mu.Unlock()
+		return err
 	}
-	input := a.playIn
 	volume := a.volume
+	input := a.playIn
 	a.mu.Unlock()
 	if volume <= 0 {
 		return nil
 	}
-	if volume >= 0.999 {
-		_, err := input.Write(frame.Data)
-		return err
-	}
 	adjusted := make([]byte, len(frame.Data))
-	for i := 0; i+1 < len(frame.Data); i += 2 {
-		sample := int16(uint16(frame.Data[i]) | uint16(frame.Data[i+1])<<8)
-		scaled := int(float32(sample) * volume)
-		if scaled > 32767 {
-			scaled = 32767
-		} else if scaled < -32768 {
-			scaled = -32768
+	if volume >= 0.999 {
+		adjusted = frame.Data
+	} else {
+		for i := 0; i+1 < len(frame.Data); i += 2 {
+			sample := int16(uint16(frame.Data[i]) | uint16(frame.Data[i+1])<<8)
+			scaled := int(float32(sample) * volume)
+			if scaled > 32767 {
+				scaled = 32767
+			} else if scaled < -32768 {
+				scaled = -32768
+			}
+			adjusted[i], adjusted[i+1] = byte(scaled), byte(uint16(scaled)>>8)
 		}
-		adjusted[i], adjusted[i+1] = byte(scaled), byte(uint16(scaled)>>8)
 	}
 	_, err := input.Write(adjusted)
+	if err != nil {
+		a.mu.Lock()
+		a.resetPlaybackLocked()
+		retryErr := a.ensurePlaybackLocked(frame)
+		if retryErr == nil {
+			_, retryErr = a.playIn.Write(adjusted)
+		}
+		a.mu.Unlock()
+		return retryErr
+	}
 	return err
+}
+
+func (a *AudioEngine) ensurePlaybackLocked(frame *core.AudioFrame) error {
+	if a.playIn != nil {
+		return nil
+	}
+	command, ok := linuxPlaybackCommand(frame)
+	if !ok {
+		return ErrLinuxAudioUnavailable
+	}
+	cmd := exec.Command(command.name, command.args...)
+	input, err := cmd.StdinPipe()
+	if err != nil {
+		return err
+	}
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	a.playback, a.playIn = cmd, input
+	return nil
+}
+
+func (a *AudioEngine) resetPlaybackLocked() {
+	if a.playIn != nil {
+		_ = a.playIn.Close()
+	}
+	if a.playback != nil && a.playback.Process != nil {
+		_ = a.playback.Process.Kill()
+	}
+	a.playIn, a.playback = nil, nil
 }
 
 func (a *AudioEngine) SetVolume(vol float32) {
@@ -179,23 +241,23 @@ func (a *AudioEngine) Close() error {
 }
 
 func linuxCaptureCommand(loopback bool) (linuxAudioCommand, bool) {
-	if _, err := exec.LookPath("pw-cat"); err == nil {
+	if path, err := linuxLookPath("pw-cat"); err == nil {
 		args := []string{"--record", "--raw", "--format", "s16", "--rate", "48000", "--channels", "2"}
 		if loopback {
 			args = append(args, "--target", "@DEFAULT_SINK@")
 		}
-		return linuxAudioCommand{name: "pw-cat", args: args}, true
+		return linuxAudioCommand{name: path, args: args}, true
 	}
-	if _, err := exec.LookPath("parec"); err == nil {
+	if path, err := linuxLookPath("parec"); err == nil {
 		args := []string{"--raw", "--format=s16le", "--rate=48000", "--channels=2"}
 		if loopback {
 			args = append(args, "--device=@DEFAULT_SINK_MONITOR@")
 		}
-		return linuxAudioCommand{name: "parec", args: args}, true
+		return linuxAudioCommand{name: path, args: args}, true
 	}
 	if !loopback {
-		if _, err := exec.LookPath("arecord"); err == nil {
-			return linuxAudioCommand{name: "arecord", args: []string{"-q", "-t", "raw", "-f", "S16_LE", "-r", "48000", "-c", "2"}}, true
+		if path, err := linuxLookPath("arecord"); err == nil {
+			return linuxAudioCommand{name: path, args: []string{"-q", "-t", "raw", "-f", "S16_LE", "-r", "48000", "-c", "2"}}, true
 		}
 	}
 	return linuxAudioCommand{}, false
@@ -208,11 +270,11 @@ func linuxPlaybackCommand(frame *core.AudioFrame) (linuxAudioCommand, bool) {
 	if frame.Channels <= 0 {
 		frame.Channels = 2
 	}
-	if _, err := exec.LookPath("pw-cat"); err == nil {
-		return linuxAudioCommand{name: "pw-cat", args: []string{"--playback", "--raw", "--format", "s16", "--rate", fmt.Sprint(frame.SampleRate), "--channels", fmt.Sprint(frame.Channels)}}, true
+	if path, err := linuxLookPath("pw-cat"); err == nil {
+		return linuxAudioCommand{name: path, args: []string{"--playback", "--raw", "--format", "s16", "--rate", fmt.Sprint(frame.SampleRate), "--channels", fmt.Sprint(frame.Channels)}}, true
 	}
-	if _, err := exec.LookPath("paplay"); err == nil {
-		return linuxAudioCommand{name: "paplay", args: []string{"--raw", "--format=s16le", "--rate", fmt.Sprint(frame.SampleRate), "--channels", fmt.Sprint(frame.Channels)}}, true
+	if path, err := linuxLookPath("paplay"); err == nil {
+		return linuxAudioCommand{name: path, args: []string{"--raw", "--format=s16le", "--rate", fmt.Sprint(frame.SampleRate), "--channels", fmt.Sprint(frame.Channels)}}, true
 	}
 	return linuxAudioCommand{}, false
 }
