@@ -952,7 +952,7 @@ func (a *App) buildExamView(c *ui.Context, pal theme.Palette) {
 			return
 		}
 
-		ui.Scroll(c.Key("student-exam-scroll")).Grow(1).FillWidth().Children(func() {
+		ui.Scroll(c.Key("student-exam-scroll")).Grow(1).FillWidth().ScrollbarAxes(false, true).Scrollbars(true).KeepScrollbars(true).Children(func() {
 			ui.Column(c).FillWidth().Gap(10).Children(func() {
 				for idx, q := range a.activePaper.Questions {
 					q := q
@@ -1010,7 +1010,7 @@ func (a *App) buildChatView(c *ui.Context, pal theme.Palette) {
 			}
 		})
 
-		ui.Scroll(c.Key("student-chat-scroll")).Grow(1).FillWidth().Children(func() {
+		ui.Scroll(c.Key("student-chat-scroll")).Grow(1).FillWidth().ScrollbarAxes(false, true).Scrollbars(true).KeepScrollbars(true).Children(func() {
 			ui.Column(c).FillWidth().Gap(4).Children(func() {
 				if a.opts.Classroom != nil {
 					for _, msg := range a.opts.Classroom.ListChats() {
@@ -1061,7 +1061,7 @@ func (a *App) buildHomeworkView(c *ui.Context, pal theme.Palette) {
 		})
 
 		if len(fileTasks) > 0 {
-			ui.Scroll(c.Key("student-hw-history")).Grow(1).FillWidth().Children(func() {
+			ui.Scroll(c.Key("student-hw-history")).Grow(1).FillWidth().ScrollbarAxes(false, true).Scrollbars(true).KeepScrollbars(true).Children(func() {
 				ui.Column(c).FillWidth().Padding(8).Radius(3).Background(pal.Card).Border(1, pal.CardBorder).Gap(4).Children(func() {
 					ui.Text(c, fmt.Sprintf("提交记录 (%d)", len(fileTasks))).FontSize(11).Bold().TextColor(pal.TextMuted)
 					for i := len(fileTasks) - 1; i >= 0; i-- {
@@ -1531,7 +1531,7 @@ func (a *App) FileReceiveView(c *ui.Context) {
 			return
 		}
 
-		ui.Scroll(c).Grow(1).Gap(8).Children(func() {
+		ui.Scroll(c).Grow(1).Gap(8).ScrollbarAxes(false, true).Scrollbars(true).KeepScrollbars(true).Children(func() {
 			for _, it := range items {
 				tk := it.Task
 				ratio := 0.0
@@ -1783,7 +1783,7 @@ func (a *App) buildHomeworkSubmitContent(c *ui.Context, pal theme.Palette) {
 			}
 		})
 
-		queueScroll := ui.Scroll(c.Key("hw-queue")).Grow(1).FillWidth().Background(pal.Card).Radius(3).Padding(8).Gap(6)
+		queueScroll := ui.Scroll(c.Key("hw-queue")).Grow(1).FillWidth().Background(pal.Card).Radius(3).Padding(8).Gap(6).ScrollbarAxes(false, true).Scrollbars(true).KeepScrollbars(true)
 		if queueScroll.FileDragOver() {
 			queueScroll.Border(2, pal.Accent)
 		} else {

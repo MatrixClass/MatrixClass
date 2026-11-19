@@ -1040,7 +1040,7 @@ func (a *App) buildMainWorkspace(c *ui.Context, pal theme.Palette, students []co
 
 func (a *App) buildSeatMapTab(c *ui.Context, pal theme.Palette, students []core.StudentInfo) {
 	ui.Column(c).Grow(1).FillWidth().Children(func() {
-		scroll := ui.Scroll(c).Grow(1).Padding(12).Gap(10)
+		scroll := ui.Scroll(c).Grow(1).Padding(12).Gap(10).ScrollbarAxes(false, true).Scrollbars(true).KeepScrollbars(true)
 		a.attachBlankAreaContextMenu(scroll, students)
 		a.attachMarqueeElement(scroll, "", students)
 		scroll.Children(func() {
@@ -1158,7 +1158,7 @@ func (a *App) buildMonitorWallTab(c *ui.Context, pal theme.Palette, students []c
 			}
 		})
 
-		scroll := ui.Scroll(c).Grow(1)
+		scroll := ui.Scroll(c).Grow(1).ScrollbarAxes(false, true).Scrollbars(true).KeepScrollbars(true)
 		a.attachBlankAreaContextMenu(scroll, students)
 		a.attachMarqueeElement(scroll, "", students)
 		scroll.Children(func() {
@@ -1299,7 +1299,7 @@ func (a *App) buildExamStatsTab(c *ui.Context, pal theme.Palette) {
 		}
 	}
 
-	ui.Scroll(c).Grow(1).Padding(12).Gap(12).Children(func() {
+	ui.Scroll(c).Grow(1).Padding(12).Gap(12).ScrollbarAxes(false, true).Scrollbars(true).KeepScrollbars(true).Children(func() {
 		ui.Row(c).Gap(12).AlignItems(ui.Stretch).Children(func() {
 			// Left: Quick paper builder & publisher
 			ui.Column(c).Grow(1).Background(pal.Card).Border(1, pal.CardBorder).Radius(3).Padding(12).Gap(8).Children(func() {
@@ -1446,7 +1446,7 @@ func (a *App) buildFilesTab(c *ui.Context, pal theme.Palette) {
 			return
 		}
 
-		ui.Scroll(c).Grow(1).Gap(6).Children(func() {
+		ui.Scroll(c).Grow(1).Gap(6).ScrollbarAxes(false, true).Scrollbars(true).KeepScrollbars(true).Children(func() {
 			for _, tk := range tasks {
 				ratio := 0.0
 				if tk.TotalBytes > 0 {
@@ -1584,7 +1584,7 @@ func (a *App) buildSideChatQueue(c *ui.Context, pal theme.Palette, students []co
 		chats = a.opts.Classroom.ListChats()
 	}
 
-	ui.Scroll(c).Grow(1).Gap(6).Children(func() {
+	ui.Scroll(c).Grow(1).Gap(6).ScrollbarAxes(false, true).Scrollbars(true).KeepScrollbars(true).Children(func() {
 		for _, msg := range chats {
 			chatKey := msg.ID
 			if chatKey == "" {
@@ -1611,7 +1611,7 @@ func (a *App) buildSideChatQueue(c *ui.Context, pal theme.Palette, students []co
 
 func (a *App) buildSidePolicy(c *ui.Context, pal theme.Palette) {
 	ui.Column(c).Grow(1).FillWidth().Gap(8).Children(func() {
-		ui.Scroll(c).Grow(1).FillWidth().Gap(8).Children(func() {
+		ui.Scroll(c).Grow(1).FillWidth().Gap(8).ScrollbarAxes(false, true).Scrollbars(true).KeepScrollbars(true).Children(func() {
 			ui.Row(c).AlignItems(ui.Center).Gap(6).Children(func() {
 				ui.Text(c, "课堂管控策略").FontSize(13).Bold()
 				ui.Spacer(c)
@@ -2255,7 +2255,7 @@ func (a *App) buildFileDistributeContent(c *ui.Context, pal theme.Palette) {
 			}
 		})
 
-		queueScroll := ui.Scroll(c.Key("file-dist-queue")).Grow(1).FillWidth().Background(pal.Card).Radius(3).Padding(8).Gap(6)
+		queueScroll := ui.Scroll(c.Key("file-dist-queue")).Grow(1).FillWidth().Background(pal.Card).Radius(3).Padding(8).Gap(6).ScrollbarAxes(false, true).Scrollbars(true).KeepScrollbars(true)
 		if queueScroll.FileDragOver() {
 			queueScroll.Border(2, pal.Accent)
 		} else {
