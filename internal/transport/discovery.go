@@ -33,6 +33,25 @@ type DiscoveryConfig struct {
 	Interval      time.Duration
 }
 
+var (
+	interfaceEnumerator        = net.Interfaces
+	interfaceAddressEnumerator = func(iface net.Interface) ([]net.Addr, error) { return iface.Addrs() }
+)
+
+func usableInterfaces(interfaces []net.Interface) []net.Interface {
+	usable := make([]net.Interface, 0, len(interfaces))
+	for _, iface := range interfaces {
+		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
+			continue
+		}
+		if iface.Flags&(net.FlagBroadcast|net.FlagMulticast) == 0 {
+			continue
+		}
+		usable = append(usable, iface)
+	}
+	return usable
+}
+
 func DefaultDiscoveryConfig() DiscoveryConfig {
 	return DiscoveryConfig{
 		Port:          DefaultDiscoveryPort,
@@ -45,6 +64,9 @@ func DefaultDiscoveryConfig() DiscoveryConfig {
 type BeaconBroadcaster struct {
 	beacon   protocol.DiscoveryBeacon
 	targets  []*net.UDPAddr
+	port     int
+	explicit string
+	mu       sync.RWMutex
 	interval time.Duration
 	conn     *net.UDPConn
 	done     chan struct{}
@@ -70,17 +92,19 @@ func collectBroadcastTargets(port int, explicit string) []*net.UDPAddr {
 		if u, err := net.ResolveUDPAddr("udp4", explicit); err == nil {
 			seen[u.String()] = struct{}{}
 			addrs = append(addrs, u)
-			return addrs
+			if u.IP.String() != net.IPv4bcast.String() {
+				return addrs
+			}
 		}
 	}
 
 	add("255.255.255.255")
-	if ifaces, err := net.Interfaces(); err == nil {
-		for _, iface := range ifaces {
-			if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagBroadcast == 0 {
+	if ifaces, err := interfaceEnumerator(); err == nil {
+		for _, iface := range usableInterfaces(ifaces) {
+			if iface.Flags&net.FlagBroadcast == 0 {
 				continue
 			}
-			ifAddrs, err := iface.Addrs()
+			ifAddrs, err := interfaceAddressEnumerator(iface)
 			if err != nil {
 				continue
 			}
@@ -101,7 +125,6 @@ func collectBroadcastTargets(port int, explicit string) []*net.UDPAddr {
 			}
 		}
 	}
-	add("127.0.0.1")
 	return addrs
 }
 
@@ -120,6 +143,8 @@ func StartBeaconBroadcaster(ctx context.Context, beacon protocol.DiscoveryBeacon
 	b := &BeaconBroadcaster{
 		beacon:   beacon,
 		targets:  targets,
+		port:     cfg.Port,
+		explicit: cfg.BroadcastAddr,
 		interval: cfg.Interval,
 		conn:     conn,
 		done:     make(chan struct{}),
@@ -134,7 +159,11 @@ func (b *BeaconBroadcaster) loop(ctx context.Context) {
 		return
 	}
 	send := func() {
-		for _, target := range b.targets {
+		b.refreshTargets()
+		b.mu.RLock()
+		targets := append([]*net.UDPAddr(nil), b.targets...)
+		b.mu.RUnlock()
+		for _, target := range targets {
 			_, _ = b.conn.WriteToUDP(payload, target)
 		}
 	}
@@ -152,6 +181,13 @@ func (b *BeaconBroadcaster) loop(ctx context.Context) {
 			send()
 		}
 	}
+}
+
+func (b *BeaconBroadcaster) refreshTargets() {
+	targets := collectBroadcastTargets(b.port, b.explicit)
+	b.mu.Lock()
+	b.targets = targets
+	b.mu.Unlock()
 }
 
 func (b *BeaconBroadcaster) Close() error {

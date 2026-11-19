@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net"
 	"runtime"
+	"sort"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -157,6 +158,7 @@ type Manager struct {
 	mcastConn   *net.UDPConn
 	mcastTarget *net.UDPAddr
 	mcastRxConn net.PacketConn
+	mcastAddr   string
 
 	sessions         map[string]*SmuxSession
 	aliases          map[string]*SmuxSession
@@ -164,7 +166,14 @@ type Manager struct {
 	multicastEnabled atomic.Bool
 	mcastAckSent     atomic.Bool
 	reconnecting     atomic.Bool
+	networkWatcher   atomic.Bool
+	nackWatcher      atomic.Bool
 	studentChannel   string
+
+	networkMu          sync.RWMutex
+	activeInterfaces   []string
+	reconnects         uint64
+	lastReconnectCause string
 
 	ringSize int
 	ring     []ringEntry
@@ -200,6 +209,13 @@ type Manager struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 	closed bool
+}
+
+// NetworkStatus describes the transport's current interface and reconnect state.
+type NetworkStatus struct {
+	Interfaces          []string
+	Reconnects          uint64
+	LastReconnectReason string
 }
 
 func NewManager(opts ...ManagerOption) *Manager {
@@ -260,6 +276,23 @@ func (m *Manager) SetMulticastEnabled(enabled bool) {
 
 func (m *Manager) MulticastEnabled() bool {
 	return m.multicastEnabled.Load()
+}
+
+func (m *Manager) recordReconnect(reason string) {
+	m.networkMu.Lock()
+	m.reconnects++
+	m.lastReconnectCause = reason
+	m.networkMu.Unlock()
+}
+
+func (m *Manager) NetworkStatus() NetworkStatus {
+	m.networkMu.RLock()
+	defer m.networkMu.RUnlock()
+	return NetworkStatus{
+		Interfaces:          append([]string(nil), m.activeInterfaces...),
+		Reconnects:          m.reconnects,
+		LastReconnectReason: m.lastReconnectCause,
+	}
 }
 
 // StartTeacher starts KCP listener, discovery beacon broadcaster, and optional UDP multicast sender.
@@ -484,6 +517,7 @@ func (m *Manager) scheduleStudentReconnect() {
 			if err := m.connectStudentOnce(channel); err == nil {
 				return
 			}
+			m.recordReconnect("KCP reconnect attempt failed")
 			backoff *= 2
 			if backoff > maxBackoff {
 				backoff = maxBackoff
@@ -531,10 +565,16 @@ func (m *Manager) startMulticastReceiver(addrStr string) error {
 		return nil
 	}
 	m.mcastRxConn = pc
+	m.mcastAddr = addrStr
 	m.mu.Unlock()
 
 	go m.multicastReadLoop(pc)
-	go m.nackWatchLoop()
+	if m.nackWatcher.CompareAndSwap(false, true) {
+		go m.nackWatchLoop()
+	}
+	if m.networkWatcher.CompareAndSwap(false, true) {
+		go m.networkWatchLoop()
+	}
 	return nil
 }
 
@@ -544,10 +584,7 @@ func listenMulticastAllInterfaces(addr *net.UDPAddr) (net.PacketConn, error) {
 		return nil, err
 	}
 	var conns []*net.UDPConn
-	for _, iface := range ifaces {
-		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
-			continue
-		}
+	for _, iface := range usableInterfaces(ifaces) {
 		conn, err := net.ListenMulticastUDP("udp4", &iface, addr)
 		if err != nil {
 			continue
@@ -570,6 +607,73 @@ func listenMulticastAllInterfaces(addr *net.UDPAddr) (net.PacketConn, error) {
 		go combined.readConn(conn)
 	}
 	return combined, nil
+}
+
+func networkInterfaceSnapshot() []string {
+	ifaces, err := interfaceEnumerator()
+	if err != nil {
+		return nil
+	}
+	usable := usableInterfaces(ifaces)
+	snapshot := make([]string, 0, len(usable))
+	for _, iface := range usable {
+		snapshot = append(snapshot, fmt.Sprintf("%d:%s", iface.Index, iface.Name))
+	}
+	sort.Strings(snapshot)
+	return snapshot
+}
+
+func sameStrings(left, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for i := range left {
+		if left[i] != right[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func (m *Manager) networkWatchLoop() {
+	defer m.networkWatcher.Store(false)
+	last := networkInterfaceSnapshot()
+	m.networkMu.Lock()
+	m.activeInterfaces = append([]string(nil), last...)
+	m.networkMu.Unlock()
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-m.ctx.Done():
+			return
+		case <-ticker.C:
+			current := networkInterfaceSnapshot()
+			if sameStrings(last, current) {
+				continue
+			}
+			last = current
+			m.networkMu.Lock()
+			m.activeInterfaces = append([]string(nil), current...)
+			m.networkMu.Unlock()
+			m.recordReconnect("network interface changed")
+			m.restartMulticastReceiver()
+		}
+	}
+}
+
+func (m *Manager) restartMulticastReceiver() {
+	m.mu.Lock()
+	addr := m.mcastAddr
+	conn := m.mcastRxConn
+	m.mcastRxConn = nil
+	m.mu.Unlock()
+	if conn != nil {
+		_ = conn.Close()
+	}
+	if addr != "" {
+		_ = m.startMulticastReceiver(addr)
+	}
 }
 
 type multiPacketConn struct {
@@ -874,6 +978,7 @@ func (m *Manager) emitMulticastFrame(frame []byte) {
 }
 
 func (m *Manager) nackWatchLoop() {
+	defer m.nackWatcher.Store(false)
 	ticker := time.NewTicker(10 * time.Millisecond)
 	defer ticker.Stop()
 	for {
