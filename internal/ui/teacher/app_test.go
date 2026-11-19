@@ -685,7 +685,7 @@ func TestRevokeClassroomPolicy(t *testing.T) {
 	if len(ctrl.Policy.BlockedApps) != 0 || len(ctrl.Policy.BlockedDomains) != 0 {
 		t.Fatalf("expected empty blocklists after revoke, got %+v", ctrl.Policy)
 	}
-	if app.blockedAppsInput != "WeChat.exe, steam.exe" || app.blockedSitesInput != "bilibili.com" {
+	if app.blockedAppsInput != "WeChat.exe,steam.exe" || app.blockedSitesInput != "bilibili.com" {
 		t.Fatalf("expected input fields preserved after revoke")
 	}
 }
@@ -709,6 +709,25 @@ func TestTeacherPolicyOpensFromNavigation(t *testing.T) {
 	tester.Frame()
 	if !app.policyModal || !tester.HasText("管控策略编排") || !tester.HasText("下发管控策略") {
 		t.Fatalf("expected policy editor modal to be open")
+	}
+}
+
+func TestPolicyRulesCanBeAddedAndCompiled(t *testing.T) {
+	app, _, _, ctrl := newTestTeacherApp()
+	app.blockedAppRules = []string{"game.exe", "chat.exe"}
+	app.allowedAppRules = []string{"notepad.exe"}
+	app.blockedSiteRules = []string{"example.com", "video.example.com"}
+	app.allowedSiteRules = []string{"school.edu.cn"}
+	app.ApplyClassroomPolicy()
+
+	if got := app.blockedAppsInput; got != "game.exe,chat.exe" {
+		t.Fatalf("unexpected blocked app CSV: %q", got)
+	}
+	if len(ctrl.Policy.BlockedApps) != 2 || len(ctrl.Policy.AllowedApps) != 1 {
+		t.Fatalf("expected compiled app rules, got %+v", ctrl.Policy)
+	}
+	if len(ctrl.Policy.BlockedDomains) != 2 || len(ctrl.Policy.AllowedDomains) != 1 {
+		t.Fatalf("expected compiled domain rules, got %+v", ctrl.Policy)
 	}
 }
 

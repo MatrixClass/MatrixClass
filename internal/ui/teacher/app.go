@@ -168,6 +168,10 @@ type App struct {
 	allowedAppsInput  string
 	blockedSitesInput string
 	allowedSitesInput string
+	blockedAppRules   []string
+	allowedAppRules   []string
+	blockedSiteRules  []string
+	allowedSiteRules  []string
 
 	// Widget states
 	settingsOpen      bool
@@ -318,12 +322,15 @@ func (a *App) loadPersistedState() {
 		}
 		if cfg.BlockedApps != "" {
 			a.blockedAppsInput = cfg.BlockedApps
+			a.blockedAppRules = splitCSV(cfg.BlockedApps)
 		}
 		if cfg.AllowedApps != "" {
 			a.allowedAppsInput = cfg.AllowedApps
+			a.allowedAppRules = splitCSV(cfg.AllowedApps)
 		}
 		if cfg.BlockedSites != "" {
 			a.blockedSitesInput = cfg.BlockedSites
+			a.blockedSiteRules = splitCSV(cfg.BlockedSites)
 		}
 		if cfg.LockMessage != "" {
 			a.lockMessage = cfg.LockMessage
@@ -1632,11 +1639,13 @@ func (a *App) buildSidePolicy(c *ui.Context, pal theme.Palette) {
 			}
 		}
 		ui.Text(c, "禁止运行进程 (逗号分隔)").FontSize(11).TextColor(pal.TextMuted)
-		ui.TextInput(c, &a.blockedAppsInput)
+		a.buildPolicyRuleList(c, pal, "blocked-app", &a.blockedAppRules, "例如：game.exe")
 		ui.Text(c, "允许运行进程 (白名单模式)").FontSize(11).TextColor(pal.TextMuted)
-		ui.TextInput(c, &a.allowedAppsInput)
+		a.buildPolicyRuleList(c, pal, "allowed-app", &a.allowedAppRules, "例如：notepad.exe")
 		ui.Text(c, "禁用网址域名").FontSize(11).TextColor(pal.TextMuted)
-		ui.TextInput(c, &a.blockedSitesInput)
+		a.buildPolicyRuleList(c, pal, "blocked-site", &a.blockedSiteRules, "例如：example.com")
+		ui.Text(c, "允许网址域名").FontSize(11).TextColor(pal.TextMuted)
+		a.buildPolicyRuleList(c, pal, "allowed-site", &a.allowedSiteRules, "例如：school.edu.cn")
 		ui.Text(c, "黑屏锁定提示语").FontSize(11).TextColor(pal.TextMuted)
 		ui.TextInput(c, &a.lockMessage)
 		ui.Row(c).Gap(6).Children(func() {
@@ -1650,6 +1659,58 @@ func (a *App) buildSidePolicy(c *ui.Context, pal theme.Palette) {
 			}
 		})
 	})
+}
+
+func (a *App) buildPolicyRuleList(c *ui.Context, pal theme.Palette, key string, rules *[]string, placeholder string) {
+	ui.Column(c).FillWidth().Gap(4).Children(func() {
+		if len(*rules) == 0 {
+			ui.Text(c, "暂无规则，点击右侧按钮添加").FontSize(11).TextColor(pal.TextMuted)
+		}
+		for i := range *rules {
+			idx := i
+			ui.Row(c).Key(fmt.Sprintf("policy-%s-%d", key, idx)).FillWidth().Gap(5).AlignItems(ui.Center).Children(func() {
+				ui.Text(c, fmt.Sprintf("%d", idx+1)).FontSize(11).TextColor(pal.TextMuted).Width(22)
+				ui.TextInput(c, &(*rules)[idx]).Placeholder(placeholder).Grow(1)
+				if ui.Button(c, "删除").Padding(3, 8).Clicked() {
+					*rules = append((*rules)[:idx], (*rules)[idx+1:]...)
+					a.syncPolicyRuleInputs()
+				}
+			})
+		}
+		if ui.Button(c, "＋ 添加规则").Padding(3, 9).Clicked() {
+			*rules = append(*rules, "")
+			a.syncPolicyRuleInputs()
+		}
+	})
+}
+
+func (a *App) syncPolicyRuleInputs() {
+	if len(a.blockedAppRules) == 0 && strings.TrimSpace(a.blockedAppsInput) != "" {
+		a.blockedAppRules = splitCSV(a.blockedAppsInput)
+	}
+	if len(a.allowedAppRules) == 0 && strings.TrimSpace(a.allowedAppsInput) != "" {
+		a.allowedAppRules = splitCSV(a.allowedAppsInput)
+	}
+	if len(a.blockedSiteRules) == 0 && strings.TrimSpace(a.blockedSitesInput) != "" {
+		a.blockedSiteRules = splitCSV(a.blockedSitesInput)
+	}
+	if len(a.allowedSiteRules) == 0 && strings.TrimSpace(a.allowedSitesInput) != "" {
+		a.allowedSiteRules = splitCSV(a.allowedSitesInput)
+	}
+	a.blockedAppsInput = strings.Join(nonEmptyRules(a.blockedAppRules), ",")
+	a.allowedAppsInput = strings.Join(nonEmptyRules(a.allowedAppRules), ",")
+	a.blockedSitesInput = strings.Join(nonEmptyRules(a.blockedSiteRules), ",")
+	a.allowedSitesInput = strings.Join(nonEmptyRules(a.allowedSiteRules), ",")
+}
+
+func nonEmptyRules(rules []string) []string {
+	out := make([]string, 0, len(rules))
+	for _, rule := range rules {
+		if value := strings.TrimSpace(rule); value != "" {
+			out = append(out, value)
+		}
+	}
+	return out
 }
 
 func (a *App) buildStatusBar(c *ui.Context, pal theme.Palette) {
@@ -2069,6 +2130,7 @@ func (a *App) SendChatMessage() {
 }
 
 func (a *App) ApplyClassroomPolicy() {
+	a.syncPolicyRuleInputs()
 	a.policyActive = true
 	rule := core.PolicyRule{
 		Mode:           a.policyMode,
