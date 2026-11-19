@@ -653,7 +653,7 @@ func TestRevokeClassroomPolicy(t *testing.T) {
 	tester := ui.NewTester(app.View, 1280, 820)
 	tester.Frame()
 	if err := tester.Click("管控策略"); err != nil {
-		t.Fatalf("failed to switch to policy tab: %v", err)
+		t.Fatalf("failed to open policy editor: %v", err)
 	}
 	tester.Frame()
 
@@ -668,6 +668,10 @@ func TestRevokeClassroomPolicy(t *testing.T) {
 		t.Fatalf("unexpected applied policy: %+v", ctrl.Policy)
 	}
 
+	if err := tester.Click("管控策略"); err != nil {
+		t.Fatalf("failed to reopen policy editor: %v", err)
+	}
+	tester.Frame()
 	if err := tester.Click("撤销管控策略"); err != nil {
 		t.Fatalf("failed to click revoke policy button: %v", err)
 	}
@@ -691,6 +695,20 @@ func TestTeacherTrayMenu(t *testing.T) {
 	menu := app.BuildTrayMenu()
 	if menu == nil {
 		t.Fatalf("expected non-nil tray menu")
+	}
+}
+
+func TestTeacherPolicyOpensFromNavigation(t *testing.T) {
+	app, _, _, _ := newTestTeacherApp()
+	tester := ui.NewTester(app.View, 1280, 820)
+	tester.Frame()
+
+	if err := tester.Click("管控策略"); err != nil {
+		t.Fatalf("failed to open policy editor from navigation: %v", err)
+	}
+	tester.Frame()
+	if !app.policyModal || !tester.HasText("管控策略编排") || !tester.HasText("下发管控策略") {
+		t.Fatalf("expected policy editor modal to be open")
 	}
 }
 

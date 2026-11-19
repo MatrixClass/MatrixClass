@@ -171,6 +171,7 @@ type App struct {
 
 	// Widget states
 	settingsOpen      bool
+	policyModal       bool
 	channelModal      bool
 	channelInput      string
 	channelNum        float64
@@ -820,6 +821,19 @@ func (a *App) View(c *ui.Context) {
 		a.buildSettingsModal(c, pal)
 	})
 
+	ui.Modal(c, &a.policyModal, func() {
+		ui.Column(c).Width(520).MaxHeight(620).Background(pal.Canvas).Border(1, pal.CardBorder).Radius(6).Padding(16).Gap(10).Children(func() {
+			ui.Row(c).FillWidth().AlignItems(ui.Center).Children(func() {
+				ui.Text(c, "管控策略编排").FontSize(16).Bold()
+				ui.Spacer(c)
+				if ui.Button(c, "关闭").Padding(4, 10).Clicked() {
+					a.policyModal = false
+				}
+			})
+			a.buildSidePolicy(c, pal)
+		})
+	})
+
 	ui.Modal(c, &a.remoteControlOpen, func() {
 		a.buildRemoteControlModal(c, pal)
 	})
@@ -899,6 +913,9 @@ func (a *App) buildToolbar(c *ui.Context, pal theme.Palette) {
 				})
 			}).Clicked() {
 				a.settingsOpen = true
+			}
+			if ui.Button(c, "管控策略").Tooltip("编排并下发课堂管控策略").Padding(5, 10).Radius(4).Clicked() {
+				a.policyModal = true
 			}
 		})
 
@@ -1471,15 +1488,13 @@ func (a *App) buildFilesTab(c *ui.Context, pal theme.Palette) {
 func (a *App) buildRightSidebar(c *ui.Context, pal theme.Palette, students []core.StudentInfo) {
 	ui.Column(c).Fill().Background(pal.ChromeRail).BorderWidth(0, 0, 0, 1).BorderColor(pal.CardBorder).Children(func() {
 		ui.Row(c).Padding(6, 8).Background(pal.ChromeBar).BorderWidth(0, 0, 1, 0).BorderColor(pal.CardBorder).Children(func() {
-			ui.Segmented(c, &a.sideTab, "消息/举手", "管控策略").FillEqually()
+			ui.Segmented(c, &a.sideTab, "消息/举手").FillEqually()
 		})
 
 		ui.Column(c).Grow(1).Padding(8).Gap(8).Children(func() {
 			switch a.sideTab {
 			case SideTabChatQueue:
 				a.buildSideChatQueue(c, pal, students)
-			case SideTabPolicy:
-				a.buildSidePolicy(c, pal)
 			}
 		})
 
@@ -1627,9 +1642,11 @@ func (a *App) buildSidePolicy(c *ui.Context, pal theme.Palette) {
 		ui.Row(c).Gap(6).Children(func() {
 			if ui.PrimaryButton(c, "下发管控策略").Grow(1).Clicked() {
 				a.ApplyClassroomPolicy()
+				a.policyModal = false
 			}
 			if ui.Button(c, "撤销管控策略").Grow(1).Clicked() {
 				a.RevokeClassroomPolicy()
+				a.policyModal = false
 			}
 		})
 	})
