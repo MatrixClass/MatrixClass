@@ -99,7 +99,7 @@ CHANNEL_ID=1001 TEACHER_ADDRESS=192.168.1.10 PORT=9000 \
 
 ## 当前状态
 
-- 已完成：Darwin 平台权限状态骨架、双架构交叉构建脚本、未签名 `.app`/可选 DMG 打包骨架、控制层安全错误边界。
-- 未完成：ScreenCaptureKit、CoreAudio、CGEvent 的真实 macOS 原生实现及 Intel/Apple Silicon 真机验证。
-- 未完成：Universal 2、DMG、网络切换和权限矩阵的 macOS 真机证据。
+- 已完成源码实现：Darwin 平台权限状态、ScreenCaptureKit/CoreGraphics 屏幕采集、CoreAudio AudioQueue 音频、CGEvent 输入与快捷键管控、双架构交叉构建和未签名 `.app`/可选 DMG 打包骨架。
+- 已完成自动验证：`darwin/amd64` 与 `darwin/arm64` 的 CGO 关闭交叉编译及纯 Go 单元测试。
+- 待完成实机证据：Intel/Apple Silicon 真机权限矩阵、Universal 2/DMG 安装启动、网络切换、多显示器 Retina 缩放、长时间采集稳定性和托盘窗口行为。
 - Windows 交叉编译通过不等于上述原生能力可用。
