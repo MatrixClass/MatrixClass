@@ -615,7 +615,7 @@ func (a *App) SetTheatreState(state core.TheatreState) {
 	a.theatreStreamURL = strings.TrimSpace(state.StreamURL)
 	a.theatrePlaying = state.Playing
 	a.statusNote = "网络影院同步播放: " + state.Media
-	if !state.Playing {
+	if !state.Playing && !state.Stopped {
 		a.statusNote = "网络影院已暂停"
 	}
 	p := a.theatrePlayer
@@ -639,7 +639,7 @@ func (a *App) SetTheatreState(state core.TheatreState) {
 	} else if state.Playing && !wasPlaying {
 		a.StartTheatre(true)
 	} else {
-		if !state.Playing {
+		if state.Stopped {
 			a.ShowFloatingBar()
 		}
 	}

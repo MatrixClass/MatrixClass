@@ -1424,9 +1424,11 @@ func (a *App) buildMyTheatreTab(c *ui.Context, pal theme.Palette) {
 		// Playback transport bar
 		ui.Column(c).Background(pal.Card).Border(1, pal.CardBorder).Radius(3).Padding(10).Gap(8).Children(func() {
 			ui.Row(c).AlignItems(ui.Center).Gap(8).Children(func() {
-				playLabel := "播放并分发"
+				playLabel := "播放"
 				if a.theatre.Playing {
-					playLabel = "暂停同步"
+					playLabel = "暂停"
+				} else if a.theatre.Media != "" {
+					playLabel = "继续播放"
 				}
 				playButton := ui.PrimaryButton(c, playLabel).Disabled(a.theatrePlayer == nil || strings.TrimSpace(a.theatre.Media) == "")
 				if playButton.Clicked() {
@@ -3545,6 +3547,7 @@ func (a *App) toggleTheatrePlayback() {
 		return
 	}
 	a.theatre.Playing = !a.theatre.Playing
+	a.theatre.Stopped = false
 	if a.theatrePlayer != nil {
 		if a.theatre.Playing {
 			a.theatrePlayer.Play()
@@ -3564,6 +3567,7 @@ func (a *App) toggleTheatrePlayback() {
 
 func (a *App) stopTheatrePlayback() {
 	a.theatre.Playing = false
+	a.theatre.Stopped = true
 	a.theatre.Position = 0
 	if a.theatrePlayer != nil {
 		a.theatrePlayer.Pause()

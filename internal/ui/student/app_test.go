@@ -186,6 +186,11 @@ func TestStudentTheatreStateUsesDedicatedMode(t *testing.T) {
 	}
 
 	app.SetTheatreState(core.TheatreState{Playing: false, Media: `C:\lesson\network-theatre.mp4`})
+	if app.Mode() != ModeTheatre {
+		t.Fatalf("expected theatre window to remain open while paused, got %d", app.Mode())
+	}
+
+	app.SetTheatreState(core.TheatreState{Stopped: true, Media: `C:\lesson\network-theatre.mp4`})
 	if app.Mode() != ModeBar {
 		t.Fatalf("expected floating bar after theatre stops, got %d", app.Mode())
 	}
