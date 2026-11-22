@@ -22,11 +22,6 @@ if [ "${SIGN_ADHOC:-0}" = 1 ] && ! command -v codesign >/dev/null 2>&1; then
   exit 1
 fi
 
-icon_entry=""
-if [ -f "$packaging/MatrixClass.icns" ]; then
-  icon_entry='    <key>CFBundleIconFile</key><string>MatrixClass</string>\n'
-fi
-
 # create_app <arch> <role> <display name> <bundle id>
 create_app() {
   arch=$1 role=$2 display_name=$3 bundle_id=$4
@@ -37,7 +32,11 @@ create_app() {
   cp "$output_dir/matrixclass-$role-darwin-$arch" "$app/Contents/MacOS/$executable"
   chmod 0755 "$app/Contents/MacOS/$executable"
   cp "$packaging/README.md" "$packaging/permissions.md" "$app/Contents/Resources/"
+  icon_file="MatrixClass Student.png"
+  [ "$role" = teacher ] && icon_file="MatrixClass Teacher.png"
+  cp "$packaging/$icon_file" "$app/Contents/Resources/$icon_file"
   if [ -f "$packaging/MatrixClass.icns" ]; then cp "$packaging/MatrixClass.icns" "$app/Contents/Resources/"; fi
+  icon_entry="    <key>CFBundleIconFile</key><string>$icon_file</string>\n"
   sed -e "s|@DISPLAY_NAME@|$display_name|g" -e "s|@EXECUTABLE@|$executable|g" \
       -e "s|@BUNDLE_ID@|$bundle_id|g" -e "s|@VERSION@|$version|g" \
       "$packaging/Info.plist.in" | awk -v icon="$icon_entry" '{ if (index($0, "@ICON_ENTRY@")) { sub(/@ICON_ENTRY@/, ""); printf "%s", icon } print }' \

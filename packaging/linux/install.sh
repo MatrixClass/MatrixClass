@@ -5,6 +5,7 @@ prefix=${PREFIX:-/opt/matrixclass}
 bindir=${BINDIR:-/usr/local/bin}
 desktopdir=${DESKTOPDIR:-/usr/share/applications}
 icondir=${ICONDIR:-/usr/share/icons/hicolor/scalable/apps}
+pixmapdir=${PIXMAPDIR:-/usr/share/pixmaps}
 datadir=${DATADIR:-${XDG_DATA_HOME:-$HOME/.local/share}/matrixclass}
 configdir=${CONFIGDIR:-${XDG_CONFIG_HOME:-$HOME/.config}/matrixclass}
 logdir=${LOGDIR:-${XDG_STATE_HOME:-$HOME/.local/state}/matrixclass}
@@ -25,7 +26,7 @@ if [ ! -f "$script_dir/matrixclass-teacher-linux-$arch" ]; then
   exit 1
 fi
 
-mkdir -p "$prefix" "$bindir" "$desktopdir" "$icondir"
+mkdir -p "$prefix" "$bindir" "$desktopdir" "$icondir" "$pixmapdir"
 mkdir -p "$datadir" "$configdir" "$logdir"
 install -m 0755 "$script_dir/matrixclass-teacher-linux-$arch" "$prefix/matrixclass-teacher"
 install -m 0755 "$script_dir/matrixclass-student-linux-$arch" "$prefix/matrixclass-student"
@@ -34,6 +35,8 @@ install -m 0755 "$prefix/matrixclass-student" "$bindir/matrixclass-student"
 install -m 0644 "$script_dir/matrixclass-teacher.desktop" "$desktopdir/matrixclass-teacher.desktop"
 install -m 0644 "$script_dir/matrixclass-student.desktop" "$desktopdir/matrixclass-student.desktop"
 install -m 0644 "$script_dir/matrixclass.svg" "$icondir/matrixclass.svg"
+install -m 0644 "$script_dir/matrixclass-student.png" "$pixmapdir/matrixclass-student.png"
+install -m 0644 "$script_dir/matrixclass-teacher.png" "$pixmapdir/matrixclass-teacher.png"
 
 if [ "${INSTALL_SYSTEMD:-0}" = "1" ] && command -v systemctl >/dev/null 2>&1; then
   systemd_user_dir=${SYSTEMD_USER_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user}

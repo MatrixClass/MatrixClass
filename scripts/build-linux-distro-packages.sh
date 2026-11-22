@@ -27,13 +27,15 @@ mkdir -p "$output_dir"
 if command -v dpkg-deb >/dev/null 2>&1; then
   deb_root="$output_dir/matrixclass-deb-$arch"
   rm -rf "$deb_root"
-  mkdir -p "$deb_root/DEBIAN" "$deb_root/opt/matrixclass" "$deb_root/usr/bin" "$deb_root/usr/share/applications" "$deb_root/usr/share/icons/hicolor/scalable/apps"
+  mkdir -p "$deb_root/DEBIAN" "$deb_root/opt/matrixclass" "$deb_root/usr/bin" "$deb_root/usr/share/applications" "$deb_root/usr/share/icons/hicolor/scalable/apps" "$deb_root/usr/share/pixmaps"
   install -m 0755 "$stage/matrixclass-teacher-linux-$arch" "$deb_root/opt/matrixclass/matrixclass-teacher"
   install -m 0755 "$stage/matrixclass-student-linux-$arch" "$deb_root/opt/matrixclass/matrixclass-student"
   ln -s /opt/matrixclass/matrixclass-teacher "$deb_root/usr/bin/matrixclass-teacher"
   ln -s /opt/matrixclass/matrixclass-student "$deb_root/usr/bin/matrixclass-student"
   install -m 0644 "$stage/matrixclass-teacher.desktop" "$stage/matrixclass-student.desktop" "$deb_root/usr/share/applications/"
   install -m 0644 "$stage/matrixclass.svg" "$deb_root/usr/share/icons/hicolor/scalable/apps/matrixclass.svg"
+  install -m 0644 "$stage/matrixclass-student.png" "$deb_root/usr/share/pixmaps/matrixclass-student.png"
+  install -m 0644 "$stage/matrixclass-teacher.png" "$deb_root/usr/share/pixmaps/matrixclass-teacher.png"
   cat > "$deb_root/DEBIAN/control" <<EOF
 Package: matrixclass
 Version: $version
@@ -82,6 +84,8 @@ ln -s /opt/matrixclass/matrixclass-student %{buildroot}%{_bindir}/matrixclass-st
 install -D -m 0644 matrixclass-teacher.desktop %{buildroot}%{_datadir}/applications/matrixclass-teacher.desktop
 install -D -m 0644 matrixclass-student.desktop %{buildroot}%{_datadir}/applications/matrixclass-student.desktop
 install -D -m 0644 matrixclass.svg %{buildroot}%{_datadir}/icons/hicolor/scalable/apps/matrixclass.svg
+install -D -m 0644 matrixclass-student.png %{buildroot}%{_datadir}/pixmaps/matrixclass-student.png
+install -D -m 0644 matrixclass-teacher.png %{buildroot}%{_datadir}/pixmaps/matrixclass-teacher.png
 
 %files
 /opt/matrixclass
@@ -90,6 +94,8 @@ install -D -m 0644 matrixclass.svg %{buildroot}%{_datadir}/icons/hicolor/scalabl
 %{_datadir}/applications/matrixclass-teacher.desktop
 %{_datadir}/applications/matrixclass-student.desktop
 %{_datadir}/icons/hicolor/scalable/apps/matrixclass.svg
+%{_datadir}/pixmaps/matrixclass-student.png
+%{_datadir}/pixmaps/matrixclass-teacher.png
 EOF
   rpmbuild --define "_topdir $rpm_root" --target "$rpm_arch" -bb "$rpm_root/SPECS/matrixclass.spec"
   find "$rpm_root/RPMS" -name '*.rpm' -exec cp {} "$output_dir/" \;

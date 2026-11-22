@@ -2,12 +2,16 @@ package theme
 
 import (
 	"bytes"
+	"embed"
 	"image"
 	"image/color"
 	"image/png"
 
 	"github.com/egoist/mygo/ui"
 )
+
+//go:embed assets/student.png assets/teacher.png
+var appIconAssets embed.FS
 
 // Palette defines the restrained monochrome (black/white/gray) desktop palette
 // used across Teacher and Student consoles.
@@ -278,33 +282,22 @@ var (
 </svg>`)
 )
 
-// AppIconPNG generates an in-memory 32x32 PNG icon for windows and tray icons.
+// AppIconPNG returns the branded PNG used by the window and tray icons.
 func AppIconPNG(teacher bool) []byte {
-	img := image.NewNRGBA(image.Rect(0, 0, 32, 32))
-	bg := color.NRGBA{R: 0x1F, G: 0x1F, B: 0x1F, A: 0xFF}
-	if !teacher {
-		bg = color.NRGBA{R: 0x45, G: 0x45, B: 0x45, A: 0xFF}
+	name := "assets/student.png"
+	if teacher {
+		name = "assets/teacher.png"
 	}
-	inner := color.NRGBA{R: 0xFF, G: 0xFF, B: 0xFF, A: 0xFF}
-	accent := color.NRGBA{R: 0xD4, G: 0xD4, B: 0xD4, A: 0xFF}
-
+	data, err := appIconAssets.ReadFile(name)
+	if err == nil {
+		return data
+	}
+	img := image.NewNRGBA(image.Rect(0, 0, 32, 32))
 	for y := range 32 {
 		for x := range 32 {
-			if x >= 2 && x < 30 && y >= 2 && y < 30 {
-				img.SetNRGBA(x, y, bg)
-			}
-			if x >= 6 && x < 26 && y >= 7 && y < 21 {
-				img.SetNRGBA(x, y, inner)
-			}
-			if x >= 8 && x < 24 && y >= 9 && y < 19 {
-				img.SetNRGBA(x, y, accent)
-			}
-			if x >= 11 && x < 21 && y >= 23 && y < 26 {
-				img.SetNRGBA(x, y, inner)
-			}
+			img.SetNRGBA(x, y, color.NRGBA{R: 0x2F, G: 0x2F, B: 0x32, A: 0xFF})
 		}
 	}
-
 	var buf bytes.Buffer
 	_ = png.Encode(&buf, img)
 	return buf.Bytes()

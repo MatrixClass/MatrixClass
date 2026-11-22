@@ -32,7 +32,6 @@ $codesign = Get-Command codesign -ErrorAction SilentlyContinue
 if ($SignAdHoc -and $null -eq $codesign) { throw "-SignAdHoc requires codesign (macOS)." }
 
 $iconPath = Join-Path $packagingPath "MatrixClass.icns"
-$iconEntry = if (Test-Path $iconPath) { "    <key>CFBundleIconFile</key><string>MatrixClass</string>`n" } else { "" }
 $template = [System.IO.File]::ReadAllText((Join-Path $packagingPath "Info.plist.in"))
 
 function New-AppBundle([string]$Architecture, [string]$Role, [string]$DisplayName, [string]$BundleIdentifier) {
@@ -43,7 +42,10 @@ function New-AppBundle([string]$Architecture, [string]$Role, [string]$DisplayNam
     New-Item -ItemType Directory -Force -Path (Join-Path $contents "MacOS"), (Join-Path $contents "Resources") | Out-Null
     Copy-Item -LiteralPath (Join-Path $outputPath "matrixclass-$Role-darwin-$Architecture") (Join-Path $contents "MacOS/$executable")
     Copy-Item (Join-Path $packagingPath "README.md"), (Join-Path $packagingPath "permissions.md") (Join-Path $contents "Resources")
+    $pngName = if ($Role -eq "teacher") { "MatrixClass Teacher.png" } else { "MatrixClass Student.png" }
+    Copy-Item (Join-Path $packagingPath $pngName) (Join-Path $contents "Resources/$pngName")
     if (Test-Path $iconPath) { Copy-Item $iconPath (Join-Path $contents "Resources") }
+    $iconEntry = "    <key>CFBundleIconFile</key><string>$pngName</string>`n"
     $plist = $template.Replace("@DISPLAY_NAME@", $DisplayName).Replace("@EXECUTABLE@", $executable).Replace("@BUNDLE_ID@", $BundleIdentifier).Replace("@VERSION@", $Version).Replace("@ICON_ENTRY@", $iconEntry)
     Write-Utf8File (Join-Path $contents "Info.plist") $plist
     Write-Utf8File (Join-Path $contents "PkgInfo") "APPL????"

@@ -29,7 +29,7 @@ foreach ($arch in $Architectures) {
     foreach ($app in @("teacher", "student")) {
         Copy-Item (Join-Path $outputPath "matrixclass-$app-linux-$arch") $stage
     }
-    foreach ($f in @("matrixclass-teacher.desktop", "matrixclass-student.desktop", "matrixclass.svg",
+    foreach ($f in @("matrixclass-teacher.desktop", "matrixclass-student.desktop", "matrixclass.svg", "matrixclass-student.png", "matrixclass-teacher.png",
             "matrixclass-teacher.service", "matrixclass-student.service", "install.sh", "uninstall.sh", "README.md")) {
         Copy-Item (Join-Path $packaging $f) $stage
     }

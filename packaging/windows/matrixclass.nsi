@@ -60,9 +60,9 @@ Section "MatrixClass ${APP_ARCH}"
   WriteRegDWORD HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\MatrixClass" "NoRepair" 1
 
   CreateDirectory "$SMPROGRAMS\MatrixClass"
-  CreateShortCut "$SMPROGRAMS\MatrixClass\MatrixClass Teacher.lnk" "$INSTDIR\matrixclass-teacher.exe"
-  CreateShortCut "$SMPROGRAMS\MatrixClass\MatrixClass Student.lnk" "$INSTDIR\matrixclass-student.exe"
-  CreateShortCut "$DESKTOP\MatrixClass Teacher.lnk" "$INSTDIR\matrixclass-teacher.exe"
+  CreateShortCut "$SMPROGRAMS\MatrixClass\MatrixClass Teacher.lnk" "$INSTDIR\matrixclass-teacher.exe" "" "$INSTDIR\matrixclass-teacher.ico"
+  CreateShortCut "$SMPROGRAMS\MatrixClass\MatrixClass Student.lnk" "$INSTDIR\matrixclass-student.exe" "" "$INSTDIR\matrixclass-student.ico"
+  CreateShortCut "$DESKTOP\MatrixClass Teacher.lnk" "$INSTDIR\matrixclass-teacher.exe" "" "$INSTDIR\matrixclass-teacher.ico"
   WriteUninstaller "$INSTDIR\uninstall.exe"
 SectionEnd
 

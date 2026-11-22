@@ -52,6 +52,12 @@ foreach ($arch in $Architectures) {
     New-Item -ItemType Directory -Force -Path $stage | Out-Null
     foreach ($app in @("teacher", "student")) {
         Copy-Item (Join-Path $outputPath "matrixclass-$app-windows-$arch.exe") (Join-Path $stage "matrixclass-$app.exe")
+        Copy-Item (Join-Path $script:RepoRoot "packaging/windows/matrixclass-$app.png") (Join-Path $stage "matrixclass-$app.png")
+        $ico = Join-Path $stage "matrixclass-$app.ico"
+        $png = Join-Path $stage "matrixclass-$app.png"
+        $tool = Get-HostTool "pngico"
+        & $tool -in $png -out $ico
+        if ($LASTEXITCODE -ne 0) { throw "icon generation failed for windows/$arch/$app" }
     }
     Copy-Item (Join-Path $script:RepoRoot "packaging/windows/README.md") (Join-Path $stage "README.md")
     New-ReleaseArchive -Output (Join-Path $outputPath "$stageName.zip") -BaseDir $outputPath -Entries @($stageName)

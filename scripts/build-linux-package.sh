@@ -18,7 +18,7 @@ for arch in "$@"; do
   rm -rf "$stage" "$output_dir/$stage_name.tar.gz"
   mkdir -p "$stage"
   cp "$output_dir/matrixclass-teacher-linux-$arch" "$output_dir/matrixclass-student-linux-$arch" "$stage/"
-  for f in matrixclass-teacher.desktop matrixclass-student.desktop matrixclass.svg \
+  for f in matrixclass-teacher.desktop matrixclass-student.desktop matrixclass.svg matrixclass-student.png matrixclass-teacher.png \
            matrixclass-teacher.service matrixclass-student.service install.sh uninstall.sh README.md; do
     cp "$repo_root/packaging/linux/$f" "$stage/"
   done
