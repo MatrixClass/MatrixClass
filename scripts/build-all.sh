@@ -6,7 +6,7 @@
 #        DISTRO_PACKAGES=1     also build .deb/.rpm (needs dpkg-deb / rpmbuild)
 #        SIGN_ADHOC=1          ad-hoc codesign the .app bundles (macOS only)
 #        INCLUDE_COMPILE_ONLY=1 also cross-compile windows/386 and
-#                              linux/{loong64,riscv64,386,arm} into dist/compile-only (never released)
+#                              linux/{riscv64,386,arm} into dist/compile-only (never released)
 set -eu
 . "$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)/lib/common.sh"
 

@@ -34,7 +34,7 @@ jobs:
           GOOS=linux GOARCH=${{ matrix.arch }} CGO_ENABLED=0 go build -tags mygo_nowebview -o dist/linux/matrixclass-student-linux-${{ matrix.arch }} ./cmd/student
       - name: Build tar package
         shell: bash
-        run: ./scripts/build-linux-package.sh dist/linux
+        run: ./scripts/build-linux-package.sh dist/linux ${{ matrix.arch }}
       - name: Generate checksums
         shell: bash
         run: find dist/linux -maxdepth 1 -type f -print0 | sort -z | xargs -0 sha256sum > dist/linux/SHA256SUMS.txt

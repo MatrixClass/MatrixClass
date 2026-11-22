@@ -6,8 +6,9 @@
 
 - `amd64`：x86_64
 - `arm64`：aarch64
+- `loong64`：LoongArch64（龙芯）
 
-仅编译验证（不发布）：`loong64`、`riscv64`、`386`、`arm`（GOARM=7）可以通过 `CGO_ENABLED=0` 交叉编译，但 `github.com/egoist/mygo` v0.9.2 的 Linux 原生后端只覆盖 `amd64 || arm64`，其他架构在启动时返回 `mygo: linux/<arch> is not supported yet`，界面无法打开。如需自行验证可执行 `scripts/build-linux-package.sh dist/linux loong64`。
+仅编译验证（不发布）：`riscv64`、`386`、`arm`（GOARM=7）。本项目内置的 MyGo v0.9.2 fork 已加入 LoongArch64 的 Linux 后端构建条件，并补齐视频 `memfd_create` syscall 常量；龙芯桌面端仍需在真实 LoongArch Linux 机器上验证 GTK/WebKitGTK、OpenGL、屏幕采集和音频依赖。
 
 安装包中包含教师端、学生端、`.desktop` 启动项、SVG 图标和可选的 user-level systemd 模板。安装脚本默认使用 `/opt/matrixclass` 保存真实二进制，使用 `/usr/local/bin` 提供命令入口；可通过 `PREFIX`、`BINDIR`、`DESKTOPDIR`、`ICONDIR`、`DATADIR`、`CONFIGDIR` 和 `LOGDIR` 覆盖路径。
 

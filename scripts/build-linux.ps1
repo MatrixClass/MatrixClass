@@ -2,13 +2,12 @@
 .SYNOPSIS
   Cross-builds MatrixClass Linux binaries (CGO_ENABLED=0).
 .DESCRIPTION
-  Default architectures are the ones with a native mygo UI backend (amd64, arm64).
-  loong64, riscv64, 386 and arm (GOARM=7) are accepted as compile-only targets:
-  they build, but mygo reports "not supported yet" at startup.
+  Default architectures have a native mygo UI backend (amd64, arm64, loong64).
+  riscv64, 386 and arm (GOARM=7) remain compile-only targets.
 #>
 param(
     [string]$OutputDir = "dist/linux",
-    [string[]]$Architectures = @("amd64", "arm64"),
+    [string[]]$Architectures = @("amd64", "arm64", "loong64"),
     [string]$Version = ""
 )
 

@@ -4,13 +4,12 @@
 repo_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 build_tags=${BUILD_TAGS:-mygo_nowebview}
 
-# Targets with a native mygo UI backend. Compile-only targets build, but mygo
-# returns "mygo: <os>/<arch> is not supported yet" at startup.
+# Targets with a native mygo UI backend. Other targets remain compile-only.
 supported_windows="amd64 arm64"
-supported_linux="amd64 arm64"
+supported_linux="amd64 arm64 loong64"
 supported_darwin="amd64 arm64"
 compile_only_windows="386"
-compile_only_linux="loong64 riscv64 386 arm"
+compile_only_linux="riscv64 386 arm"
 compile_only_darwin=""
 
 mc_version() {

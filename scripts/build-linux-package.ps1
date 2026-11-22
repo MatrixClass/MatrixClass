@@ -7,7 +7,7 @@
 #>
 param(
     [string]$OutputDir = "dist/linux",
-    [string[]]$Architectures = @("amd64", "arm64"),
+    [string[]]$Architectures = @("amd64", "arm64", "loong64"),
     [string]$Version = "",
     [switch]$SkipBuild
 )

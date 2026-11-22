@@ -7,16 +7,15 @@ $script:RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "../..")).Path
 $script:BuildTags = "mygo_nowebview"
 $script:OnWindows = ($env:OS -eq "Windows_NT")
 
-# Targets with a native mygo backend (UI starts). Everything else compiles but
-# mygo returns "mygo: <os>/<arch> is not supported yet" at startup.
+# Targets with a native mygo backend (UI starts). Everything else is compile-only.
 $script:SupportedTargets = @{
     windows = @("amd64", "arm64")
-    linux   = @("amd64", "arm64")
+    linux   = @("amd64", "arm64", "loong64")
     darwin  = @("amd64", "arm64")
 }
 $script:CompileOnlyTargets = @{
     windows = @("386")
-    linux   = @("loong64", "riscv64", "386", "arm")
+    linux   = @("riscv64", "386", "arm")
     darwin  = @()
 }
 

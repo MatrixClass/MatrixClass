@@ -4,13 +4,12 @@
 .DESCRIPTION
   Release targets (native mygo UI backend):
     windows/amd64, windows/arm64     -> dist/windows/matrixclass-windows-<arch>.zip + NSIS setup.exe
-    linux/amd64,   linux/arm64       -> dist/linux/matrixclass-linux-<arch>.tar.gz (+ .deb/.rpm with -DistroPackages)
+  linux/amd64,   linux/arm64, linux/loong64 -> dist/linux/matrixclass-linux-<arch>.tar.gz (+ .deb/.rpm with -DistroPackages)
     darwin/amd64,  darwin/arm64, universal -> dist/darwin/matrixclass-macos-<arch>.zip (+ .dmg on macOS)
   All release files are copied to dist/release together with SHA256SUMS.
 
   -IncludeCompileOnly additionally cross-compiles windows/386 and
-  linux/{loong64,riscv64,386,arm} into dist/compile-only. Those binaries build
-  but mygo has no UI backend for them, so they are never added to dist/release.
+  linux/{riscv64,386,arm} into dist/compile-only. Those targets remain outside dist/release.
 .EXAMPLE
   ./scripts/build-all.ps1 -Version 1.0.0
 #>

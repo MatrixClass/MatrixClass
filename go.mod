@@ -12,6 +12,8 @@ require (
 	golang.org/x/time v0.16.0
 )
 
+replace github.com/egoist/mygo => ./third_party/mygo
+
 require (
 	github.com/dustin/go-humanize v1.1.0 // indirect
 	github.com/go-text/typesetting v0.3.5 // indirect

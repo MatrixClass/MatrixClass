@@ -158,7 +158,7 @@
 - [ ] 麒麟：`amd64`、`arm64`。
 - [ ] 统信 UOS：`amd64`、`arm64`。
 - [ ] Deepin：`amd64`、Wayland 或 X11 实际桌面环境。
-- [ ] 龙芯 LoongArch：`loong64`。
+- [x] 龙芯 LoongArch：`loong64` 已支持 `CGO_ENABLED=0` 交叉构建和 tar.gz 发布包；仍需真实龙芯桌面机验证 GTK/WebKitGTK、OpenGL、屏幕采集、音频和托盘。
 - [ ] ARM64 开发板或服务器：`arm64`。
 
 每台测试机记录：发行版版本、桌面环境、内核版本、CPU 架构、显示协议、音频服务、网卡数量、测试结果和日志。
@@ -176,7 +176,7 @@
 
 - 当前开发机是 Windows，Linux 测试二进制只能交叉编译，不能在本机直接执行。
 - 未在真实 Linux X11、Wayland、PipeWire 或 PulseAudio 机器完成端到端验证前，不宣称 Linux 屏幕采集和音频采集已经生产可用。
-- 当前正式构建目标是 `amd64`、`arm64` 和 `loong64`，不能据此宣称覆盖所有国产 CPU。
+- 当前正式构建目标是 `amd64`、`arm64` 和 `loong64`，不能据此宣称覆盖所有国产 CPU。LoongArch 的 GUI 运行验证仍需真实龙芯 Linux 主机完成。
 - 鲲鹏、飞腾通常对应 `arm64`；龙芯 3A 对应 `loong64`；兆芯、海光通常对应 `amd64`；申威需要单独确认 Go 工具链支持情况。
 
 ## 建议执行顺序
