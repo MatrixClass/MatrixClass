@@ -137,10 +137,11 @@ func NewRuntime(channel, studentID, studentNo, teacherAddr, recvDir string) (*Ru
 	})
 
 	app := student.New(student.Options{
-		StudentID:   studentID,
-		StudentNo:   studentNo,
-		MachineName: host,
-		Channel:     channel,
+		StudentID:        studentID,
+		StudentNo:        studentNo,
+		MachineName:      host,
+		Channel:          channel,
+		ExitPasswordPath: filepath.Join(apppaths.Resolve("").DataDir, "student-exit-password.sha256"),
 		Services: student.Services{
 			Transport: tr,
 			Media:     md,
@@ -371,6 +372,8 @@ func (rt *Runtime) wireHandlers() {
 			if err := json.Unmarshal(env.Payload, &rule); err == nil {
 				_ = rt.Control.ApplyPolicy(rule)
 			}
+		case protocol.MsgExitPasswordReset:
+			rt.App.ResetExitPassword()
 		case protocol.MsgPowerCommand:
 			var req struct {
 				Action core.PowerAction `json:"action"`
@@ -813,9 +816,10 @@ func main() {
 
 	if *demoMode {
 		app = student.New(student.Options{
-			StudentID: *studentID,
-			StudentNo: *studentNo,
-			Channel:   *channel,
+			StudentID:        *studentID,
+			StudentNo:        *studentNo,
+			Channel:          *channel,
+			ExitPasswordPath: filepath.Join(paths.DataDir, "student-exit-password.sha256"),
 			Services: student.Services{
 				Transport: demo.NewTransport(*channel, 1),
 				Media:     demo.NewMedia(),
@@ -873,11 +877,17 @@ func main() {
 			AlwaysOnTop:   true,
 			Content:       ui.View(app.View),
 		})
+		win.SetClosable(false)
 		app.AttachWindow(win)
 		app.InstallTray()
+		app.EnsureExitPasswordConfigured()
 	})
 
 	mygo.App.OnWindowAllClosed(func() {
+		if app != nil && !app.ExitAuthorized() {
+			app.RequestExit()
+			return
+		}
 		cancel()
 		mygo.App.Quit()
 	})

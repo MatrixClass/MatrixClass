@@ -2,6 +2,8 @@ package student
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
@@ -65,6 +67,40 @@ func TestStudentHomeworkPathStartsEmpty(t *testing.T) {
 	app := newTestStudentApp()
 	if app.homeworkPath != "" {
 		t.Fatalf("expected homework path to start empty, got %q", app.homeworkPath)
+	}
+}
+
+func TestStudentExitPasswordPersistsOnlyHash(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "student-exit-password.sha256")
+	app := New(Options{ExitPasswordPath: path})
+	if err := app.saveExitPassword("secret-123"); err != nil {
+		t.Fatalf("save exit password: %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read exit password file: %v", err)
+	}
+	if strings.Contains(string(data), "secret-123") {
+		t.Fatal("exit password must not be stored in plaintext")
+	}
+	loaded := New(Options{ExitPasswordPath: path})
+	if loaded.exitPasswordHash != hashExitPassword("secret-123") {
+		t.Fatalf("loaded password hash mismatch: %q", loaded.exitPasswordHash)
+	}
+}
+
+func TestStudentExitPasswordResetClearsStoredPassword(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "student-exit-password.sha256")
+	app := New(Options{ExitPasswordPath: path})
+	if err := app.saveExitPassword("secret-123"); err != nil {
+		t.Fatalf("save exit password: %v", err)
+	}
+	app.ResetExitPassword()
+	if app.exitPasswordHash != "" {
+		t.Fatalf("expected reset to clear hash, got %q", app.exitPasswordHash)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("expected password file to be removed, stat error: %v", err)
 	}
 }
 

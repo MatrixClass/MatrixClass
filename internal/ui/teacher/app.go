@@ -734,6 +734,7 @@ func (a *App) BuildMenu() *mygo.Menu {
 				{Label: "屏幕监控墙", Accelerator: "F7", Click: func(_ *mygo.MenuItem, _ *mygo.Window) { a.ToggleMonitor() }},
 				{Label: "远程控制选中学生", Click: func(_ *mygo.MenuItem, _ *mygo.Window) { a.StartRemoteControl(a.selectedID) }},
 				{Label: "黑屏锁定/解锁", Accelerator: "F8", Click: func(_ *mygo.MenuItem, _ *mygo.Window) { a.ToggleScreenLock() }},
+				{Label: "重置学生端退出密码", Click: func(_ *mygo.MenuItem, _ *mygo.Window) { a.resetStudentExitPassword() }},
 				mygo.Separator(),
 				{Label: "远程开机 (WOL)", Click: func(_ *mygo.MenuItem, _ *mygo.Window) { a.ExecutePower(core.PowerWake) }},
 				{Label: "远程重启选中机", Click: func(_ *mygo.MenuItem, _ *mygo.Window) { a.ExecutePower(core.PowerReboot) }},
@@ -2912,6 +2913,18 @@ func (a *App) resolveFileTargets() []string {
 		targets = []string{a.selectedID}
 	}
 	return targets
+}
+
+func (a *App) resetStudentExitPassword() {
+	targets := a.targetStudentIDs()
+	if len(targets) == 0 {
+		a.statusNote = "请选择要重置退出密码的学生"
+		a.Invalidate()
+		return
+	}
+	a.sendControlEnvelope(protocol.MsgExitPasswordReset, nil, targets)
+	a.statusNote = fmt.Sprintf("已向 %d 台学生机发送退出密码重置命令", len(targets))
+	a.Invalidate()
 }
 
 func (a *App) isSelected(id string) bool {

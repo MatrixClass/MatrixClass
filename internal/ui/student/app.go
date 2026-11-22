@@ -2,10 +2,13 @@ package student
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"image"
 	"math"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -32,13 +35,14 @@ type Services struct {
 }
 
 type Options struct {
-	StudentID   string
-	StudentName string
-	StudentNo   string
-	MachineName string
-	Channel     string
-	Dark        bool
-	Services    Services
+	StudentID        string
+	StudentName      string
+	StudentNo        string
+	MachineName      string
+	Channel          string
+	Dark             bool
+	ExitPasswordPath string
+	Services         Services
 }
 
 const (
@@ -72,38 +76,46 @@ type App struct {
 	channel     string
 	dark        bool
 
-	mode               int
-	barCollapsed       bool
-	barDocked          bool
-	barHovered         bool
-	barFocused         bool
-	barAutoDockSeq     uint64
-	handRaised         bool
-	connected          bool
-	broadcasting       bool
-	broadcastWindow    bool
-	remoteControlled   bool
-	monitoringActive   bool
-	screenLocked       bool
-	lockMessage        string
-	unlockPassInput    string
-	unlockStatus       string
-	checkInNo          string
-	checkInClass       string
-	checkInName        string
-	checkInSubmitted   bool
-	homeworkPath       string
-	homeworkSubmitting bool
-	homeworkQueue      []string
-	homeworkSubmitWin  *mygo.Window
-	homeworkCollecting bool
-	homeworkSubmitNote string
-	fileReceiveWin     *mygo.Window
-	fileReceiveItems   []receiveFileItem
-	fileReceiveNote    string
-	chatInput          string
-	statusNote         string
-	volume             float64
+	mode                int
+	barCollapsed        bool
+	barDocked           bool
+	barHovered          bool
+	barFocused          bool
+	barAutoDockSeq      uint64
+	handRaised          bool
+	connected           bool
+	broadcasting        bool
+	broadcastWindow     bool
+	remoteControlled    bool
+	monitoringActive    bool
+	screenLocked        bool
+	lockMessage         string
+	unlockPassInput     string
+	unlockStatus        string
+	checkInNo           string
+	checkInClass        string
+	checkInName         string
+	checkInSubmitted    bool
+	homeworkPath        string
+	homeworkSubmitting  bool
+	homeworkQueue       []string
+	homeworkSubmitWin   *mygo.Window
+	homeworkCollecting  bool
+	homeworkSubmitNote  string
+	fileReceiveWin      *mygo.Window
+	exitPasswordWin     *mygo.Window
+	exitPasswordPath    string
+	exitPasswordHash    string
+	exitPasswordInput   string
+	exitPasswordConfirm string
+	exitPasswordError   string
+	exitPasswordSetup   bool
+	exitAuthorized      bool
+	fileReceiveItems    []receiveFileItem
+	fileReceiveNote     string
+	chatInput           string
+	statusNote          string
+	volume              float64
 
 	lastWinMode      int
 	lastWinCollapsed bool
@@ -150,26 +162,28 @@ func New(opts Options) *App {
 		opts.Channel = "301机房"
 	}
 	app := &App{
-		opts:            opts.Services,
-		studentID:       opts.StudentID,
-		studentNo:       opts.StudentNo,
-		machineName:     opts.MachineName,
-		channel:         opts.Channel,
-		dark:            opts.Dark,
-		mode:            ModeBar,
-		broadcastWindow: true,
-		connected:       true,
-		lockMessage:     "课堂黑屏安静模式：请注意前方黑板或教师讲解。",
-		checkInNo:       opts.StudentNo,
-		checkInClass:    "",
-		checkInName:     "",
-		homeworkPath:    "",
-		statusNote:      "已连接频道: " + opts.Channel,
-		volume:          80,
-		examAnswers:     make(map[string]string),
-		recentNotices:   []string{"欢迎加入 矩联电子教室 MatrixClass"},
-		lastWinMode:     -1,
+		opts:             opts.Services,
+		studentID:        opts.StudentID,
+		studentNo:        opts.StudentNo,
+		machineName:      opts.MachineName,
+		channel:          opts.Channel,
+		dark:             opts.Dark,
+		exitPasswordPath: opts.ExitPasswordPath,
+		mode:             ModeBar,
+		broadcastWindow:  true,
+		connected:        true,
+		lockMessage:      "课堂黑屏安静模式：请注意前方黑板或教师讲解。",
+		checkInNo:        opts.StudentNo,
+		checkInClass:     "",
+		checkInName:      "",
+		homeworkPath:     "",
+		statusNote:       "已连接频道: " + opts.Channel,
+		volume:           80,
+		examAnswers:      make(map[string]string),
+		recentNotices:    []string{"欢迎加入 矩联电子教室 MatrixClass"},
+		lastWinMode:      -1,
 	}
+	app.exitPasswordHash = app.loadExitPasswordHash()
 	_ = app.Start(context.Background())
 	return app
 }
@@ -205,16 +219,18 @@ func (a *App) Close() error {
 	connectionNotice := a.connectionNoticeWin
 	fileWin := a.fileReceiveWin
 	homeworkWin := a.homeworkSubmitWin
+	exitWin := a.exitPasswordWin
 	a.toastWin = nil
 	a.connectionNoticeWin = nil
 	a.fileReceiveWin = nil
 	a.homeworkSubmitWin = nil
+	a.exitPasswordWin = nil
 	a.win = nil
 	a.mu.Unlock()
 	if cancel != nil {
 		cancel()
 	}
-	for _, w := range []*mygo.Window{toast, connectionNotice, fileWin, homeworkWin} {
+	for _, w := range []*mygo.Window{toast, connectionNotice, fileWin, homeworkWin, exitWin} {
 		if w != nil {
 			w.Destroy()
 		}
@@ -454,7 +470,7 @@ func (a *App) InstallTray() {
 		{Label: "课堂消息", Click: func(_ *mygo.MenuItem, _ *mygo.Window) { a.OpenMode(ModeChat) }},
 		{Label: "文件接收队列", Click: func(_ *mygo.MenuItem, _ *mygo.Window) { a.OpenFileReceiveWindow() }},
 		mygo.Separator(),
-		{Role: mygo.RoleQuit, Label: "退出学生端"},
+		{Label: "退出学生端", Click: func(_ *mygo.MenuItem, _ *mygo.Window) { a.RequestExit() }},
 	})
 	tray, err := mygo.NewTray(mygo.TrayOptions{
 		ID:      "nexlab-student",
@@ -468,6 +484,164 @@ func (a *App) InstallTray() {
 		a.tray = tray
 		a.mu.Unlock()
 	}
+}
+
+func hashExitPassword(raw string) string {
+	sum := sha256.Sum256([]byte(raw))
+	return hex.EncodeToString(sum[:])
+}
+
+func (a *App) loadExitPasswordHash() string {
+	if a.exitPasswordPath == "" {
+		return ""
+	}
+	b, err := os.ReadFile(a.exitPasswordPath)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(b))
+}
+
+func (a *App) saveExitPassword(raw string) error {
+	hash := hashExitPassword(raw)
+	if a.exitPasswordPath != "" {
+		if err := os.MkdirAll(filepath.Dir(a.exitPasswordPath), 0o755); err != nil {
+			return err
+		}
+		if err := os.WriteFile(a.exitPasswordPath, []byte(hash+"\n"), 0o600); err != nil {
+			return err
+		}
+	}
+	a.exitPasswordHash = hash
+	return nil
+}
+
+func (a *App) clearExitPassword() {
+	a.exitPasswordHash = ""
+	if a.exitPasswordPath != "" {
+		_ = os.Remove(a.exitPasswordPath)
+	}
+}
+
+func (a *App) EnsureExitPasswordConfigured() {
+	if a.exitPasswordPath != "" && a.exitPasswordHash == "" {
+		a.showExitPasswordWindow(true)
+	}
+}
+
+// ExitAuthorized reports whether the exit password was accepted.
+func (a *App) ExitAuthorized() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.exitAuthorized
+}
+
+func (a *App) RequestExit() {
+	if a.exitPasswordHash == "" {
+		a.showExitPasswordWindow(true)
+		return
+	}
+	a.showExitPasswordWindow(false)
+}
+
+func (a *App) showExitPasswordWindow(setup bool) {
+	a.mu.Lock()
+	mainWin := a.win
+	w := a.exitPasswordWin
+	a.exitPasswordSetup = setup
+	a.exitPasswordInput = ""
+	a.exitPasswordConfirm = ""
+	a.exitPasswordError = ""
+	a.mu.Unlock()
+	if mainWin == nil {
+		return
+	}
+	mainWin.Update(func() {
+		if w == nil {
+			w = mygo.NewWindow(mygo.WindowOptions{
+				Title:       "学生端退出密码",
+				Width:       420,
+				Height:      250,
+				MinWidth:    380,
+				MinHeight:   220,
+				AlwaysOnTop: true,
+				Frameless:   false,
+				Content:     ui.View(a.ExitPasswordView),
+			})
+			w.SetClosable(false)
+			w.OnClosed(func() {
+				a.mu.Lock()
+				if a.exitPasswordWin == w {
+					a.exitPasswordWin = nil
+				}
+				a.mu.Unlock()
+			})
+			a.mu.Lock()
+			a.exitPasswordWin = w
+			a.mu.Unlock()
+		}
+		w.SetAlwaysOnTop(true)
+		w.Show()
+		w.Focus()
+		w.Invalidate()
+	})
+}
+
+func (a *App) ExitPasswordView(c *ui.Context) {
+	a.mu.Lock()
+	setup := a.exitPasswordSetup
+	errText := a.exitPasswordError
+	a.mu.Unlock()
+	ui.Column(c).Fill().Padding(20).Gap(12).Background(theme.GetPalette(false).Canvas).Children(func() {
+		if setup {
+			ui.Text(c, "首次启动：设置学生端退出密码").FontSize(17).Bold()
+			ui.Text(c, "退出学生端前必须输入此密码，教师端可以远程重置。").FontSize(12).TextColor(theme.GetPalette(false).TextMuted)
+			ui.TextInput(c, &a.exitPasswordInput).Password().Placeholder("设置退出密码").FillWidth().AutoFocus()
+			ui.TextInput(c, &a.exitPasswordConfirm).Password().Placeholder("再次输入退出密码").FillWidth()
+			if ui.PrimaryButton(c, "保存密码").Clicked() {
+				if strings.TrimSpace(a.exitPasswordInput) == "" || a.exitPasswordInput != a.exitPasswordConfirm {
+					a.exitPasswordError = "两次输入的密码不一致或为空"
+				} else if err := a.saveExitPassword(a.exitPasswordInput); err != nil {
+					a.exitPasswordError = "保存失败: " + err.Error()
+				} else {
+					a.closeExitPasswordWindow()
+				}
+			}
+		} else {
+			ui.Text(c, "退出学生端").FontSize(17).Bold()
+			ui.Text(c, "请输入退出密码后关闭学生端。").FontSize(12).TextColor(theme.GetPalette(false).TextMuted)
+			ui.TextInput(c, &a.exitPasswordInput).Password().Placeholder("退出密码").FillWidth().AutoFocus()
+			if ui.PrimaryButton(c, "确认退出").Clicked() {
+				if hashExitPassword(a.exitPasswordInput) != a.exitPasswordHash {
+					a.exitPasswordError = "退出密码错误"
+				} else {
+					a.mu.Lock()
+					a.exitAuthorized = true
+					a.mu.Unlock()
+					a.closeExitPasswordWindow()
+					mygo.App.Quit()
+				}
+			}
+		}
+		if errText != "" {
+			ui.Text(c, errText).FontSize(12).TextColor(ui.Hex("#B42318"))
+		}
+	})
+}
+
+func (a *App) closeExitPasswordWindow() {
+	a.mu.Lock()
+	w := a.exitPasswordWin
+	a.exitPasswordWin = nil
+	a.mu.Unlock()
+	if w != nil {
+		w.Hide()
+	}
+}
+
+func (a *App) ResetExitPassword() {
+	a.clearExitPassword()
+	a.showExitPasswordWindow(true)
 }
 
 func (a *App) Invalidate() {

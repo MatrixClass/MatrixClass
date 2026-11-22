@@ -77,6 +77,7 @@ const (
 	MsgRemoteCommandOutput  MsgType = 58
 	MsgRemoteCommandResult  MsgType = 59
 	MsgRemoteCommandCancel  MsgType = 63
+	MsgExitPasswordReset    MsgType = 64
 
 	MsgExamPublish MsgType = 60
 	MsgExamAnswer  MsgType = 61
