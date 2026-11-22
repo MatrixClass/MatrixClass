@@ -15,15 +15,28 @@ param(
     [string]$OutputDir = "dist/windows",
     [string[]]$Architectures = @("amd64", "arm64"),
     [string]$Version = "",
-    [switch]$SkipPackage
+    [switch]$SkipPackage,
+    [string]$NsisPath = ""
 )
 
 . (Join-Path $PSScriptRoot "lib/common.ps1")
+
+function Resolve-NsisCompiler([string]$Path) {
+    if ($Path) {
+        return (Resolve-Path -LiteralPath $Path -ErrorAction Stop).Path
+    }
+    $command = Get-Command makensis.exe -ErrorAction SilentlyContinue
+    if ($command) { return $command.Source }
+    $cached = Get-ChildItem "$env:LOCALAPPDATA\electron-builder\Cache\nsis" -Filter makensis.exe -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($cached) { return $cached.FullName }
+    throw "makensis.exe was not found. Install NSIS or pass -NsisPath <path>."
+}
 
 $Version = Get-MatrixClassVersion $Version
 Assert-Architectures "windows" $Architectures
 $outputPath = Resolve-RepoPath $OutputDir
 New-Item -ItemType Directory -Force -Path $outputPath | Out-Null
+$nsis = if ($SkipPackage) { $null } else { Resolve-NsisCompiler $NsisPath }
 
 foreach ($arch in $Architectures) {
     Write-Host "Building windows/$arch (version $Version)"
@@ -42,6 +55,10 @@ foreach ($arch in $Architectures) {
     }
     Copy-Item (Join-Path $script:RepoRoot "packaging/windows/README.md") (Join-Path $stage "README.md")
     New-ReleaseArchive -Output (Join-Path $outputPath "$stageName.zip") -BaseDir $outputPath -Entries @($stageName)
+    $installer = Join-Path $outputPath "matrixclass-windows-$arch-$Version-setup.exe"
+    & $nsis "/DAPP_VERSION=$Version" "/DAPP_ARCH=$arch" "/DSTAGE_DIR=$stage" "/DOUT_FILE=$installer" (Join-Path $script:RepoRoot "packaging/windows/matrixclass.nsi")
+    if ($LASTEXITCODE -ne 0) { throw "NSIS installer build failed for windows/$arch" }
+    Write-Host "  installer $installer"
 }
 
 Write-Host "Windows builds completed: $($Architectures -join ', ') -> $outputPath"

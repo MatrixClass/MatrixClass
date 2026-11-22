@@ -3,7 +3,7 @@
   Builds and packages every supported MatrixClass target into dist/.
 .DESCRIPTION
   Release targets (native mygo UI backend):
-    windows/amd64, windows/arm64     -> dist/windows/matrixclass-windows-<arch>.zip
+    windows/amd64, windows/arm64     -> dist/windows/matrixclass-windows-<arch>.zip + NSIS setup.exe
     linux/amd64,   linux/arm64       -> dist/linux/matrixclass-linux-<arch>.tar.gz (+ .deb/.rpm with -DistroPackages)
     darwin/amd64,  darwin/arm64, universal -> dist/darwin/matrixclass-macos-<arch>.zip (+ .dmg on macOS)
   All release files are copied to dist/release together with SHA256SUMS.
@@ -58,7 +58,10 @@ if ($IncludeCompileOnly) {
 if (Test-Path $release) { Remove-Item -Recurse -Force $release }
 New-Item -ItemType Directory -Force -Path $release | Out-Null
 $files = @()
-foreach ($arch in $script:SupportedTargets.windows) { $files += Join-Path $dist "windows/matrixclass-windows-$arch.zip" }
+foreach ($arch in $script:SupportedTargets.windows) {
+    $files += Join-Path $dist "windows/matrixclass-windows-$arch.zip"
+    $files += Join-Path $dist "windows/matrixclass-windows-$arch-$Version-setup.exe"
+}
 foreach ($arch in $script:SupportedTargets.linux) { $files += Join-Path $dist "linux/matrixclass-linux-$arch.tar.gz" }
 foreach ($arch in @("amd64", "arm64", "universal")) { $files += Join-Path $dist "darwin/matrixclass-macos-$arch.zip" }
 foreach ($f in $files) {
