@@ -773,6 +773,7 @@ func (rt *Runtime) Close() error {
 
 func main() {
 	demoMode := flag.Bool("demo", false, "run student client with built-in demo data")
+	verifyUninstall := flag.Bool("verify-uninstall", false, "verify the student exit password for uninstall")
 	channel := flag.String("channel", "1", "classroom numeric channel ID")
 	teacherAddr := flag.String("teacher", "", "optional explicit teacher KCP address (host:port)")
 	studentID := flag.String("id", "stu-01", "student ID")
@@ -780,6 +781,9 @@ func main() {
 	recvDir := flag.String("recv", "", "received files directory (defaults to Desktop)")
 	flag.Parse()
 	paths := apppaths.Resolve("")
+	if *verifyUninstall {
+		os.Exit(runUninstallPasswordVerification(filepath.Join(paths.DataDir, "student-exit-password.sha256")))
+	}
 	appLogger, loggerErr := logging.New(logging.Config{Dir: paths.LogDir, Role: "student"})
 	if loggerErr == nil {
 		defer appLogger.Close()
@@ -894,4 +898,33 @@ func main() {
 	if err := mygo.App.Run(); err != nil {
 		log.Fatal(err)
 	}
+}
+
+func runUninstallPasswordVerification(passwordPath string) int {
+	app := student.New(student.Options{ExitPasswordPath: passwordPath})
+	if app.ExitPasswordConfigured() == false {
+		return 2
+	}
+	mygo.App.SetName("矩联电子教室 MatrixClass - 卸载验证")
+
+	mygo.App.WhenReady(func() {
+		win := mygo.NewWindow(mygo.WindowOptions{
+			Title:       "矩联电子教室 MatrixClass - 卸载验证",
+			Width:       420,
+			Height:      250,
+			SkipTaskbar: true,
+			Content:     ui.View(app.View),
+		})
+		app.AttachWindow(win)
+		win.Hide()
+		app.RequestExit()
+	})
+	mygo.App.OnWindowAllClosed(func() {})
+	if err := mygo.App.Run(); err != nil {
+		return 2
+	}
+	if app.ExitAuthorized() {
+		return 0
+	}
+	return 1
 }

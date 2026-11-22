@@ -543,6 +543,14 @@ func (a *App) ExitAuthorized() bool {
 	return a.exitAuthorized
 }
 
+// ExitPasswordConfigured reports whether a password exists for operations
+// that must authenticate outside the normal student window, such as uninstall.
+func (a *App) ExitPasswordConfigured() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.exitPasswordHash != ""
+}
+
 func (a *App) RequestExit() {
 	if a.exitPasswordHash == "" {
 		a.showExitPasswordWindow(true)

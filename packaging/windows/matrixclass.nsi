@@ -1,6 +1,7 @@
 Unicode True
 ManifestDPIAware True
 RequestExecutionLevel admin
+!include LogicLib.nsh
 
 !ifndef APP_VERSION
   !define APP_VERSION "0.1.0"
@@ -33,6 +34,16 @@ Page directory
 Page instfiles
 UninstPage uninstConfirm
 UninstPage instfiles
+
+Function un.onInit
+  IfFileExists "$INSTDIR\matrixclass-student.exe" 0 done
+  ExecWait '"$INSTDIR\matrixclass-student.exe" --verify-uninstall' $0
+  ${If} $0 != 0
+    MessageBox MB_ICONSTOP|MB_OK "学生端退出密码验证失败，已取消卸载。"
+    Abort
+  ${EndIf}
+done:
+FunctionEnd
 
 Section "MatrixClass ${APP_ARCH}"
   SetOutPath "$INSTDIR"
