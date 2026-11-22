@@ -1,4 +1,4 @@
-Unicode True
+﻿Unicode True
 ManifestDPIAware True
 RequestExecutionLevel admin
 !include LogicLib.nsh
