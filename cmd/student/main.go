@@ -877,7 +877,6 @@ func main() {
 			AlwaysOnTop:   true,
 			Content:       ui.View(app.View),
 		})
-		win.SetClosable(false)
 		app.AttachWindow(win)
 		app.InstallTray()
 		app.EnsureExitPasswordConfigured()

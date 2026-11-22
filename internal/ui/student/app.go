@@ -262,6 +262,13 @@ func (a *App) AttachWindow(w *mygo.Window) {
 		w.SetAlwaysOnTop(true)
 		w.OnFocus(func() { a.setBarFocused(true) })
 		w.OnBlur(func() { a.setBarFocused(false) })
+		w.OnClose(func(e *mygo.CloseEvent) {
+			if a.ExitAuthorized() {
+				return
+			}
+			e.PreventDefault()
+			a.RequestExit()
+		})
 		w.OnClosed(func() {
 			a.mu.Lock()
 			tw := a.toastWin
