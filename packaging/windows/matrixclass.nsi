@@ -2,6 +2,11 @@
 ManifestDPIAware True
 RequestExecutionLevel admin
 !include LogicLib.nsh
+!include MUI2.nsh
+
+!define MUI_ABORTWARNING
+!define MUI_ICON "${STAGE_DIR}\matrixclass-teacher.ico"
+!define MUI_UNICON "${STAGE_DIR}\matrixclass-student.ico"
 
 !ifndef APP_VERSION
   !define APP_VERSION "0.1.0"
@@ -30,10 +35,14 @@ VIAddVersionKey "FileDescription" "MatrixClass Windows installer"
 VIAddVersionKey "FileVersion" "${APP_VERSION}"
 VIAddVersionKey "ProductVersion" "${APP_VERSION}"
 
-Page directory
-Page instfiles
-UninstPage uninstConfirm
-UninstPage instfiles
+!insertmacro MUI_PAGE_WELCOME
+!insertmacro MUI_PAGE_DIRECTORY
+!insertmacro MUI_PAGE_INSTFILES
+!insertmacro MUI_PAGE_FINISH
+!insertmacro MUI_UNPAGE_CONFIRM
+!insertmacro MUI_UNPAGE_INSTFILES
+!insertmacro MUI_UNPAGE_FINISH
+!insertmacro MUI_LANGUAGE "SimpChinese"
 
 Function un.onInit
   IfFileExists "$INSTDIR\matrixclass-student.exe" 0 done
