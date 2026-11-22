@@ -16,6 +16,7 @@ import (
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
 
+	"nexlab/internal/apppaths"
 	"nexlab/internal/classroom"
 	"nexlab/internal/control"
 	"nexlab/internal/core"
@@ -96,12 +97,16 @@ func NewRuntime(channel, studentID, studentNo, teacherAddr, recvDir string) (*Ru
 	ctrl := control.NewManager(control.ManagerOptions{
 		EnforceOnApply: true,
 		ProxyAddr:      "127.0.0.1:0",
+		// Auto-unlock if the teacher disappears (crash / network loss) so a
+		// student machine is never left locked with no way out.
+		Lock: control.LockOptions{DisconnectTimeout: 60 * time.Second},
 	})
 	cr := classroom.NewService()
 	ex := exam.NewService()
 	remote := remoteexec.NewService()
 	var appRef *student.App
 	ft := filetransfer.NewService(filetransfer.Config{
+		Role:       filetransfer.RoleStudent,
 		ReceiveDir: recvDir,
 		ArchiveDir: recvDir,
 		OnProgress: func(task core.TransferTask) {
@@ -143,6 +148,14 @@ func NewRuntime(channel, studentID, studentNo, teacherAddr, recvDir string) (*Ru
 		},
 	})
 	appRef = app
+	ctrl.Lock().SetOnStateChange(func(st control.LockState) {
+		// Keep the lock UI in sync when the controller unlocks on its own
+		// (teacher heartbeat timeout).
+		if !st.Locked && st.UnlockReason == control.UnlockReasonDisconnectTimeout {
+			app.SetLocked(false, "")
+			app.SetStatusNote("与教师端失去连接，屏幕已自动解锁")
+		}
+	})
 
 	rt := &Runtime{
 		App:           app,
@@ -399,8 +412,17 @@ func (rt *Runtime) wireHandlers() {
 				rt.startRemoteCommand(sess, req)
 			}
 		case protocol.MsgRemoteCommandCancel:
+			requestID := env.RequestID
+			if requestID == "" {
+				var req struct {
+					RequestID string `json:"request_id"`
+				}
+				if json.Unmarshal(env.Payload, &req) == nil {
+					requestID = req.RequestID
+				}
+			}
 			rt.remoteMu.Lock()
-			task, ok := rt.remoteTasks[env.RequestID]
+			task, ok := rt.remoteTasks[requestID]
 			rt.remoteMu.Unlock()
 			if ok && task.Cancel != nil {
 				task.Cancel()
@@ -425,13 +447,13 @@ func (rt *Runtime) sendRemoteEnvelope(sess core.Session, msgType protocol.MsgTyp
 
 func (rt *Runtime) startRemoteCommand(sess core.Session, req remoteexec.CommandRequest) {
 	rt.App.SetStatusNote("教师正在执行远程命令")
-	rt.streamMu.Lock()
+	rt.lifecycleMu.Lock()
 	if rt.lifecycleCtx == nil || rt.lifecycleClosed {
-		rt.streamMu.Unlock()
+		rt.lifecycleMu.Unlock()
 		return
 	}
 	lifecycleCtx := rt.lifecycleCtx
-	rt.streamMu.Unlock()
+	rt.lifecycleMu.Unlock()
 	task, err := rt.Remote.StartCommand(lifecycleCtx, req, func(output remoteexec.CommandOutput) {
 		rt.sendRemoteEnvelope(sess, protocol.MsgRemoteCommandOutput, req.RequestID, output)
 	})
@@ -748,11 +770,8 @@ func main() {
 	studentNo := flag.String("no", "202601", "student number")
 	recvDir := flag.String("recv", "", "received files directory (defaults to Desktop)")
 	flag.Parse()
-	logDir := "logs"
-	if exePath, err := os.Executable(); err == nil && exePath != "" {
-		logDir = filepath.Join(filepath.Dir(exePath), "logs")
-	}
-	appLogger, loggerErr := logging.New(logging.Config{Dir: logDir, Role: "student"})
+	paths := apppaths.Resolve("")
+	appLogger, loggerErr := logging.New(logging.Config{Dir: paths.LogDir, Role: "student"})
 	if loggerErr == nil {
 		defer appLogger.Close()
 		log.SetOutput(appLogger)

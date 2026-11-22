@@ -28,6 +28,7 @@ type linuxAudioCommand struct {
 
 type AudioEngine struct {
 	mu                sync.Mutex
+	playMu            sync.Mutex
 	volume            float32
 	stopCh            chan struct{}
 	doneCh            chan struct{}
@@ -98,11 +99,25 @@ func (a *AudioEngine) StartCapture(loopback bool, onFrame func(*core.AudioFrame)
 				}
 				continue
 			}
+			// The capture goroutine owns cmd: a watcher kills it when capture stops
+			// (even if StopCapture ran before cmd was published), and cmd.Wait is
+			// always called below so the child is reaped.
+			exited := make(chan struct{})
+			go func(cmd *exec.Cmd) {
+				select {
+				case <-stopCh:
+					if cmd.Process != nil {
+						_ = cmd.Process.Kill()
+					}
+				case <-exited:
+				}
+			}(cmd)
 			a.mu.Lock()
 			if a.stopCh == stopCh {
 				a.capture = cmd
 			}
 			a.mu.Unlock()
+		readLoop:
 			for {
 				if _, err := io.ReadFull(stdout, buffer); err != nil {
 					break
@@ -112,7 +127,7 @@ func (a *AudioEngine) StartCapture(loopback bool, onFrame func(*core.AudioFrame)
 				frame := &core.AudioFrame{Seq: sequence, SampleRate: sampleRate, Channels: channels, Timestamp: time.Now().UnixMilli(), Data: data}
 				select {
 				case <-stopCh:
-					return
+					break readLoop
 				case captureQueue <- frame:
 				default:
 					a.mu.Lock()
@@ -121,6 +136,7 @@ func (a *AudioEngine) StartCapture(loopback bool, onFrame func(*core.AudioFrame)
 				}
 			}
 			_ = cmd.Wait()
+			close(exited)
 			a.mu.Lock()
 			if a.capture == cmd {
 				a.capture = nil
@@ -199,22 +215,28 @@ func (a *AudioEngine) PlayFrame(frame *core.AudioFrame) error {
 	if frame == nil || len(frame.Data) == 0 {
 		return nil
 	}
+	// playMu serializes writers; a.mu is not held across the pipe write so a
+	// stalled player cannot block Close/StopCapture/SetVolume.
+	a.playMu.Lock()
+	defer a.playMu.Unlock()
 	a.mu.Lock()
-	defer a.mu.Unlock()
 	if a.closed {
+		a.mu.Unlock()
 		return ErrLinuxAudioClosed
 	}
 	if err := a.ensurePlaybackLocked(frame); err != nil {
+		a.mu.Unlock()
 		return err
 	}
 	volume := a.volume
+	input := a.playIn
+	a.mu.Unlock()
 	if volume <= 0 {
 		return nil
 	}
-	adjusted := make([]byte, len(frame.Data))
-	if volume >= 0.999 {
-		adjusted = frame.Data
-	} else {
+	adjusted := frame.Data
+	if volume < 0.999 {
+		adjusted = make([]byte, len(frame.Data))
 		for i := 0; i+1 < len(frame.Data); i += 2 {
 			sample := int16(uint16(frame.Data[i]) | uint16(frame.Data[i+1])<<8)
 			scaled := int(float32(sample) * volume)
@@ -226,16 +248,25 @@ func (a *AudioEngine) PlayFrame(frame *core.AudioFrame) error {
 			adjusted[i], adjusted[i+1] = byte(scaled), byte(uint16(scaled)>>8)
 		}
 	}
-	_, err := a.playIn.Write(adjusted)
-	if err != nil {
-		a.resetPlaybackLocked()
-		retryErr := a.ensurePlaybackLocked(frame)
-		if retryErr == nil {
-			_, retryErr = a.playIn.Write(adjusted)
-		}
-		return retryErr
+	_, err := input.Write(adjusted)
+	if err == nil {
+		return nil
 	}
-	return err
+	a.mu.Lock()
+	if a.closed {
+		a.mu.Unlock()
+		return ErrLinuxAudioClosed
+	}
+	if a.playIn == input {
+		a.resetPlaybackLocked()
+	}
+	retryErr := a.ensurePlaybackLocked(frame)
+	input = a.playIn
+	a.mu.Unlock()
+	if retryErr == nil {
+		_, retryErr = input.Write(adjusted)
+	}
+	return retryErr
 }
 
 func (a *AudioEngine) ensurePlaybackLocked(frame *core.AudioFrame) error {

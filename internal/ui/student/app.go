@@ -1059,7 +1059,9 @@ func (a *App) buildExamView(c *ui.Context, pal theme.Palette) {
 				a.SubmitExam()
 			}
 			if a.examResult != nil {
-				ui.Badge(c, fmt.Sprintf("得分 %d / %d", a.examResult.Score, a.examResult.MaxScore)).Background(pal.Selection).TextColor(pal.Text)
+				// Papers arrive without answer keys, so the score is computed
+				// by the teacher; don't show a misleading local score.
+				ui.Badge(c, "已提交 · 由教师评分").Background(pal.Selection).TextColor(pal.Text)
 			}
 		})
 	})
@@ -1153,14 +1155,18 @@ func (a *App) buildHomeworkView(c *ui.Context, pal theme.Palette) {
 }
 
 func (a *App) ToggleHandRaise() {
-	a.handRaised = !a.handRaised
+	raised := !a.handRaised
+	if err := a.sendControl(protocol.MsgHandRaise, map[string]any{
+		"student_id": a.studentID,
+		"raised":     raised,
+	}); err != nil {
+		a.statusNote = "举手失败: " + err.Error()
+		return
+	}
+	a.handRaised = raised
 	if a.opts.Classroom != nil {
 		a.opts.Classroom.RaiseHand(a.studentID, a.handRaised)
 	}
-	a.sendControl(protocol.MsgHandRaise, map[string]any{
-		"student_id": a.studentID,
-		"raised":     a.handRaised,
-	})
 	if a.handRaised {
 		a.statusNote = "已举手，等待教师批准演示"
 	} else {
@@ -1169,13 +1175,16 @@ func (a *App) ToggleHandRaise() {
 }
 
 func (a *App) SubmitCheckIn() {
+	if err := a.sendControl(protocol.MsgCheckInSubmit, map[string]string{
+		"student_id": a.studentID,
+		"student_no": a.checkInNo,
+	}); err != nil {
+		a.statusNote = "签到失败: " + err.Error()
+		return
+	}
 	if a.opts.Classroom != nil {
 		a.opts.Classroom.SubmitCheckIn(a.studentID, "", a.checkInNo)
 	}
-	a.sendControl(protocol.MsgCheckInSubmit, map[string]string{
-		"student_id": a.studentID,
-		"student_no": a.checkInNo,
-	})
 	a.checkInSubmitted = true
 	a.statusNote = fmt.Sprintf("签到成功: %s (%s)", a.machineName, a.checkInNo)
 }
@@ -1202,9 +1211,12 @@ func (a *App) SubmitExam() {
 		Answers:   ans,
 		Submitted: time.Now(),
 	})
+	if err := a.sendControl(protocol.MsgExamAnswer, sub); err != nil {
+		a.statusNote = "测验提交失败，请重试: " + err.Error()
+		return
+	}
 	a.examResult = &sub
-	a.sendControl(protocol.MsgExamAnswer, sub)
-	a.statusNote = fmt.Sprintf("测验已提交，得分 %d/%d", sub.Score, sub.MaxScore)
+	a.statusNote = "测验已提交，等待教师评分"
 }
 
 func (a *App) SubmitHomework() {
@@ -1259,10 +1271,13 @@ func (a *App) SendChat() {
 		Text:      txt,
 		CreatedAt: time.Now(),
 	}
+	if err := a.sendControl(protocol.MsgChat, msg); err != nil {
+		a.statusNote = "消息发送失败: " + err.Error()
+		return
+	}
 	if a.opts.Classroom != nil {
 		a.opts.Classroom.AddChat(msg)
 	}
-	a.sendControl(protocol.MsgChat, msg)
 	a.chatInput = ""
 	a.statusNote = "消息已发送"
 }
@@ -1524,15 +1539,7 @@ func (a *App) RetryReceiveFile(task core.TransferTask) {
 		"sha256":      task.SHA256,
 		"auto_open":   task.AutoOpen,
 	}
-	sent := false
-	if a.opts.Transport != nil {
-		env, err := protocol.NewEnvelope(protocol.MsgFileRetryReq, a.studentID, payload)
-		if err == nil {
-			if sendErr := a.opts.Transport.BroadcastControl(env, nil); sendErr == nil {
-				sent = true
-			}
-		}
-	}
+	sent := a.sendControl(protocol.MsgFileRetryReq, payload) == nil
 	if !sent {
 		a.mu.Lock()
 		for i := range a.fileReceiveItems {
@@ -1707,17 +1714,25 @@ func formatStudentBytes(n int64) string {
 	return fmt.Sprintf("%.1f %cB", float64(n)/float64(div), "KMGTPE"[exp])
 }
 
-func (a *App) sendControl(msgType protocol.MsgType, payload any) {
-	if a.opts.Transport == nil {
-		return
+// errNotConnected is returned when no teacher session exists; the transport's
+// BroadcastControl silently succeeds with zero sessions, so check first.
+var errNotConnected = errors.New("未连接到教师端")
+
+func (a *App) teacherConnected() bool {
+	return a.opts.Transport != nil && a.opts.Transport.Stats().ActiveSessions > 0
+}
+
+func (a *App) sendControl(msgType protocol.MsgType, payload any) error {
+	if !a.teacherConnected() {
+		return errNotConnected
 	}
 	env, err := protocol.NewEnvelope(msgType, a.studentID, payload)
 	if err != nil {
-		return
+		return err
 	}
 	env.Channel = a.channel
 	env.Timestamp = time.Now().UnixMilli()
-	_ = a.opts.Transport.BroadcastControl(env, nil)
+	return a.opts.Transport.BroadcastControl(env, nil)
 }
 
 // Accessors for testing.

@@ -117,7 +117,7 @@ func TestLinuxInputActionMapsWheelToX11Buttons(t *testing.T) {
 	if err != nil {
 		t.Fatalf("linuxInputAction returned error: %v", err)
 	}
-	if action.kind != linuxInputButton || action.button != 4 || !action.down {
+	if action.kind != linuxInputClick || action.button != 4 {
 		t.Fatalf("unexpected wheel-up action: %+v", action)
 	}
 
@@ -128,7 +128,7 @@ func TestLinuxInputActionMapsWheelToX11Buttons(t *testing.T) {
 	if err != nil {
 		t.Fatalf("linuxInputAction returned error: %v", err)
 	}
-	if action.kind != linuxInputButton || action.button != 5 || !action.down {
+	if action.kind != linuxInputClick || action.button != 5 {
 		t.Fatalf("unexpected wheel-down action: %+v", action)
 	}
 }
@@ -140,7 +140,7 @@ func TestLinuxInputActionMapsHorizontalWheel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("linuxInputAction returned error: %v", err)
 	}
-	if action.kind != linuxInputButton || action.button != 6 || !action.down {
+	if action.kind != linuxInputClick || action.button != 6 {
 		t.Fatalf("unexpected horizontal wheel action: %+v", action)
 	}
 }
@@ -186,5 +186,42 @@ func TestLinuxInputCloseIsIdempotent(t *testing.T) {
 	}
 	if len(closed) != 2 || closed[0] != 11 || closed[1] != 22 {
 		t.Fatalf("closed handles = %#v, want [11 22]", closed)
+	}
+}
+
+func TestLinuxInputBackendWheelPressesAndReleases(t *testing.T) {
+	type buttonCall struct {
+		button uint32
+		down   int32
+	}
+	var calls []buttonCall
+	backend := &linuxInputBackend{
+		display: 1,
+		width:   100,
+		height:  100,
+		button: func(_ uintptr, button uint32, down int32, _ uint64) int32 {
+			calls = append(calls, buttonCall{button, down})
+			return 1
+		},
+		flush: func(uintptr) int32 { return 1 },
+	}
+	wheelDown := int32(-120)
+	err := backend.SendInputs([]WinInput{{Type: InputTypeMouse, Mi: MouseInput{
+		MouseData: uint32(wheelDown), DwFlags: MouseEventfWheel,
+	}}})
+	if err != nil {
+		t.Fatalf("SendInputs: %v", err)
+	}
+	if len(calls) != 2 || calls[0] != (buttonCall{5, 1}) || calls[1] != (buttonCall{5, 0}) {
+		t.Fatalf("wheel must press and release button 5, got %+v", calls)
+	}
+}
+
+func TestLinuxVKToKeysymSnapshotHelpAndPrior(t *testing.T) {
+	for vk, want := range map[uint16]uint64{0x2c: 0xff61, 0x2f: 0xff6a, 0x21: 0xff55, 0x22: 0xff56} {
+		got, ok := linuxVKToKeysym(vk)
+		if !ok || got != want {
+			t.Fatalf("linuxVKToKeysym(%#x) = %#x,%v want %#x", vk, got, ok, want)
+		}
 	}
 }

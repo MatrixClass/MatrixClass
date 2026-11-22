@@ -19,6 +19,8 @@ const (
 	linuxInputButton       = "button"
 	linuxInputMotionButton = "motion_button"
 	linuxInputKey          = "key"
+	// linuxInputClick is a press immediately followed by a release (wheel notches).
+	linuxInputClick = "click"
 )
 
 type linuxInputEvent struct {
@@ -47,12 +49,118 @@ type linuxInputBackend struct {
 	keycode        func(uintptr, uint64) byte
 }
 
+// linuxWaylandXTestEnv opts into injecting through XWayland's XTest when the
+// Wayland portal is unavailable. XTest under XWayland only reaches X11
+// clients (native Wayland windows ignore it), so it is never used silently.
+const linuxWaylandXTestEnv = "MATRIXCLASS_WAYLAND_XTEST"
+
 func newPlatformInputBackend() InputBackend {
+	if linuxSessionIsWayland(os.Getenv) {
+		return newLinuxWaylandInputBackend(os.Getenv(linuxWaylandXTestEnv) == "1")
+	}
 	backend, err := newLinuxInputBackend()
 	if err != nil {
 		return &linuxUnavailableInputBackend{err: err}
 	}
 	return backend
+}
+
+// linuxWaylandInputBackend injects through xdg-desktop-portal RemoteDesktop
+// and, only when explicitly enabled, falls back to XWayland XTest if the
+// portal is missing.
+type linuxWaylandInputBackend struct {
+	*rdInputBackend
+	allowXTest bool
+	newXTest   func() (InputBackend, error)
+
+	mu       sync.Mutex
+	xtest    InputBackend
+	xtestErr error
+}
+
+func newLinuxWaylandInputBackend(allowXTest bool) *linuxWaylandInputBackend {
+	return &linuxWaylandInputBackend{
+		rdInputBackend: newLinuxPortalInputBackend(),
+		allowXTest:     allowXTest,
+		newXTest: func() (InputBackend, error) {
+			backend, err := newLinuxInputBackend()
+			if err != nil {
+				return nil, err
+			}
+			return backend, nil
+		},
+	}
+}
+
+func (b *linuxWaylandInputBackend) SendInputs(inputs []WinInput) error {
+	err := b.rdInputBackend.SendInputs(inputs)
+	if err == nil || !b.allowXTest || !errors.Is(err, ErrWaylandRemoteInputUnavailable) {
+		return err
+	}
+	b.mu.Lock()
+	if b.xtest == nil && b.xtestErr == nil && b.newXTest != nil {
+		b.xtest, b.xtestErr = b.newXTest()
+	}
+	xtest, xtestErr := b.xtest, b.xtestErr
+	b.mu.Unlock()
+	if xtest == nil {
+		return fmt.Errorf("%w; XWayland XTest fallback failed: %v", err, xtestErr)
+	}
+	return xtest.SendInputs(inputs)
+}
+
+func (b *linuxWaylandInputBackend) Close() error {
+	err := b.rdInputBackend.Close()
+	b.mu.Lock()
+	xtest := b.xtest
+	b.xtest = nil
+	b.mu.Unlock()
+	if closer, ok := xtest.(interface{ Close() error }); ok {
+		err = errors.Join(err, closer.Close())
+	}
+	return err
+}
+
+var (
+	linuxX11SizeOnce             sync.Once
+	linuxX11SizeW, linuxX11SizeH int32
+	linuxX11SizeOK               bool
+)
+
+// linuxX11ScreenSize returns the (X)Wayland root window size, used as the
+// coordinate space for relative pointer motion when the portal provides no
+// screen-cast stream. The value is probed once; only libX11 is required.
+func linuxX11ScreenSize() (int32, int32, bool) {
+	linuxX11SizeOnce.Do(func() {
+		if os.Getenv("DISPLAY") == "" {
+			return
+		}
+		lib, err := purego.Dlopen("libX11.so.6", purego.RTLD_NOW|purego.RTLD_LOCAL)
+		if err != nil {
+			return
+		}
+		defer func() { _ = purego.Dlclose(lib) }()
+		var open func(*byte) uintptr
+		var closeDisplay func(uintptr) int32
+		var defaultScreen func(uintptr) int32
+		var displayWidth, displayHeight func(uintptr, int32) int32
+		for name, fn := range map[string]any{"XOpenDisplay": &open, "XCloseDisplay": &closeDisplay, "XDefaultScreen": &defaultScreen, "XDisplayWidth": &displayWidth, "XDisplayHeight": &displayHeight} {
+			addr, err := purego.Dlsym(lib, name)
+			if err != nil || addr == 0 {
+				return
+			}
+			purego.RegisterFunc(fn, addr)
+		}
+		display := open(nil)
+		if display == 0 {
+			return
+		}
+		screen := defaultScreen(display)
+		linuxX11SizeW, linuxX11SizeH = displayWidth(display, screen), displayHeight(display, screen)
+		_ = closeDisplay(display)
+		linuxX11SizeOK = linuxX11SizeW > 0 && linuxX11SizeH > 0
+	})
+	return linuxX11SizeW, linuxX11SizeH, linuxX11SizeOK
 }
 
 func newLinuxInputBackend() (*linuxInputBackend, error) {
@@ -126,6 +234,13 @@ func (b *linuxInputBackend) SendInputs(inputs []WinInput) error {
 			}
 		case linuxInputButton:
 			result = b.button(b.display, action.button, boolToInt32(action.down), 0)
+		case linuxInputClick:
+			// X11 wheel buttons must be released, otherwise the server
+			// considers button 4/5 held and subsequent scrolls are dropped.
+			result = b.button(b.display, action.button, 1, 0)
+			if result != 0 {
+				result = b.button(b.display, action.button, 0, 0)
+			}
 		case linuxInputKey:
 			keycode := b.keycode(b.display, action.keysym)
 			if keycode == 0 {
@@ -196,15 +311,15 @@ func linuxInputAction(input WinInput, width, height int) (linuxInputEvent, error
 		button, down, hasButton := linuxMouseButton(flags, input.Mi.MouseData)
 		if flags&MouseEventfWheel != 0 {
 			if int32(input.Mi.MouseData) >= 0 {
-				return linuxInputEvent{kind: linuxInputButton, button: 4, down: true}, nil
+				return linuxInputEvent{kind: linuxInputClick, button: 4, down: true}, nil
 			}
-			return linuxInputEvent{kind: linuxInputButton, button: 5, down: true}, nil
+			return linuxInputEvent{kind: linuxInputClick, button: 5, down: true}, nil
 		}
 		if flags&MouseEventfHWheel != 0 {
 			if int32(input.Mi.MouseData) >= 0 {
-				return linuxInputEvent{kind: linuxInputButton, button: 6, down: true}, nil
+				return linuxInputEvent{kind: linuxInputClick, button: 6, down: true}, nil
 			}
-			return linuxInputEvent{kind: linuxInputButton, button: 7, down: true}, nil
+			return linuxInputEvent{kind: linuxInputClick, button: 7, down: true}, nil
 		}
 		if flags&MouseEventfMove != 0 && hasButton {
 			return linuxInputEvent{kind: linuxInputMotionButton, x: x, y: y, button: button, down: down}, nil
@@ -299,14 +414,16 @@ func linuxVKToKeysym(vk uint16) (uint64, bool) {
 		return 0xffe5, true
 	case 0x15:
 		return 0xffe0, true
-	case 0x2c:
-		return 0xffe9, true
+	case 0x2c: // VK_SNAPSHOT
+		return 0xff61, true // XK_Print
 	case 0x2d:
 		return 0xff63, true
 	case 0x2e:
 		return 0xffff, true
-	case 0x2f:
-		return 0xff55, true
+	case 0x2f: // VK_HELP
+		return 0xff6a, true // XK_Help
+	case 0x21: // VK_PRIOR
+		return 0xff55, true // XK_Prior
 	case 0x22:
 		return 0xff56, true
 	case 0x23:
@@ -361,8 +478,8 @@ func linuxVKToKeysym(vk uint16) (uint64, bool) {
 		return 0xffb0, true
 	case 0x61, 0x62, 0x63, 0x64, 0x65, 0x66, 0x67, 0x68, 0x69:
 		return uint64(0xffb1 + (vk - 0x61)), true
-	case 0x6c:
-		return 0xffb5, true
+	case 0x6c: // VK_SEPARATOR
+		return 0xffac, true // XK_KP_Separator (was KP_5 by mistake)
 	case 0x25:
 		return 0xff51, true
 	case 0x26:
@@ -373,7 +490,44 @@ func linuxVKToKeysym(vk uint16) (uint64, bool) {
 		return 0xff54, true
 	case 0x70, 0x71, 0x72, 0x73, 0x74, 0x75, 0x76, 0x77, 0x78, 0x79, 0x7a, 0x7b:
 		return uint64(0xffbe + (vk - 0x70)), true
-	default:
-		return 0, false
 	}
+	return linuxExtraVKKeysym(vk)
+}
+
+// linuxExtraVKKeysyms extends the classic map with F13-F24, lock, IME and
+// XF86 media/browser keys. Keys without a keycode in the active X keymap are
+// still rejected by SendInputs with a clear error.
+var linuxExtraVKKeysyms = map[uint16]uint64{
+	0x0c: 0xff0b,     // VK_CLEAR -> XK_Clear
+	0x19: 0xff34,     // VK_HANJA -> XK_Hangul_Hanja
+	0x1c: 0xff23,     // VK_CONVERT -> XK_Henkan
+	0x1d: 0xff22,     // VK_NONCONVERT -> XK_Muhenkan
+	0x29: 0xff60,     // VK_SELECT -> XK_Select
+	0x2a: 0xff61,     // VK_PRINT -> XK_Print
+	0x5f: 0x1008ff2f, // VK_SLEEP -> XF86Sleep
+	0x91: 0xff14,     // VK_SCROLL -> XK_Scroll_Lock
+	0xa6: 0x1008ff26, // VK_BROWSER_BACK -> XF86Back
+	0xa7: 0x1008ff27, // VK_BROWSER_FORWARD -> XF86Forward
+	0xa8: 0x1008ff29, // VK_BROWSER_REFRESH -> XF86Refresh
+	0xa9: 0x1008ff28, // VK_BROWSER_STOP -> XF86Stop
+	0xaa: 0x1008ff1b, // VK_BROWSER_SEARCH -> XF86Search
+	0xab: 0x1008ff30, // VK_BROWSER_FAVORITES -> XF86Favorites
+	0xac: 0x1008ff18, // VK_BROWSER_HOME -> XF86HomePage
+	0xad: 0x1008ff12, // VK_VOLUME_MUTE -> XF86AudioMute
+	0xae: 0x1008ff11, // VK_VOLUME_DOWN -> XF86AudioLowerVolume
+	0xaf: 0x1008ff13, // VK_VOLUME_UP -> XF86AudioRaiseVolume
+	0xb0: 0x1008ff17, // VK_MEDIA_NEXT_TRACK -> XF86AudioNext
+	0xb1: 0x1008ff16, // VK_MEDIA_PREV_TRACK -> XF86AudioPrev
+	0xb2: 0x1008ff15, // VK_MEDIA_STOP -> XF86AudioStop
+	0xb3: 0x1008ff14, // VK_MEDIA_PLAY_PAUSE -> XF86AudioPlay
+	0xb4: 0x1008ff19, // VK_LAUNCH_MAIL -> XF86Mail
+	0xe2: 0x3c,       // VK_OEM_102 -> XK_less (ISO key left of Z)
+}
+
+func linuxExtraVKKeysym(vk uint16) (uint64, bool) {
+	if vk >= 0x7c && vk <= 0x87 { // VK_F13..VK_F24 -> XK_F13..XK_F24
+		return uint64(0xffca + (vk - 0x7c)), true
+	}
+	keysym, ok := linuxExtraVKKeysyms[vk]
+	return keysym, ok
 }

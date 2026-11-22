@@ -8,6 +8,8 @@ import (
 	"hash/fnv"
 	"os"
 	"runtime"
+	"sync"
+	"sync/atomic"
 	"time"
 	"unsafe"
 
@@ -60,6 +62,33 @@ type x11Capture struct {
 	closeLibrary func(uintptr) error
 }
 
+var (
+	x11ErrorHandlerOnce sync.Once
+	// x11ErrorCount counts X protocol errors reported to the installed handler.
+	x11ErrorCount atomic.Uint64
+)
+
+// installX11ErrorHandler replaces Xlib's default protocol error handler, which
+// prints and calls exit(), with one that only records the error. Failed requests
+// (e.g. XGetImage BadMatch after a resolution change) then simply return NULL.
+// The IO error handler is intentionally left alone: Xlib terminates the process
+// after an IO error handler returns, so it cannot be made safe from Go.
+func installX11ErrorHandler(lookup func(string) uintptr) {
+	x11ErrorHandlerOnce.Do(func() {
+		addr := lookup("XSetErrorHandler")
+		if addr == 0 {
+			return
+		}
+		var setErrorHandler func(uintptr) uintptr
+		purego.RegisterFunc(&setErrorHandler, addr)
+		handler := purego.NewCallback(func(display uintptr, event uintptr) uintptr {
+			x11ErrorCount.Add(1)
+			return 0
+		})
+		setErrorHandler(handler)
+	})
+}
+
 func newNativeScreenCapture(opts CaptureOptions) nativeScreenCapture {
 	if runtime.GOOS != "linux" {
 		return nil
@@ -94,6 +123,7 @@ func newNativeScreenCapture(opts CaptureOptions) nativeScreenCapture {
 	purego.RegisterFunc(&getGeometry, lookup("XGetGeometry"))
 	purego.RegisterFunc(&getImage, lookup("XGetImage"))
 	purego.RegisterFunc(&destroyImage, lookup("XDestroyImage"))
+	installX11ErrorHandler(lookup)
 	display := openDisplay(nil)
 	if display == 0 {
 		_ = purego.Dlclose(lib)
@@ -125,6 +155,11 @@ func (x *x11Capture) Capture(maxW, maxH int, withNV12 bool) (*core.VideoFrame, b
 	}
 	if x.display == 0 && !x.reopen() {
 		return nil, false, errors.New("media: X11 display is closed")
+	}
+	// Refresh the root geometry each frame so a resolution change does not make
+	// XGetImage request an out-of-bounds rectangle (BadMatch).
+	if !x.refreshGeometry() && !x.reopen() {
+		return nil, false, errors.New("media: X11 root geometry unavailable")
 	}
 	imagePtr := x.getImage(x.display, x.root, 0, 0, x.width, x.height, x11AllPlanes, x11ZPixmap)
 	if imagePtr == 0 && x.reopen() {
@@ -189,6 +224,31 @@ func x11FrameChanged(data []byte, previous uint64, hasPrevious bool) bool {
 	return !hasPrevious || current != previous
 }
 
+// refreshGeometry re-reads the root window size and applies the configured clamp.
+func (x *x11Capture) refreshGeometry() bool {
+	if x == nil || x.display == 0 || x.getGeometry == nil {
+		return false
+	}
+	var rootID uintptr
+	var px, py int32
+	var width, height, border, depth uint32
+	if x.getGeometry(x.display, x.root, &rootID, &px, &py, &width, &height, &border, &depth) == 0 || width == 0 || height == 0 {
+		return false
+	}
+	x.width, x.height = x.clampSize(width, height)
+	return true
+}
+
+func (x *x11Capture) clampSize(width, height uint32) (uint32, uint32) {
+	if x.maxWidth > 0 && x.maxWidth < int(width) {
+		width = uint32(x.maxWidth)
+	}
+	if x.maxHeight > 0 && x.maxHeight < int(height) {
+		height = uint32(x.maxHeight)
+	}
+	return width, height
+}
+
 func (x *x11Capture) reopen() bool {
 	if x == nil || x.openDisplay == nil || x.defaultRoot == nil {
 		return false
@@ -210,12 +270,7 @@ func (x *x11Capture) reopen() bool {
 		x.display = 0
 		return false
 	}
-	if x.maxWidth > 0 && x.maxWidth < int(width) {
-		width = uint32(x.maxWidth)
-	}
-	if x.maxHeight > 0 && x.maxHeight < int(height) {
-		height = uint32(x.maxHeight)
-	}
+	width, height = x.clampSize(width, height)
 	x.display, x.root, x.width, x.height = display, root, width, height
 	return true
 }

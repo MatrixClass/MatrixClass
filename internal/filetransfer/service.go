@@ -35,6 +35,24 @@ var (
 	ErrTaskNotFound       = errors.New("filetransfer: task not found")
 	ErrTaskTerminal       = errors.New("filetransfer: task already finished")
 	ErrInvalidChunkOffset = errors.New("filetransfer: invalid chunk offset")
+	ErrIncompleteTransfer = errors.New("filetransfer: transfer completed with missing bytes")
+	ErrNotPermitted       = errors.New("filetransfer: operation not permitted for this role")
+)
+
+// Role controls which inbound requests HandleStream accepts.
+type Role string
+
+const (
+	// RoleUnspecified keeps the legacy permissive behaviour (accepts every
+	// offer direction and collect requests).
+	RoleUnspecified Role = ""
+	// RoleTeacher accepts only homework submissions (always written under the
+	// archive directory, peer-supplied directories ignored) and rejects
+	// collect requests.
+	RoleTeacher Role = "teacher"
+	// RoleStudent accepts teacher file distribution (send offers) and collect
+	// requests, and rejects submit/collect-direction offers.
+	RoleStudent Role = "student"
 )
 
 type StudentMeta struct {
@@ -51,6 +69,13 @@ type Config struct {
 	StudentResolver func(studentID string) (StudentMeta, bool)
 	OnProgress      func(task core.TransferTask)
 	OnAutoOpen      func(path string)
+	// Role restricts what inbound streams may do. Empty keeps legacy behaviour.
+	Role Role
+	// SessionIdentity maps the transport session ID a stream arrived on to
+	// the student identity bound to that session. When set (and it returns
+	// true), it takes precedence over identity fields supplied in offers.
+	// Used by HandleStreamFrom.
+	SessionIdentity func(sessionID string) (StudentMeta, bool)
 }
 
 type FileOffer struct {
@@ -100,6 +125,8 @@ type Service struct {
 	studentResolver func(studentID string) (StudentMeta, bool)
 	onProgress      func(task core.TransferTask)
 	onAutoOpen      func(path string)
+	role            Role
+	sessionIdentity func(sessionID string) (StudentMeta, bool)
 	tasks           map[string]*core.TransferTask
 	taskOrder       []string
 	cancelTasks     map[string]context.CancelFunc
@@ -140,6 +167,8 @@ func NewService(cfg Config) *Service {
 		studentResolver: cfg.StudentResolver,
 		onProgress:      cfg.OnProgress,
 		onAutoOpen:      cfg.OnAutoOpen,
+		role:            cfg.Role,
+		sessionIdentity: cfg.SessionIdentity,
 		tasks:           make(map[string]*core.TransferTask),
 		cancelTasks:     make(map[string]context.CancelFunc),
 		sentRecords:     make(map[string]sentRecord),
@@ -306,6 +335,13 @@ func (s *Service) updateTask(task *core.TransferTask, doneBytes int64, status, e
 	if cb != nil {
 		cb(*cloneTask(task))
 	}
+}
+
+func failureStatus(ctx context.Context) string {
+	if ctx.Err() != nil {
+		return "cancelled"
+	}
+	return "failed"
 }
 
 func (s *Service) taskDoneBytes(task *core.TransferTask) int64 {
@@ -510,6 +546,10 @@ func (s *Service) SubmitHomework(ctx context.Context, studentID, localPath strin
 	meta := s.resolveStudent(studentID)
 	fileName := filepath.Base(localPath)
 	task := s.newTask(core.TransferSubmit, fileName, localPath, "", size, hash, studentID, false)
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	s.bindTaskContext(task.ID, cancel)
+	defer s.unbindTaskContext(task.ID)
 
 	stream, err := sess.OpenStream(protocol.StreamFile)
 	if err != nil {
@@ -532,7 +572,7 @@ func (s *Service) SubmitHomework(ctx context.Context, studentID, localPath strin
 		s.updateTask(task, done, "running", "")
 	})
 	if err != nil {
-		s.updateTask(task, s.taskDoneBytes(task), "failed", err.Error())
+		s.updateTask(task, s.taskDoneBytes(task), failureStatus(ctx), err.Error())
 		return cloneTask(task), err
 	}
 	s.mu.Lock()
@@ -547,7 +587,7 @@ func (s *Service) CollectFiles(ctx context.Context, remoteDir, saveDir string, t
 		return nil, ErrNoTargets
 	}
 	if saveDir == "" {
-		saveDir = s.archiveDir
+		saveDir = s.ArchiveDir()
 	}
 	if err := os.MkdirAll(saveDir, 0o755); err != nil {
 		return nil, err
@@ -662,15 +702,10 @@ func (s *Service) CollectFiles(ctx context.Context, remoteDir, saveDir string, t
 					resMu.Unlock()
 					return
 				}
-				if offer.StudentID == "" {
-					offer.StudentID = sid
-				}
-				if offer.StudentNo == "" {
-					offer.StudentNo = meta.StudentNo
-				}
-				if offer.StudentName == "" {
-					offer.StudentName = meta.Name
-				}
+				// The target ID and teacher-side metadata are authoritative;
+				// peer-supplied identity only fills gaps.
+				offer.StudentID = sid
+				offer = applyTrustedIdentity(offer, meta)
 				folder := formatStudentFolder(offer.StudentNo, offer.StudentName, offer.StudentID)
 				destPath := filepath.Join(saveDir, folder, sanitizeFileName(offer.FileName))
 				task, recvErr := s.receiveOffer(ctx, stream, offer, destPath, core.TransferCollect)
@@ -699,7 +734,17 @@ func (s *Service) CollectFiles(ctx context.Context, remoteDir, saveDir string, t
 	return tasks, firstEr
 }
 
+// HandleStream serves an inbound file stream without session identity. Prefer
+// HandleStreamFrom so that SessionIdentity can bind submissions to the session.
 func (s *Service) HandleStream(ctx context.Context, stream io.ReadWriteCloser) error {
+	return s.HandleStreamFrom(ctx, "", stream)
+}
+
+// HandleStreamFrom serves an inbound file stream that arrived on the transport
+// session sessionID. The configured Role decides which requests are accepted;
+// for submissions the identity returned by Config.SessionIdentity(sessionID)
+// overrides peer-supplied student fields.
+func (s *Service) HandleStreamFrom(ctx context.Context, sessionID string, stream io.ReadWriteCloser) error {
 	defer stream.Close()
 
 	_, msgType, payload, err := protocol.ReadFrame(stream)
@@ -707,23 +752,58 @@ func (s *Service) HandleStream(ctx context.Context, stream io.ReadWriteCloser) e
 		return err
 	}
 
+	s.mu.RLock()
+	role := s.role
+	identity := s.sessionIdentity
+	s.mu.RUnlock()
+
 	switch msgType {
 	case protocol.MsgFileOffer:
 		var offer FileOffer
 		if err := json.Unmarshal(payload, &offer); err != nil {
 			return err
 		}
-		destPath := s.resolveReceivePath(offer)
 		dir := offer.Direction
 		if dir == "" {
 			dir = core.TransferSend
 		}
+		switch role {
+		case RoleTeacher:
+			if dir != core.TransferSubmit {
+				err := fmt.Errorf("%w: %s offer", ErrNotPermitted, dir)
+				s.sendAckError(stream, offer.TaskID, err)
+				return err
+			}
+			// Peer-supplied directories are never honoured on the teacher.
+			offer.RemoteDir = ""
+		case RoleStudent:
+			if dir != core.TransferSend {
+				err := fmt.Errorf("%w: %s offer", ErrNotPermitted, dir)
+				s.sendAckError(stream, offer.TaskID, err)
+				return err
+			}
+		}
+		offer.Direction = dir
+		if dir == core.TransferSubmit && sessionID != "" && identity != nil {
+			if meta, ok := identity(sessionID); ok {
+				if meta.ID != "" {
+					offer.StudentID = meta.ID
+				}
+				offer = applyTrustedIdentity(offer, meta)
+			}
+		}
+		destPath := s.resolveReceivePath(offer)
 		_, err := s.receiveOffer(ctx, stream, offer, destPath, dir)
 		return err
 
 	case protocol.MsgCollectReq:
 		var req CollectRequest
 		if err := json.Unmarshal(payload, &req); err != nil {
+			return err
+		}
+		if role == RoleTeacher {
+			err := fmt.Errorf("%w: collect request", ErrNotPermitted)
+			s.sendFinalComplete(stream, req.TaskID, 0, "", "", false, err.Error())
 			return err
 		}
 		return s.handleCollectRequest(ctx, stream, req)
@@ -780,10 +860,16 @@ func (s *Service) handleCollectRequest(ctx context.Context, stream io.ReadWriteC
 			TotalBytes:  size,
 			SHA256:      hash,
 		}
-		if _, err := s.sendOverStream(ctx, stream, filePath, offer, func(done int64) {
+		fileCtx, fileCancel := context.WithCancel(ctx)
+		s.bindTaskContext(task.ID, fileCancel)
+		_, err = s.sendOverStream(fileCtx, stream, filePath, offer, func(done int64) {
 			s.updateTask(task, done, "running", "")
-		}); err != nil {
-			s.updateTask(task, s.taskDoneBytes(task), "failed", err.Error())
+		})
+		status := failureStatus(fileCtx)
+		s.unbindTaskContext(task.ID)
+		fileCancel()
+		if err != nil {
+			s.updateTask(task, s.taskDoneBytes(task), status, err.Error())
 			return err
 		}
 		s.updateTask(task, size, "completed", "")
@@ -799,7 +885,14 @@ func (s *Service) handleCollectRequest(ctx context.Context, stream io.ReadWriteC
 	return protocol.WriteFrame(stream, protocol.StreamFile, protocol.MsgFileComplete, donePayload)
 }
 
-func (s *Service) sendOverStream(ctx context.Context, stream io.ReadWriter, localPath string, offer FileOffer, onBytes func(int64)) (FileComplete, error) {
+func (s *Service) sendOverStream(ctx context.Context, stream io.ReadWriter, localPath string, offer FileOffer, onBytes func(int64)) (complete FileComplete, err error) {
+	defer closeStreamOnCancel(ctx, stream)()
+	defer func() {
+		// Report cancellation rather than the induced stream-closed error.
+		if err != nil && ctx.Err() != nil && !errors.Is(err, ctx.Err()) {
+			err = fmt.Errorf("%w (%v)", ctx.Err(), err)
+		}
+	}()
 	offerBytes, err := json.Marshal(offer)
 	if err != nil {
 		return FileComplete{}, err
@@ -909,6 +1002,13 @@ func (s *Service) receiveOffer(ctx context.Context, stream io.ReadWriter, offer 
 		return nil, ErrInvalidChunkOffset
 	}
 	task := s.newTask(dir, offer.FileName, destPath, offer.RemotePath, offer.TotalBytes, offer.SHA256, offer.StudentID, offer.AutoOpen)
+	// Bind the receive task so CancelTask (or parent cancellation) interrupts
+	// blocked stream reads by closing the stream.
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	s.bindTaskContext(task.ID, cancel)
+	defer s.unbindTaskContext(task.ID)
+	defer closeStreamOnCancel(ctx, stream)()
 
 	if err := os.MkdirAll(filepath.Dir(destPath), 0o755); err != nil {
 		s.sendAckError(stream, offer.TaskID, err)
@@ -977,19 +1077,19 @@ func (s *Service) receiveOffer(ctx context.Context, stream io.ReadWriter, offer 
 	doneBytes := resumeOffset
 	closed := false
 	flushAndClose := func() error {
-		if err := bw.Flush(); err != nil {
-			return err
-		}
 		if closed {
 			return nil
 		}
 		closed = true
-		return outFile.Close()
+		return flushAndCloseFile(bw, outFile)
 	}
 	failReceive := func(receiveErr error, removePartial bool, sendFinal bool) (*core.TransferTask, error) {
 		closeErr := flushAndClose()
 		if closeErr != nil && receiveErr == nil {
 			receiveErr = closeErr
+		}
+		if ctx.Err() != nil {
+			receiveErr = ctx.Err()
 		}
 		if removePartial {
 			_ = os.Remove(partPath)
@@ -998,7 +1098,11 @@ func (s *Service) receiveOffer(ctx context.Context, stream io.ReadWriter, offer 
 		if sendFinal {
 			s.sendFinalComplete(stream, offer.TaskID, doneBytes, "", "", false, receiveErr.Error())
 		}
-		s.updateTask(task, doneBytes, "failed", receiveErr.Error())
+		status := "failed"
+		if ctx.Err() != nil {
+			status = "cancelled"
+		}
+		s.updateTask(task, doneBytes, status, receiveErr.Error())
 		return cloneTask(task), receiveErr
 	}
 
@@ -1039,6 +1143,13 @@ func (s *Service) receiveOffer(ctx context.Context, stream io.ReadWriter, offer 
 			s.updateTask(task, doneBytes, "running", "")
 
 		case protocol.MsgFileComplete:
+			var senderDone FileComplete
+			if err := json.Unmarshal(payload, &senderDone); err != nil {
+				return failReceive(fmt.Errorf("filetransfer: malformed complete frame: %w", err), false, true)
+			}
+			if doneBytes != offer.TotalBytes || (senderDone.DoneBytes != 0 && senderDone.DoneBytes != offer.TotalBytes) {
+				return failReceive(fmt.Errorf("%w: received %d of %d bytes", ErrIncompleteTransfer, doneBytes, offer.TotalBytes), false, true)
+			}
 			if err := flushAndClose(); err != nil {
 				return failReceive(err, false, true)
 			}
@@ -1128,6 +1239,26 @@ func (s *Service) resolveReceivePath(offer FileOffer) string {
 	return filepath.Join(s.receiveDir, fileName)
 }
 
+// flushAndCloseFile flushes buffered data and always closes the file, even if
+// the flush fails, returning both errors joined.
+func flushAndCloseFile(bw *bufio.Writer, f io.Closer) error {
+	flushErr := bw.Flush()
+	closeErr := f.Close()
+	return errors.Join(flushErr, closeErr)
+}
+
+// closeStreamOnCancel closes stream (if it is an io.Closer) once ctx is done,
+// unblocking pending reads/writes. The returned stop func must be called when
+// the operation finishes normally.
+func closeStreamOnCancel(ctx context.Context, stream any) func() {
+	c, ok := stream.(io.Closer)
+	if !ok {
+		return func() {}
+	}
+	stop := context.AfterFunc(ctx, func() { _ = c.Close() })
+	return func() { stop() }
+}
+
 func replaceFile(src, dst string) error {
 	if err := os.Rename(src, dst); err == nil {
 		return nil
@@ -1183,37 +1314,107 @@ func listCollectableFiles(remoteDir string) ([]string, error) {
 	return files, nil
 }
 
+// applyTrustedIdentity overrides peer-supplied student number/name with
+// trusted metadata whenever the trusted value is known.
+func applyTrustedIdentity(offer FileOffer, meta StudentMeta) FileOffer {
+	if strings.TrimSpace(meta.StudentNo) != "" {
+		offer.StudentNo = meta.StudentNo
+	}
+	if strings.TrimSpace(meta.Name) != "" {
+		offer.StudentName = meta.Name
+	}
+	return offer
+}
+
+// cleanPathComponent makes a single path component safe on Windows and POSIX:
+// it replaces separators, characters invalid on Windows (including ':' which
+// would address NTFS alternate data streams) and control characters, trims
+// surrounding spaces and trailing dots, rejects "." / ".." and prefixes
+// Windows reserved device names. It returns "" if nothing usable remains.
+func cleanPathComponent(name string) string {
+	var b strings.Builder
+	for _, r := range name {
+		switch {
+		case r < 0x20 || r == 0x7f:
+			b.WriteRune('_')
+		case strings.ContainsRune(`<>:"/\|?*`, r):
+			b.WriteRune('_')
+		default:
+			b.WriteRune(r)
+		}
+	}
+	out := strings.TrimSpace(b.String())
+	out = strings.TrimRight(out, ". ")
+	out = strings.TrimSpace(out)
+	if out == "" || strings.Trim(out, ".") == "" {
+		return ""
+	}
+	if isWindowsReservedName(out) {
+		out = "_" + out
+	}
+	return out
+}
+
+func isWindowsReservedName(name string) bool {
+	stem := name
+	if idx := strings.IndexByte(stem, '.'); idx >= 0 {
+		stem = stem[:idx]
+	}
+	stem = strings.ToUpper(strings.TrimRight(stem, " "))
+	switch stem {
+	case "CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$":
+		return true
+	}
+	if len(stem) >= 4 && (strings.HasPrefix(stem, "COM") || strings.HasPrefix(stem, "LPT")) {
+		switch stem[3:] {
+		case "1", "2", "3", "4", "5", "6", "7", "8", "9", "¹", "²", "³":
+			return true
+		}
+	}
+	return false
+}
+
 func sanitizeFileName(name string) string {
-	base := filepath.Base(strings.TrimSpace(name))
+	base := strings.TrimSpace(name)
+	// Strip any directory part using both separators regardless of host OS.
+	if idx := strings.LastIndexAny(base, `/\`); idx >= 0 {
+		base = base[idx+1:]
+	}
+	if strings.Trim(base, ". ") == "" {
+		return "unnamed.bin"
+	}
 	base = strings.ReplaceAll(base, "..", "_")
-	if base == "" || base == "." || base == string(filepath.Separator) {
+	base = cleanPathComponent(base)
+	if base == "" {
 		return "unnamed.bin"
 	}
 	return base
 }
 
 func sanitizeSegment(seg string) string {
-	cleaned := strings.TrimSpace(seg)
-	replacer := strings.NewReplacer("/", "_", "\\", "_", "..", "_", ":", "_", "*", "_", "?", "_", "\"", "_", "<", "_", ">", "_", "|", "_")
-	return replacer.Replace(cleaned)
+	cleaned := strings.ReplaceAll(strings.TrimSpace(seg), "..", "_")
+	return cleanPathComponent(cleaned)
 }
 
 func formatStudentFolder(studentNo, name, studentID string) string {
 	no := sanitizeSegment(studentNo)
 	nm := sanitizeSegment(name)
 	id := sanitizeSegment(studentID)
+	var folder string
 	switch {
 	case no != "" && nm != "":
-		return no + "_" + nm
+		folder = no + "_" + nm
 	case no != "":
-		return no
+		folder = no
 	case id != "" && nm != "":
-		return id + "_" + nm
+		folder = id + "_" + nm
 	case nm != "":
-		return nm
+		folder = nm
 	case id != "":
-		return id
-	default:
+		folder = id
+	}
+	if folder = cleanPathComponent(folder); folder == "" {
 		return "unknown_student"
 	}
+	return folder
 }

@@ -27,3 +27,13 @@ func TestCapabilitySummaryExplainsRestrictedDesktop(t *testing.T) {
 		t.Fatalf("summary does not explain Wayland limitation: %q", summary)
 	}
 }
+
+func TestCapabilitySummaryIncludesVersionAndRosetta(t *testing.T) {
+	summary := Capabilities{OS: "darwin", Architecture: "amd64", OSVersion: "14.5", Translated: true, HostArchitecture: "arm64"}.Summary()
+	if !strings.HasPrefix(summary, "darwin/amd64 version=14.5 rosetta(host=arm64)") {
+		t.Fatalf("summary = %q", summary)
+	}
+	if plain := (Capabilities{OS: "linux", Architecture: "arm64"}).Summary(); !strings.HasPrefix(plain, "linux/arm64 desktop=") {
+		t.Fatalf("summary without version = %q", plain)
+	}
+}

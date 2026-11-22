@@ -30,7 +30,23 @@ var (
 	ErrInvalidDimension = errors.New("media: invalid frame dimensions")
 	ErrBufferTooSmall   = errors.New("media: input buffer too small")
 	ErrMFTUnavailable   = errors.New("media: Media Foundation H.264 MFT unavailable")
+	ErrCodecClosed      = errors.New("media: codec is closed")
 )
+
+const (
+	// MaxVideoDimension bounds each decoded frame dimension accepted from the network.
+	MaxVideoDimension = 8192
+	// MaxVideoPixels bounds width*height of a decoded frame (covers 8K UHD / DCI 8K-wide 4320p).
+	MaxVideoPixels = 8192 * 4608
+	// maxVideoRawBytes bounds the zstd-decompressed payload of one video frame: the
+	// largest legal payload is a full-frame tile delta (RGBA bytes + 8-byte tile headers).
+	maxVideoRawBytes = MaxVideoPixels*4 + (MaxVideoPixels/(tileSize*tileSize)+MaxVideoDimension/tileSize*2+2)*8 + 4
+)
+
+// ValidVideoDimensions reports whether width x height is within the decoder limits.
+func ValidVideoDimensions(width, height int) bool {
+	return width > 0 && height > 0 && width <= MaxVideoDimension && height <= MaxVideoDimension && width*height <= MaxVideoPixels
+}
 
 // RGBAToNV12 converts tightly packed RGBA (4*width*height) to BT.709 full-range NV12 planes.
 func RGBAToNV12(rgba []byte, width, height int) (yPlane, uvPlane []byte, strideY, strideUV int, err error) {
@@ -323,7 +339,7 @@ func NewZstdVideoCodec() (*ZstdVideoCodec, error) {
 		encFast.Close()
 		return nil, fmt.Errorf("media: init zstd default encoder: %w", err)
 	}
-	dec, err := zstd.NewReader(nil)
+	dec, err := zstd.NewReader(nil, zstd.WithDecoderMaxMemory(maxVideoRawBytes))
 	if err != nil {
 		encFast.Close()
 		encDef.Close()
@@ -367,6 +383,9 @@ func (c *ZstdVideoCodec) Encode(frame *core.VideoFrame, quality int) ([]byte, er
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if c.encFast == nil {
+		return nil, ErrCodecClosed
+	}
 
 	w, h := frame.Width, frame.Height
 	expectedRGBA := w * h * 4
@@ -547,16 +566,22 @@ func (c *ZstdVideoCodec) Decode(data []byte) (*core.VideoFrame, error) {
 	if codecID != codecIDFrameZstd {
 		return nil, fmt.Errorf("%w: unexpected codec id %d", ErrInvalidFrameData, codecID)
 	}
-	if w <= 0 || h <= 0 {
+	if !ValidVideoDimensions(w, h) {
 		return nil, ErrInvalidDimension
 	}
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if c.dec == nil {
+		return nil, ErrCodecClosed
+	}
 
 	raw, err := c.dec.DecodeAll(payload, nil)
 	if err != nil {
 		return nil, fmt.Errorf("media: zstd decode failed: %w", err)
+	}
+	if len(raw) > maxVideoRawBytes {
+		return nil, ErrInvalidFrameData
 	}
 
 	if flags&videoFlagNV12 != 0 {
@@ -599,7 +624,7 @@ func (c *ZstdVideoCodec) Decode(data []byte) (*core.VideoFrame, error) {
 
 	expectedRGBA := w * h * 4
 	if flags&videoFlagDelta != 0 {
-		if c.decW != w || c.decH != h || len(c.decRGBA) != expectedRGBA {
+		if expectedRGBA <= 0 || c.decW != w || c.decH != h || len(c.decRGBA) != expectedRGBA {
 			return nil, fmt.Errorf("%w: missing reference frame for delta", ErrInvalidFrameData)
 		}
 		if c.hasDecSeq && seq != 0 && seq != c.decSeq+1 {
@@ -785,8 +810,20 @@ type videoMFTBackend interface {
 // falling back transparently to ZstdVideoCodec on any unsupported format or runtime failure.
 type HybridVideoCodec struct {
 	zstd      *ZstdVideoCodec
+	mftMu     sync.Mutex
 	mft       videoMFTBackend
 	preferMFT bool
+	closed    bool
+}
+
+// mftBackend returns the MFT backend, lazily creating it when create is true.
+func (h *HybridVideoCodec) mftBackend(create bool) videoMFTBackend {
+	h.mftMu.Lock()
+	defer h.mftMu.Unlock()
+	if h.mft == nil && create && !h.closed {
+		h.mft = newPlatformVideoMFT()
+	}
+	return h.mft
 }
 
 func NewHybridVideoCodec(preferH264MFT bool) (*HybridVideoCodec, error) {
@@ -806,16 +843,18 @@ func NewHybridVideoCodec(preferH264MFT bool) (*HybridVideoCodec, error) {
 }
 
 func (h *HybridVideoCodec) MFTAvailable() bool {
-	return h.mft != nil && h.mft.Available()
+	mft := h.mftBackend(false)
+	return mft != nil && mft.Available()
 }
 
 func (h *HybridVideoCodec) Encode(frame *core.VideoFrame, quality int) ([]byte, error) {
 	if frame == nil {
 		return nil, ErrInvalidDimension
 	}
-	wantMFT := (h.preferMFT || frame.Codec == core.CodecH264MFT) && h.mft != nil && h.mft.Available()
+	mft := h.mftBackend(false)
+	wantMFT := (h.preferMFT || frame.Codec == core.CodecH264MFT) && mft != nil && mft.Available()
 	if wantMFT {
-		if out, err := h.mft.Encode(frame, quality); err == nil {
+		if out, err := mft.Encode(frame, quality); err == nil {
 			return out, nil
 		}
 	}
@@ -828,11 +867,8 @@ func (h *HybridVideoCodec) Decode(data []byte) (*core.VideoFrame, error) {
 		return nil, err
 	}
 	if codecID == codecIDH264MFT {
-		if h.mft == nil {
-			h.mft = newPlatformVideoMFT()
-		}
-		if h.mft != nil && h.mft.Available() {
-			return h.mft.Decode(data)
+		if mft := h.mftBackend(true); mft != nil && mft.Available() {
+			return mft.Decode(data)
 		}
 		return nil, ErrMFTUnavailable
 	}
@@ -841,8 +877,12 @@ func (h *HybridVideoCodec) Decode(data []byte) (*core.VideoFrame, error) {
 
 func (h *HybridVideoCodec) Close() error {
 	var firstErr error
-	if h.mft != nil {
-		firstErr = h.mft.Close()
+	h.mftMu.Lock()
+	mft := h.mft
+	h.closed = true
+	h.mftMu.Unlock()
+	if mft != nil {
+		firstErr = mft.Close()
 	}
 	if err := h.zstd.Close(); err != nil && firstErr == nil {
 		firstErr = err

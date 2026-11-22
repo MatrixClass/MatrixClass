@@ -11,8 +11,8 @@ import (
 )
 
 var (
-	ErrDarwinScreenCaptureUnavailable = errors.New("media: ScreenCaptureKit capture is unavailable; native Darwin bridge is not enabled")
-	ErrDarwinScreenCapturePermission  = errors.New("media: ScreenCaptureKit permission is required")
+	ErrDarwinScreenCaptureUnavailable = errors.New("media: macOS screen capture is unavailable")
+	ErrDarwinScreenCapturePermission  = errors.New("media: macOS Screen Recording permission is required")
 )
 
 type DarwinScreenCaptureState string
@@ -25,9 +25,13 @@ const (
 	DarwinScreenCaptureStateStopped      DarwinScreenCaptureState = "stopped"
 )
 
-// DarwinScreenCaptureStream is the lifecycle boundary for a future
-// ScreenCaptureKit bridge. The current pure-Go build deliberately remains
-// unavailable instead of returning synthetic frames as real screen data.
+// DarwinScreenCaptureStream is the lifecycle boundary for the native macOS
+// screen capture bridge (ScreenCaptureKit on macOS 14+, CoreGraphics on 12-13).
+// Start probes the bridge without prompting: it reports Running only when the
+// frameworks are present and Screen Recording access is granted, and never
+// substitutes synthetic frames for real screen data. Errors always wrap
+// ErrDarwinScreenCaptureUnavailable; missing access additionally wraps
+// ErrDarwinScreenCapturePermission.
 type DarwinScreenCaptureStream struct {
 	mu                sync.Mutex
 	opts              CaptureOptions
@@ -62,8 +66,12 @@ func (s *DarwinScreenCaptureStream) Start() error {
 		return ErrDarwinScreenCaptureUnavailable
 	}
 	s.state = DarwinScreenCaptureStateStarting
-	s.state = DarwinScreenCaptureStateUnavailable
-	return ErrDarwinScreenCaptureUnavailable
+	if _, err := DarwinScreenCaptureProbe(); err != nil {
+		s.state = DarwinScreenCaptureStateUnavailable
+		return err
+	}
+	s.state = DarwinScreenCaptureStateRunning
+	return nil
 }
 
 func (s *DarwinScreenCaptureStream) Reconnect() error {
@@ -95,20 +103,29 @@ func (s *DarwinScreenCaptureStream) Close() error {
 	return nil
 }
 
-type darwinScreenCaptureUnavailable struct{}
+// darwinScreenCaptureUnavailable is returned when the native frameworks cannot
+// be loaded at all (missing symbols, unsupported macOS).
+type darwinScreenCaptureUnavailable struct{ err error }
 
 func (darwinScreenCaptureUnavailable) Backend() CaptureBackend { return CaptureBackendUnavailable }
 
-func (darwinScreenCaptureUnavailable) Capture(int, int, bool) (*core.VideoFrame, bool, error) {
-	return nil, false, ErrDarwinScreenCaptureUnavailable
+func (u darwinScreenCaptureUnavailable) Capture(int, int, bool) (*core.VideoFrame, bool, error) {
+	return nil, false, u.error()
 }
 
 func (darwinScreenCaptureUnavailable) Close() error { return nil }
 
-func newNativeScreenCapture(CaptureOptions) nativeScreenCapture {
-	return darwinScreenCaptureUnavailable{}
+func (u darwinScreenCaptureUnavailable) error() error {
+	if u.err == nil {
+		return ErrDarwinScreenCaptureUnavailable
+	}
+	return u.err
 }
 
-func (darwinScreenCaptureUnavailable) String() string {
-	return fmt.Sprintf("%s", ErrDarwinScreenCaptureUnavailable)
+func newNativeScreenCapture(opts CaptureOptions) nativeScreenCapture {
+	return newDarwinScreenCapture(opts)
+}
+
+func (u darwinScreenCaptureUnavailable) String() string {
+	return fmt.Sprintf("%v", u.error())
 }

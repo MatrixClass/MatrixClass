@@ -1,35 +1,31 @@
 #!/usr/bin/env sh
+# Builds Linux binaries and matrixclass-linux-<arch> directory + tar.gz packages.
+# Usage: scripts/build-linux-package.sh [output-dir] [arch...]   (SKIP_BUILD=1 to reuse binaries)
 set -eu
+. "$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)/lib/common.sh"
 
-output_dir=${1:-dist/linux}
-script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-repo_root=$(CDPATH= cd -- "$script_dir/.." && pwd)
+output_dir=$(abs_path "${1:-dist/linux}")
+[ $# -gt 0 ] && shift
+[ $# -eq 0 ] && set -- $supported_linux
 
-"$script_dir/build-linux.sh" "$output_dir"
+if [ "${SKIP_BUILD:-0}" != 1 ]; then
+  "$repo_root/scripts/build-linux.sh" "$output_dir" "$@"
+fi
 
-for arch in amd64 arm64 loong64; do
-  stage="$output_dir/matrixclass-linux-$arch"
-  archive="$output_dir/matrixclass-linux-$arch.tar.gz"
-  rm -rf "$stage" "$archive"
+for arch in "$@"; do
+  stage_name="matrixclass-linux-$arch"
+  stage="$output_dir/$stage_name"
+  rm -rf "$stage" "$output_dir/$stage_name.tar.gz"
   mkdir -p "$stage"
-  cp "$output_dir/matrixclass-teacher-linux-$arch" "$stage/"
-  cp "$output_dir/matrixclass-student-linux-$arch" "$stage/"
-  cp "$repo_root/packaging/linux/matrixclass-teacher.desktop" "$stage/"
-  cp "$repo_root/packaging/linux/matrixclass-student.desktop" "$stage/"
-  cp "$repo_root/packaging/linux/matrixclass.svg" "$stage/"
-  cp "$repo_root/packaging/linux/matrixclass-teacher.service" "$stage/"
-  cp "$repo_root/packaging/linux/matrixclass-student.service" "$stage/"
-  cp "$repo_root/packaging/linux/install.sh" "$stage/"
-  cp "$repo_root/packaging/linux/uninstall.sh" "$stage/"
-  cp "$repo_root/packaging/linux/README.md" "$stage/"
-  tar -czf "$archive" -C "$output_dir" "matrixclass-linux-$arch"
+  cp "$output_dir/matrixclass-teacher-linux-$arch" "$output_dir/matrixclass-student-linux-$arch" "$stage/"
+  for f in matrixclass-teacher.desktop matrixclass-student.desktop matrixclass.svg \
+           matrixclass-teacher.service matrixclass-student.service install.sh uninstall.sh README.md; do
+    cp "$repo_root/packaging/linux/$f" "$stage/"
+  done
+  chmod 0755 "$stage/matrixclass-teacher-linux-$arch" "$stage/matrixclass-student-linux-$arch" "$stage/install.sh" "$stage/uninstall.sh"
+  make_archive "$output_dir/$stage_name.tar.gz" "$output_dir" "$stage_name"
 done
 
-printf 'Linux packages completed: amd64 arm64 loong64\n'
-
-if ! command -v dpkg-deb >/dev/null 2>&1; then
-  printf '%s\n' 'Skipping .deb generation: dpkg-deb is unavailable on this host.'
-fi
-if ! command -v rpmbuild >/dev/null 2>&1; then
-  printf '%s\n' 'Skipping .rpm generation: rpmbuild is unavailable on this host.'
-fi
+printf 'Linux packages completed: %s\n' "$*"
+command -v dpkg-deb >/dev/null 2>&1 || printf '%s\n' 'Note: dpkg-deb unavailable; .deb packages need scripts/build-linux-distro-packages.sh on a host with dpkg-deb.'
+command -v rpmbuild >/dev/null 2>&1 || printf '%s\n' 'Note: rpmbuild unavailable; .rpm packages need scripts/build-linux-distro-packages.sh on a host with rpmbuild.'

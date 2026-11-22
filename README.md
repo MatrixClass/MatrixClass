@@ -13,9 +13,9 @@
 # 全量单元测试与 KCP 端到端集成测试
 go test -tags mygo_nowebview ./...
 
-# 编译教师端与学生端（无 WebView 依赖）
-go build -tags mygo_nowebview -o dist/nexlab-teacher.exe ./cmd/teacher
-go build -tags mygo_nowebview -o dist/nexlab-student.exe ./cmd/student
+# 编译教师端与学生端（无 WebView 依赖；-H windowsgui 避免启动时弹出控制台黑框）
+go build -tags mygo_nowebview -ldflags "-H windowsgui" -o dist/nexlab-teacher.exe ./cmd/teacher
+go build -tags mygo_nowebview -ldflags "-H windowsgui" -o dist/nexlab-student.exe ./cmd/student
 
 # 本地预览界面（演示模式）
 .\dist\nexlab-teacher.exe --demo

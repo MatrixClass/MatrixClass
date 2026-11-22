@@ -563,19 +563,28 @@ func convertPCM16ToRender(pcm []byte, inRate, inCh int, dstFmt wasapiFormat) []b
 	if inFrames <= 0 {
 		return nil
 	}
+	if inRate < MinAudioSampleRate || inRate > MaxAudioSampleRate {
+		return nil
+	}
 	outFrames := inFrames
-	if dstFmt.SampleRate > 0 && inRate > 0 && dstFmt.SampleRate != inRate {
+	if dstFmt.SampleRate > 0 && dstFmt.SampleRate != inRate {
 		outFrames = int(int64(inFrames) * int64(dstFmt.SampleRate) / int64(inRate))
 		if outFrames <= 0 {
 			outFrames = 1
 		}
 	}
+	// Resampled frames beyond one second of render audio can never fit the
+	// render buffer; truncate before allocating rather than trusting the input size.
+	fullOutFrames := outFrames
+	if maxOut := maxInt(dstFmt.SampleRate, MaxAudioSampleRate); outFrames > maxOut {
+		outFrames = maxOut
+	}
 	outFrameBytes := dstFmt.Channels * (dstFmt.Bits / 8)
 	out := make([]byte, outFrames*outFrameBytes)
 	for of := 0; of < outFrames; of++ {
 		srcFrame := of
-		if dstFmt.SampleRate != inRate && outFrames > 0 {
-			srcFrame = (of * inFrames) / outFrames
+		if dstFmt.SampleRate != inRate && fullOutFrames > 0 {
+			srcFrame = int(int64(of) * int64(inFrames) / int64(fullOutFrames))
 			if srcFrame >= inFrames {
 				srcFrame = inFrames - 1
 			}

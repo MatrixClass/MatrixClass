@@ -5,13 +5,21 @@ package control
 import (
 	"context"
 	"errors"
+	"fmt"
+	"os"
 	"testing"
 )
 
 func TestDarwinProcessInspectorParsesPSOutput(t *testing.T) {
+	uid := os.Geteuid()
+	output := fmt.Sprintf("  101     1 %d /System/Library/WindowServer\n"+
+		"  202   101 %d /Applications/Demo App.app/Contents/MacOS/Demo\n"+
+		"  303     1 0 /usr/sbin/rootd\n"+
+		"  404    42 %d /bin/child\n", uid, uid, uid)
 	inspector := &darwinProcessInspector{
+		selfPID: 42,
 		command: func(context.Context, string, ...string) ([]byte, error) {
-			return []byte("101|WindowServer\n202|/Applications/Demo.app/Contents/MacOS/Demo\n"), nil
+			return []byte(output), nil
 		},
 	}
 	processes, err := inspector.ListProcesses()

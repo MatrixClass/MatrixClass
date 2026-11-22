@@ -16,6 +16,18 @@ const (
 	audioHdrSize = 36
 
 	audioFlagZstd uint8 = 1 << 0
+
+	// MinAudioSampleRate and MaxAudioSampleRate bound sample rates accepted from the network.
+	MinAudioSampleRate = 8000
+	MaxAudioSampleRate = 192000
+	// MaxAudioChannels bounds the channel count of an encoded audio frame.
+	MaxAudioChannels = 8
+	// maxAudioFrameSeconds bounds one packet to at most this many seconds of audio.
+	// Encoders produce 10-100ms packets (WASAPI 100ms buffer, Linux/synthetic 20ms).
+	maxAudioFrameSeconds = 1
+	maxAudioSampleCount  = MaxAudioSampleRate * maxAudioFrameSeconds
+	// maxAudioADPCMBytes is the largest legal ADPCM payload (4-byte header + nibbles per channel).
+	maxAudioADPCMBytes = MaxAudioChannels * (4 + maxAudioSampleCount/2)
 )
 
 var (
@@ -51,7 +63,7 @@ func NewAudioCodec() (*AudioCodec, error) {
 	if err != nil {
 		return nil, fmt.Errorf("media: init audio zstd encoder: %w", err)
 	}
-	dec, err := zstd.NewReader(nil)
+	dec, err := zstd.NewReader(nil, zstd.WithDecoderMaxMemory(maxAudioADPCMBytes))
 	if err != nil {
 		_ = enc.Close()
 		return nil, fmt.Errorf("media: init audio zstd decoder: %w", err)
@@ -88,6 +100,10 @@ func (c *AudioCodec) Encode(frame *core.AudioFrame) ([]byte, error) {
 	adpcm := encodeIMAADPCM(frame.Data, frame.Channels, sampleCount)
 
 	c.mu.Lock()
+	if c.enc == nil {
+		c.mu.Unlock()
+		return nil, ErrCodecClosed
+	}
 	compressed := c.enc.EncodeAll(adpcm, nil)
 	c.mu.Unlock()
 
@@ -125,12 +141,19 @@ func (c *AudioCodec) Decode(data []byte) (*core.AudioFrame, error) {
 	sampleCount := int(binary.LittleEndian.Uint32(data[28:32]))
 	pLen := int(binary.LittleEndian.Uint32(data[32:36]))
 
-	if channels <= 0 || channels > 8 || sampleRate <= 0 || pLen < 0 || len(data) < audioHdrSize+pLen {
+	if channels <= 0 || channels > MaxAudioChannels || sampleRate < MinAudioSampleRate || sampleRate > MaxAudioSampleRate || pLen < 0 || len(data) < audioHdrSize+pLen {
+		return nil, ErrInvalidAudioData
+	}
+	if sampleCount < 0 || sampleCount > sampleRate*maxAudioFrameSeconds {
 		return nil, ErrInvalidAudioData
 	}
 	payload := data[audioHdrSize : audioHdrSize+pLen]
 	if flags&audioFlagZstd != 0 {
 		c.mu.Lock()
+		if c.dec == nil {
+			c.mu.Unlock()
+			return nil, ErrCodecClosed
+		}
 		raw, err := c.dec.DecodeAll(payload, nil)
 		c.mu.Unlock()
 		if err != nil {

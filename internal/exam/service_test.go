@@ -111,3 +111,61 @@ func TestImportExportJSONAndCSV(t *testing.T) {
 		t.Fatalf("ExportResultsJSON failed: %v", err)
 	}
 }
+
+func TestRedactedPaperClearsAnswersWithoutMutatingSource(t *testing.T) {
+	paper := samplePaper()
+	red := RedactedPaper(paper)
+	for _, q := range red.Questions {
+		if len(q.Answer) != 0 {
+			t.Fatalf("question %s still has answer %v", q.ID, q.Answer)
+		}
+	}
+	if len(paper.Questions[0].Answer) == 0 {
+		t.Fatalf("source paper was mutated")
+	}
+	red.Questions[0].Options[0] = "changed"
+	if paper.Questions[0].Options[0] == "changed" {
+		t.Fatalf("redacted paper shares option slice with source")
+	}
+	data, _ := json.Marshal(red)
+	if strings.Contains(string(data), `"answer"`) {
+		t.Fatalf("redacted JSON still contains answers: %s", data)
+	}
+}
+
+func TestEssayScoresIgnoredFromPeerAndRestorable(t *testing.T) {
+	svc := NewService()
+	svc.PublishPaper(samplePaper())
+	sub := svc.SubmitAnswer(core.ExamSubmission{
+		PaperID:     "paper-1",
+		StudentID:   "stu-1",
+		Answers:     map[string][]string{"q1": {"UDP"}, "q4": {"text"}},
+		EssayScores: map[string]int{"q4": 30},
+	})
+	if sub.Score != 20 || sub.EssayScores != nil {
+		t.Fatalf("peer essay scores must be ignored, got score=%d essay=%v", sub.Score, sub.EssayScores)
+	}
+	graded, err := svc.GradeEssay("paper-1", "stu-1", "q4", 25)
+	if err != nil {
+		t.Fatalf("GradeEssay: %v", err)
+	}
+	if graded.Score != 45 || graded.EssayScores["q4"] != 25 {
+		t.Fatalf("unexpected graded submission: %+v", graded)
+	}
+
+	// Simulate reload from persistence into a fresh service.
+	fresh := NewService()
+	fresh.PublishPaper(samplePaper())
+	restored := fresh.RestoreSubmission(graded)
+	if restored.Score != 45 || restored.EssayScores["q4"] != 25 {
+		t.Fatalf("restore lost essay scores: %+v", restored)
+	}
+	if got := fresh.EssayScores("paper-1", "stu-1"); got["q4"] != 25 {
+		t.Fatalf("EssayScores accessor: %v", got)
+	}
+	// A later resubmission keeps the teacher-side essay score.
+	again := fresh.SubmitAnswer(core.ExamSubmission{PaperID: "paper-1", StudentID: "stu-1", Answers: map[string][]string{"q4": {"x"}}})
+	if again.Score != 25 {
+		t.Fatalf("expected essay score retained, got %d", again.Score)
+	}
+}

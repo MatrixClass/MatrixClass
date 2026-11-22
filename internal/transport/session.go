@@ -24,6 +24,9 @@ const (
 	defaultKCPSndWnd   = 1024
 	defaultKCPRcvWnd   = 1024
 	defaultKCPInterval = 10
+	// kcpTombstoneTTL is how long a closed raddr#conv key is refused so late
+	// or retransmitted packets of a dead connection cannot resurrect it.
+	kcpTombstoneTTL    = 5 * time.Second
 	streamTagEnvelope  = byte(0xFE)
 	streamTagMediaEnv  = byte(0xFD)
 	ctrlWriteTimeout   = 1500 * time.Millisecond
@@ -33,10 +36,10 @@ const (
 )
 
 var (
-	ErrConnClosed    = errors.New("transport: connection closed")
+	ErrConnClosed     = errors.New("transport: connection closed")
 	ErrListenerClosed = errors.New("transport: listener closed")
-	ErrReadTimeout   = &netTimeoutError{msg: "i/o timeout"}
-	ErrWriteTimeout  = &netTimeoutError{msg: "i/o timeout"}
+	ErrReadTimeout    = &netTimeoutError{msg: "i/o timeout"}
+	ErrWriteTimeout   = &netTimeoutError{msg: "i/o timeout"}
 )
 
 type netTimeoutError struct {
@@ -194,6 +197,11 @@ func (c *KCPConn) input(pkt []byte) error {
 		}
 		pkt = dec
 	}
+	return c.inputPlain(pkt)
+}
+
+// inputPlain feeds an already-decrypted datagram into the KCP state machine.
+func (c *KCPConn) inputPlain(pkt []byte) error {
 	if err := c.kcp.Input(pkt); err != nil {
 		return err
 	}
@@ -354,13 +362,15 @@ func (c *KCPConn) Stats() KCPStats {
 
 // KCPListener accepts incoming KCP connections multiplexed over a single UDP socket.
 type KCPListener struct {
-	udpConn  net.PacketConn
-	cfg      KCPConfig
-	mu       sync.Mutex
-	sessions map[string]*KCPConn
-	acceptCh chan *KCPConn
-	done     chan struct{}
-	closed   bool
+	udpConn    net.PacketConn
+	cfg        KCPConfig
+	mu         sync.Mutex
+	sessions   map[string]*KCPConn
+	tombstones map[string]time.Time
+	lastSweep  time.Time
+	acceptCh   chan *KCPConn
+	done       chan struct{}
+	closed     bool
 }
 
 func ListenKCP(addr string, cfg KCPConfig) (*KCPListener, error) {
@@ -373,11 +383,12 @@ func ListenKCP(addr string, cfg KCPConfig) (*KCPListener, error) {
 
 func ServeKCP(pc net.PacketConn, cfg KCPConfig) *KCPListener {
 	l := &KCPListener{
-		udpConn:  pc,
-		cfg:      cfg,
-		sessions: make(map[string]*KCPConn),
-		acceptCh: make(chan *KCPConn, 128),
-		done:     make(chan struct{}),
+		udpConn:    pc,
+		cfg:        cfg,
+		sessions:   make(map[string]*KCPConn),
+		tombstones: make(map[string]time.Time),
+		acceptCh:   make(chan *KCPConn, 128),
+		done:       make(chan struct{}),
 	}
 	go l.readLoop()
 	return l
@@ -419,26 +430,39 @@ func (l *KCPListener) readLoop() {
 		}
 		conn, exists := l.sessions[key]
 		if !exists {
+			now := time.Now()
+			l.sweepTombstonesLocked(now)
+			if until, dead := l.tombstones[key]; dead && now.Before(until) {
+				l.mu.Unlock()
+				continue
+			}
+			if !isInitialKCPSegment(plain, conv) {
+				// Only a connection's first PUSH may create a session; stray
+				// packets (e.g. for a pre-restart connection) are dropped.
+				l.mu.Unlock()
+				continue
+			}
 			connCfg := l.cfg
 			connCfg.Cipher = l.cfg.Cipher
-			conn = newKCPConn(conv, l.udpConn, raddr, false, connCfg, func() {
+			var created *KCPConn
+			created = newKCPConn(conv, l.udpConn, raddr, false, connCfg, func() {
 				l.mu.Lock()
-				delete(l.sessions, key)
+				if l.sessions[key] == created {
+					delete(l.sessions, key)
+				}
+				if !l.closed {
+					l.tombstones[key] = time.Now().Add(kcpTombstoneTTL)
+				}
 				l.mu.Unlock()
 			})
+			conn = created
 			l.sessions[key] = conn
 			l.mu.Unlock()
 
 			// Feed first packet before queuing so KCP state initializes.
-			if l.cfg.Cipher != nil {
-				_ = conn.kcp.Input(plain)
-				if conn.kcp.PeekSize() >= 0 {
-					signalChan(conn.chReadEvent)
-				}
-				signalChan(conn.chWriteEvent)
-				signalChan(conn.chUpdate)
-			} else {
-				_ = conn.input(pkt)
+			if err := conn.inputPlain(plain); err != nil {
+				_ = conn.Close()
+				continue
 			}
 
 			select {
@@ -446,20 +470,49 @@ func (l *KCPListener) readLoop() {
 			case <-l.done:
 				_ = conn.Close()
 				return
+			default:
+				// Accept backlog full: never stall the shared read loop.
+				_ = conn.Close()
 			}
 			continue
 		}
 		l.mu.Unlock()
 
-		if l.cfg.Cipher != nil {
-			_ = conn.kcp.Input(plain)
-			if conn.kcp.PeekSize() >= 0 {
-				signalChan(conn.chReadEvent)
-			}
-			signalChan(conn.chWriteEvent)
-			signalChan(conn.chUpdate)
-		} else {
-			_ = conn.input(pkt)
+		_ = conn.inputPlain(plain)
+	}
+}
+
+// isInitialKCPSegment reports whether a decrypted datagram carries the first
+// data segment of a new connection (PUSH with sn == 0 for conv).
+func isInitialKCPSegment(data []byte, conv uint32) bool {
+	offset := 0
+	for len(data)-offset >= int(IKCP_OVERHEAD) {
+		if binary.LittleEndian.Uint32(data[offset:offset+4]) != conv {
+			return false
+		}
+		cmd := data[offset+4]
+		sn := binary.LittleEndian.Uint32(data[offset+12 : offset+16])
+		length := int(binary.LittleEndian.Uint32(data[offset+20 : offset+24]))
+		offset += int(IKCP_OVERHEAD)
+		if length < 0 || len(data)-offset < length {
+			return false
+		}
+		if cmd == IKCP_CMD_PUSH && sn == 0 {
+			return true
+		}
+		offset += length
+	}
+	return false
+}
+
+func (l *KCPListener) sweepTombstonesLocked(now time.Time) {
+	if len(l.tombstones) == 0 || now.Sub(l.lastSweep) < time.Second {
+		return
+	}
+	l.lastSweep = now
+	for key, until := range l.tombstones {
+		if !now.Before(until) {
+			delete(l.tombstones, key)
 		}
 	}
 }
@@ -556,7 +609,10 @@ type SmuxSession struct {
 	mux        *smux.Session
 	onEnvelope func(core.Session, protocol.Envelope)
 	onStream   func(core.Session, protocol.StreamKind, io.ReadWriteCloser)
-	onClose    func(core.Session)
+
+	closeMu      sync.Mutex
+	onClose      func(core.Session)
+	onCloseFired bool
 
 	ctrlMu      sync.Mutex
 	ctrlStream  *smux.Stream
@@ -615,8 +671,29 @@ func (s *SmuxSession) SetOnStream(fn func(core.Session, protocol.StreamKind, io.
 	s.onStream = fn
 }
 
+// SetOnClose registers fn to run once when the session closes. If the session
+// already closed (for example its background loops failed before the caller
+// got a chance to register), fn is invoked immediately.
 func (s *SmuxSession) SetOnClose(fn func(core.Session)) {
+	s.closeMu.Lock()
+	if s.onCloseFired {
+		s.closeMu.Unlock()
+		if fn != nil {
+			fn(s)
+		}
+		return
+	}
 	s.onClose = fn
+	s.closeMu.Unlock()
+}
+
+func (s *SmuxSession) isClosed() bool {
+	select {
+	case <-s.done:
+		return true
+	default:
+		return false
+	}
 }
 
 func (s *SmuxSession) ID() string {
@@ -874,8 +951,13 @@ func (s *SmuxSession) Close() error {
 		if s.conn != nil {
 			_ = s.conn.Close()
 		}
-		if s.onClose != nil {
-			s.onClose(s)
+		s.closeMu.Lock()
+		s.onCloseFired = true
+		onClose := s.onClose
+		s.onClose = nil
+		s.closeMu.Unlock()
+		if onClose != nil {
+			onClose(s)
 		}
 	})
 	return err

@@ -33,6 +33,16 @@ type OverlayHooks struct {
 	OnUpdate func(message string)
 }
 
+// DefaultLockDisconnectTimeout is applied when LockOptions.DisconnectTimeout is
+// zero so a locked student cannot stay locked forever after the teacher
+// disappears. The teacher pings every few seconds, so this leaves a wide margin.
+// Pass a negative DisconnectTimeout to disable the auto-unlock explicitly.
+const DefaultLockDisconnectTimeout = 2 * time.Minute
+
+// UnlockReasonDisconnectTimeout is reported in LockState.UnlockReason when the
+// lock is released because no teacher heartbeat arrived within the timeout.
+const UnlockReasonDisconnectTimeout = "disconnect_timeout"
+
 type LockOptions struct {
 	Backend           LockBackend
 	Overlays          OverlayHooks
@@ -55,6 +65,7 @@ type ScreenLockController struct {
 	hasEmergencyPass  bool
 	disconnectTimeout time.Duration
 	timer             *time.Timer
+	timerGen          uint64
 	onStateChange     func(LockState)
 	nowFn             func() time.Time
 	closed            bool
@@ -73,9 +84,13 @@ func NewScreenLockController(opts LockOptions) *ScreenLockController {
 	if nowFn == nil {
 		nowFn = time.Now
 	}
+	disconnectTimeout := opts.DisconnectTimeout
+	if disconnectTimeout == 0 {
+		disconnectTimeout = DefaultLockDisconnectTimeout
+	}
 	c := &ScreenLockController{
 		backend:           backend,
-		disconnectTimeout: opts.DisconnectTimeout,
+		disconnectTimeout: disconnectTimeout,
 		onStateChange:     opts.OnStateChange,
 		nowFn:             nowFn,
 		lastHeartbeat:     nowFn(),
@@ -233,8 +248,16 @@ func (c *ScreenLockController) CheckDisconnectTimeout() bool {
 		c.mu.Unlock()
 		return false
 	}
-	_ = c.unlockWithReason("disconnect_timeout")
+	_ = c.unlockWithReason(UnlockReasonDisconnectTimeout)
 	return true
+}
+
+// SetOnStateChange replaces the state-change callback (invoked after lock,
+// teacher unlock, emergency unlock and disconnect-timeout unlock).
+func (c *ScreenLockController) SetOnStateChange(cb func(LockState)) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.onStateChange = cb
 }
 
 func (c *ScreenLockController) State() LockState {
@@ -278,13 +301,38 @@ func (c *ScreenLockController) resetTimerLocked() {
 	if c.disconnectTimeout <= 0 || c.closed {
 		return
 	}
-	timeout := c.disconnectTimeout
-	c.timer = time.AfterFunc(timeout, func() {
-		c.CheckDisconnectTimeout()
+	c.armTimerLocked(c.disconnectTimeout, c.timerGen)
+}
+
+func (c *ScreenLockController) armTimerLocked(after time.Duration, gen uint64) {
+	c.timer = time.AfterFunc(after, func() {
+		c.onDisconnectTimer(gen)
 	})
 }
 
+// onDisconnectTimer unlocks when the heartbeat is stale, or re-arms the timer for
+// the remaining time (e.g. when an injected clock lags real time) so the
+// auto-unlock can never be silently dropped while locked.
+func (c *ScreenLockController) onDisconnectTimer(gen uint64) {
+	c.mu.Lock()
+	if gen != c.timerGen || !c.locked || c.closed || c.disconnectTimeout <= 0 {
+		c.mu.Unlock()
+		return
+	}
+	remaining := c.disconnectTimeout - c.nowFn().Sub(c.lastHeartbeat)
+	if remaining > 0 {
+		if remaining < 10*time.Millisecond {
+			remaining = 10 * time.Millisecond
+		}
+		c.armTimerLocked(remaining, gen)
+		c.mu.Unlock()
+		return
+	}
+	_ = c.unlockWithReason(UnlockReasonDisconnectTimeout)
+}
+
 func (c *ScreenLockController) stopTimerLocked() {
+	c.timerGen++
 	if c.timer != nil {
 		c.timer.Stop()
 		c.timer = nil

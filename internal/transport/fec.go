@@ -18,6 +18,13 @@ const (
 	fecHeaderSize  = 12
 	fecMagic       = uint16(0x4643) // "FC"
 	fecMaxShardLen = 64 * 1024
+	// fecMaxShards matches the GF(2^8) Reed-Solomon limit; larger stripes are
+	// never produced by this package and are rejected on decode.
+	fecMaxShards = 256
+	// fecMaxGroups bounds the number of in-flight groups a decoder tracks.
+	fecMaxGroups = 256
+	// fecMaxCodecs bounds the cached Reed-Solomon codecs per decoder.
+	fecMaxCodecs = 16
 )
 
 var (
@@ -112,7 +119,7 @@ func DecodeFECPacket(raw []byte) (FECPacket, error) {
 		Payload: make([]byte, len(raw)-fecHeaderSize),
 	}
 	copy(p.Payload, raw[fecHeaderSize:])
-	if p.Total == 0 || p.DataNum == 0 || p.DataNum > p.Total || p.Index >= p.Total {
+	if p.Total == 0 || p.Total > fecMaxShards || p.DataNum == 0 || p.DataNum > p.Total || p.Index >= p.Total {
 		return FECPacket{}, ErrFECInvalidPacket
 	}
 	return p, nil
@@ -289,6 +296,9 @@ func (d *FECDecoder) getCodec(dataNum, parityNum int) (reedsolomon.Encoder, erro
 	if err != nil {
 		return nil, err
 	}
+	if len(d.codecs) >= fecMaxCodecs {
+		d.codecs = make(map[uint32]reedsolomon.Encoder)
+	}
 	d.codecs[key] = enc
 	return enc, nil
 }
@@ -312,6 +322,52 @@ func (d *FECDecoder) gcLocked(now time.Time) {
 	}
 }
 
+// groupForPacketLocked returns the group pkt belongs to, creating it (and
+// evicting old groups when at capacity) if needed. Packets whose Total or
+// DataNum disagree with the group's first packet are rejected.
+func (d *FECDecoder) groupForPacketLocked(pkt FECPacket, now time.Time) (*fecGroup, error) {
+	grp, ok := d.groups[pkt.GroupID]
+	if !ok {
+		if len(d.groups) >= fecMaxGroups {
+			d.evictGroupLocked()
+		}
+		grp = &fecGroup{
+			shards:     make([][]byte, pkt.Total),
+			dataNum:    int(pkt.DataNum),
+			total:      int(pkt.Total),
+			shardLen:   len(pkt.Payload),
+			lastActive: now,
+		}
+		d.groups[pkt.GroupID] = grp
+	}
+	grp.lastActive = now
+	if grp.completed {
+		return grp, nil
+	}
+	if int(pkt.Total) != grp.total || int(pkt.DataNum) != grp.dataNum || int(pkt.Index) >= len(grp.shards) {
+		return nil, ErrFECInvalidPacket
+	}
+	return grp, nil
+}
+
+// evictGroupLocked drops completed groups, or the least recently active one.
+func (d *FECDecoder) evictGroupLocked() {
+	var oldestID uint32
+	var oldest *fecGroup
+	for id, g := range d.groups {
+		if g.completed {
+			delete(d.groups, id)
+			continue
+		}
+		if oldest == nil || g.lastActive.Before(oldest.lastActive) {
+			oldestID, oldest = id, g
+		}
+	}
+	if len(d.groups) >= fecMaxGroups && oldest != nil {
+		delete(d.groups, oldestID)
+	}
+}
+
 // DecodeBlock feeds one raw wired FEC packet and returns the reconstructed block payload once ready.
 func (d *FECDecoder) DecodeBlock(raw []byte) ([]byte, bool, error) {
 	pkt, err := DecodeFECPacket(raw)
@@ -325,23 +381,12 @@ func (d *FECDecoder) DecodeBlock(raw []byte) ([]byte, bool, error) {
 	now := time.Now()
 	d.gcLocked(now)
 
-	grp, ok := d.groups[pkt.GroupID]
-	if !ok {
-		grp = &fecGroup{
-			shards:     make([][]byte, pkt.Total),
-			dataNum:    int(pkt.DataNum),
-			total:      int(pkt.Total),
-			shardLen:   len(pkt.Payload),
-			lastActive: now,
-		}
-		d.groups[pkt.GroupID] = grp
+	grp, err := d.groupForPacketLocked(pkt, now)
+	if err != nil {
+		return nil, false, err
 	}
-	grp.lastActive = now
 	if grp.completed {
 		return nil, false, nil
-	}
-	if int(pkt.Total) != grp.total || int(pkt.DataNum) != grp.dataNum {
-		return nil, false, ErrFECInvalidPacket
 	}
 	if len(pkt.Payload) > grp.shardLen {
 		grp.shardLen = len(pkt.Payload)
@@ -419,18 +464,10 @@ func (d *FECDecoder) DecodeStreamPacket(raw []byte) ([][]byte, error) {
 	now := time.Now()
 	d.gcLocked(now)
 
-	grp, ok := d.groups[pkt.GroupID]
-	if !ok {
-		grp = &fecGroup{
-			shards:     make([][]byte, pkt.Total),
-			dataNum:    int(pkt.DataNum),
-			total:      int(pkt.Total),
-			shardLen:   len(pkt.Payload),
-			lastActive: now,
-		}
-		d.groups[pkt.GroupID] = grp
+	grp, err := d.groupForPacketLocked(pkt, now)
+	if err != nil {
+		return nil, err
 	}
-	grp.lastActive = now
 	if grp.completed {
 		return nil, nil
 	}

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -135,7 +136,9 @@ func (s *Service) LaunchApp(ctx context.Context, req AppLaunchRequest, apps []Ap
 		return result
 	}
 	if !isCommandName(executable) {
-		if info, err := os.Stat(executable); err != nil || info.IsDir() {
+		// A directory is only acceptable when it is a macOS .app bundle, which
+		// the darwin launcher opens through LaunchServices.
+		if info, err := os.Stat(executable); err != nil || (info.IsDir() && (runtime.GOOS != "darwin" || !isAppBundlePath(executable))) {
 			result.Error = ErrInvalidExecutable.Error()
 			result.FinishedAt = time.Now()
 			return result

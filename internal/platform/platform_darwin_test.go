@@ -44,3 +44,19 @@ func TestDarwinPermissionStatusIsKnown(t *testing.T) {
 		}
 	}
 }
+
+func TestDarwinDetectReportsVersionAndArchitecture(t *testing.T) {
+	capabilities := Detect()
+	if capabilities.OSVersion == "" {
+		t.Fatal("expected macOS product version from kern.osproductversion")
+	}
+	if capabilities.HostArchitecture == "" {
+		t.Fatal("expected host architecture")
+	}
+	if capabilities.Translated && (capabilities.Architecture != "amd64" || capabilities.HostArchitecture != "arm64") {
+		t.Fatalf("inconsistent Rosetta report: %+v", capabilities)
+	}
+	if PreferredLogDir() == "" || PreferredDataDir() == "" {
+		t.Fatal("expected macOS preferred directories")
+	}
+}

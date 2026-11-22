@@ -9,15 +9,36 @@ import (
 	"nexlab/internal/core"
 )
 
-func TestDarwinScreenCaptureDoesNotPretendToBeNative(t *testing.T) {
+// These tests run on real Macs (CI runners and developer machines) where
+// Screen Recording / Microphone access may or may not be granted. They assert
+// consistent behaviour for either outcome and never construct a native
+// capturer without permission, because that would show a system prompt.
+
+func TestDarwinScreenCaptureNeverFakesFrames(t *testing.T) {
+	backend, probeErr := DarwinScreenCaptureProbe()
+	if probeErr != nil {
+		if !errors.Is(probeErr, ErrDarwinScreenCaptureUnavailable) {
+			t.Fatalf("probe error must wrap ErrDarwinScreenCaptureUnavailable, got %v", probeErr)
+		}
+		if backend == CaptureBackendSynthetic {
+			t.Fatalf("unavailable capture must not report a synthetic backend")
+		}
+		return
+	}
+	if !DarwinScreenCapturePermissionGranted() {
+		t.Skip("screen recording permission not granted; skipping native capture to avoid a prompt")
+	}
 	capturer := NewScreenCapturer(CaptureOptions{Width: 320, Height: 180})
 	defer capturer.Close()
-
-	if capturer.Backend() != CaptureBackendUnavailable {
-		t.Fatalf("expected unavailable backend without native bridge, got %q", capturer.Backend())
+	if got := capturer.Backend(); got != darwinScreenCaptureBackendSCK && got != darwinScreenCaptureBackendCG {
+		t.Fatalf("expected a native macOS backend, got %q", got)
 	}
-	if _, err := capturer.CaptureScreen(); !errors.Is(err, ErrDarwinScreenCaptureUnavailable) {
-		t.Fatalf("expected Darwin ScreenCaptureKit error, got %v", err)
+	frame, err := capturer.CaptureScreen()
+	if err != nil {
+		t.Fatalf("native capture failed with permission granted: %v", err)
+	}
+	if frame == nil || frame.Width <= 0 || frame.Height <= 0 || len(frame.Data) < frame.Width*frame.Height*4 {
+		t.Fatalf("invalid native frame: %+v", frame)
 	}
 }
 
@@ -33,17 +54,32 @@ func TestDarwinSyntheticCaptureRequiresExplicitOptIn(t *testing.T) {
 	}
 }
 
-func TestDarwinMediaCapabilitiesExposeMissingNativePermissions(t *testing.T) {
+func TestDarwinMediaCapabilitiesAreConsistent(t *testing.T) {
 	status := DarwinMediaCapabilities()
-	if status.ScreenCaptureAvailable || !errors.Is(status.ScreenCaptureError, ErrDarwinScreenCaptureUnavailable) {
-		t.Fatalf("unexpected screen capability status: %+v", status)
+	if status.ScreenCaptureAvailable != (status.ScreenCaptureError == nil) {
+		t.Fatalf("screen availability must match its error: %+v", status)
 	}
-	if status.CoreAudioAvailable || !errors.Is(status.CoreAudioError, ErrDarwinCoreAudioUnavailable) {
-		t.Fatalf("unexpected CoreAudio capability status: %+v", status)
+	if status.ScreenCaptureError != nil && !errors.Is(status.ScreenCaptureError, ErrDarwinScreenCaptureUnavailable) {
+		t.Fatalf("unexpected screen capture error: %v", status.ScreenCaptureError)
+	}
+	if status.CoreAudioAvailable != (status.CoreAudioError == nil) {
+		t.Fatalf("CoreAudio availability must match its error: %+v", status)
+	}
+	if status.MicrophonePermissionError != nil && !errors.Is(status.MicrophonePermissionError, ErrDarwinCoreAudioPermission) {
+		t.Fatalf("unexpected microphone permission error: %v", status.MicrophonePermissionError)
+	}
+	if status.AudioDeviceError != nil && !errors.Is(status.AudioDeviceError, ErrDarwinAudioDeviceUnavailable) {
+		t.Fatalf("unexpected audio device error: %v", status.AudioDeviceError)
+	}
+	if status.CoreAudioFramework == "" || status.AudioToolboxFramework == "" {
+		t.Fatalf("expected native framework paths: %+v", status)
 	}
 }
 
 func TestDarwinScreenCaptureStreamReportsLifecycleAndReconnectState(t *testing.T) {
+	if _, err := DarwinScreenCaptureProbe(); err == nil {
+		t.Skip("capture available on this Mac; lifecycle-unavailable path not reachable")
+	}
 	stream := NewDarwinScreenCaptureStream(CaptureOptions{Width: 320, Height: 180})
 	if stream == nil {
 		t.Fatal("expected Darwin screen capture stream")
@@ -78,8 +114,10 @@ func TestDarwinScreenCaptureStreamCloseIsIdempotent(t *testing.T) {
 	}
 }
 
-func TestDarwinAudioReportsUnavailableInsteadOfGeneratingSilence(t *testing.T) {
-	audio := NewAudioEngine()
+// The fallback used when AudioToolbox/CoreAudio can't be loaded must report
+// errors instead of generating silence.
+func TestDarwinUnavailableAudioFallbackReportsErrors(t *testing.T) {
+	audio := newDarwinAudioEngine(&darwinAudioUnavailableBridge{})
 	defer audio.Close()
 
 	if err := audio.StartCapture(false, func(*core.AudioFrame) {}); !errors.Is(err, ErrDarwinCoreAudioUnavailable) {
@@ -93,6 +131,18 @@ func TestDarwinAudioReportsUnavailableInsteadOfGeneratingSilence(t *testing.T) {
 	}
 	if err := audio.Restart(); !errors.Is(err, ErrDarwinCoreAudioUnavailable) {
 		t.Fatalf("expected unavailable restart error, got %v", err)
+	}
+}
+
+func TestDarwinAudioLoopbackIsExplicitlyUnsupported(t *testing.T) {
+	status := DarwinMediaCapabilities()
+	if !status.CoreAudioAvailable {
+		t.Skip("CoreAudio not available on this machine")
+	}
+	audio := NewAudioEngine()
+	defer audio.Close()
+	if err := audio.StartCapture(true, func(*core.AudioFrame) {}); !errors.Is(err, ErrDarwinAudioLoopbackUnavailable) {
+		t.Fatalf("expected loopback unavailable error, got %v", err)
 	}
 }
 
@@ -156,18 +206,5 @@ func TestDarwinAudioBridgeReceivesLifecycleAndVolumeCalls(t *testing.T) {
 	}
 	if !bridge.startLoopback || bridge.startCallback == nil || bridge.playVolume != 0.35 || !bridge.refreshed || !bridge.restarted || !bridge.closed {
 		t.Fatalf("unexpected bridge calls: %+v", bridge)
-	}
-}
-
-func TestDarwinMediaCapabilitiesExposeAudioBridgeBoundaries(t *testing.T) {
-	status := DarwinMediaCapabilities()
-	if !errors.Is(status.MicrophonePermissionError, ErrDarwinCoreAudioPermission) {
-		t.Fatalf("unexpected microphone permission error: %v", status.MicrophonePermissionError)
-	}
-	if !errors.Is(status.AudioDeviceError, ErrDarwinAudioDeviceUnavailable) {
-		t.Fatalf("unexpected audio device error: %v", status.AudioDeviceError)
-	}
-	if status.CoreAudioFramework == "" || status.AudioToolboxFramework == "" {
-		t.Fatalf("expected native framework paths: %+v", status)
 	}
 }

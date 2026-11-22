@@ -29,6 +29,7 @@ type Logger struct {
 	date     string
 	index    int
 	bytes    int64
+	closed   bool
 }
 
 func New(cfg Config) (*Logger, error) {
@@ -68,6 +69,9 @@ func (l *Logger) openLocked(now time.Time) error {
 		_ = l.file.Close()
 		l.file = nil
 	}
+	if l.date != date {
+		l.index = 0
+	}
 	l.date = date
 	for {
 		name := fmt.Sprintf("%s-%s.log", l.role, date)
@@ -97,6 +101,9 @@ func (l *Logger) openLocked(now time.Time) error {
 func (l *Logger) Write(p []byte) (int, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	if l.closed {
+		return 0, os.ErrClosed
+	}
 	if err := l.openLocked(l.now()); err != nil {
 		return 0, err
 	}
@@ -129,6 +136,7 @@ func (l *Logger) CurrentPath() string {
 func (l *Logger) Close() error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	l.closed = true
 	if l.file == nil {
 		return nil
 	}

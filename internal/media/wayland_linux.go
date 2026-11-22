@@ -3,127 +3,76 @@
 package media
 
 import (
-	"errors"
-	"sync"
+	"fmt"
+	"os"
+
+	"nexlab/internal/core"
 )
 
-var (
-	ErrWaylandPortalUnavailable = errors.New("media: Wayland desktop portal is unavailable")
-	ErrWaylandPortalPermission = errors.New("media: Wayland screen capture permission was denied")
-	ErrWaylandPortalCancelled = errors.New("media: Wayland screen capture authorization was cancelled")
-	ErrWaylandPipeWireDisconnected = errors.New("media: Wayland PipeWire stream is disconnected")
-)
-
-type WaylandCaptureState string
-
-const (
-	WaylandCaptureUnavailable WaylandCaptureState = "unavailable"
-	WaylandCaptureAuthorizing WaylandCaptureState = "authorizing"
-	WaylandCaptureRunning     WaylandCaptureState = "running"
-	WaylandCaptureReconnecting WaylandCaptureState = "reconnecting"
-	WaylandCaptureStopped     WaylandCaptureState = "stopped"
-)
-
-// WaylandCaptureStatus describes the Portal/PipeWire boundary without
-// pretending that a stream exists when the native bridge is not present.
-type WaylandCaptureStatus struct {
-	State       WaylandCaptureState
-	LastError   error
-	Reconnects  uint64
-	Authorized  bool
-	Connected   bool
+// waylandPortalCapture is the Wayland nativeScreenCapture: xdg-desktop-portal
+// ScreenCast authorization + PipeWire frames (portal_linux.go,
+// pipewire_linux.go), supervised by waylandSupervisor (portal_linux_api.go).
+// Authorization starts lazily on the first Capture (or an explicit
+// RetryWaylandAuthorization) and never blocks the caller.
+type waylandPortalCapture struct {
+	sup *waylandSupervisor
 }
 
-type waylandCaptureSession struct {
-	mu sync.Mutex
-	status WaylandCaptureStatus
+// newWaylandCapture is the Wayland entry point for newNativeScreenCapture.
+func newWaylandCapture(opts CaptureOptions) nativeScreenCapture {
+	return newWaylandPortalCapture(opts)
 }
 
-var waylandSessions sync.Map
+func newWaylandPortalCapture(CaptureOptions) *waylandPortalCapture {
+	var tokens waylandTokenStore
+	if path, err := portalRestoreTokenPath(); err == nil {
+		tokens = portalFileTokenStore{path: path}
+	}
+	allowScreenshot := os.Getenv("MATRIXCLASS_WAYLAND_SCREENSHOT_FALLBACK") != "0"
+	return &waylandPortalCapture{sup: newWaylandSupervisor(waylandPortalDriver{}, tokens, waylandDefaultTiming, allowScreenshot)}
+}
 
-func waylandSession(c *waylandCapture) *waylandCaptureSession {
+func (w *waylandPortalCapture) Backend() CaptureBackend { return CaptureBackendWayland }
+
+// Capture returns the newest real frame. While authorization is pending, was
+// cancelled/denied, or the stream is reconnecting it returns an error wrapping
+// both ErrScreenCaptureUnavailable and the specific ErrWayland* cause.
+func (w *waylandPortalCapture) Capture(maxW, maxH int, withNV12 bool) (*core.VideoFrame, bool, error) {
+	if w == nil || w.sup == nil {
+		return nil, false, fmt.Errorf("%w: %w", ErrScreenCaptureUnavailable, ErrWaylandCaptureClosed)
+	}
+	frame, changed, err := w.sup.capture(maxW, maxH, withNV12)
+	if err != nil {
+		return nil, false, fmt.Errorf("%w: %w", ErrScreenCaptureUnavailable, err)
+	}
+	return frame, changed, nil
+}
+
+// Close ends the portal session, destroys the PipeWire stream and stops the
+// loop thread. It is idempotent.
+func (w *waylandPortalCapture) Close() error {
+	if w == nil || w.sup == nil {
+		return nil
+	}
+	return w.sup.close()
+}
+
+func (w *waylandPortalCapture) WaylandCaptureStatus() WaylandCaptureStatus {
+	return w.sup.WaylandCaptureStatus()
+}
+
+func (w *waylandPortalCapture) RetryWaylandAuthorization() error {
+	return w.sup.RetryWaylandAuthorization()
+}
+
+func waylandControllerOf(c *ScreenCapturer) waylandController {
 	if c == nil {
 		return nil
 	}
-	if existing, ok := waylandSessions.Load(c); ok {
-		return existing.(*waylandCaptureSession)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if w, ok := c.native.(*waylandPortalCapture); ok && w != nil {
+		return w
 	}
-	session := &waylandCaptureSession{status: WaylandCaptureStatus{State: WaylandCaptureUnavailable, LastError: ErrWaylandPortalUnavailable}}
-	actual, _ := waylandSessions.LoadOrStore(c, session)
-	return actual.(*waylandCaptureSession)
+	return nil
 }
-
-// StartWaylandCapture begins the authorization boundary. The actual DBus
-// Portal/PipeWire bridge is intentionally not claimed until implemented.
-func (w *waylandCapture) StartWaylandCapture() error {
-	session := waylandSession(w)
-	if session == nil {
-		return ErrWaylandPortalUnavailable
-	}
-	session.mu.Lock()
-	defer session.mu.Unlock()
-	session.status.State = WaylandCaptureAuthorizing
-	session.status.Authorized = false
-	session.status.Connected = false
-	session.status.LastError = ErrWaylandPortalUnavailable
-	return ErrWaylandPortalUnavailable
-}
-
-// AuthorizeWaylandCapture records the Portal result. Successful authorization
-// still requires the native PipeWire bridge before frames can be emitted.
-func (w *waylandCapture) AuthorizeWaylandCapture(authorized bool) error {
-	session := waylandSession(w)
-	if session == nil {
-		return ErrWaylandPortalUnavailable
-	}
-	session.mu.Lock()
-	defer session.mu.Unlock()
-	if !authorized {
-		session.status.State = WaylandCaptureStopped
-		session.status.LastError = ErrWaylandPortalCancelled
-		return ErrWaylandPortalCancelled
-	}
-	session.status.Authorized = true
-	session.status.Connected = false
-	session.status.State = WaylandCaptureUnavailable
-	session.status.LastError = ErrWaylandPipeWireDisconnected
-	return ErrWaylandPipeWireDisconnected
-}
-
-func (w *waylandCapture) MarkWaylandPipeWireDisconnected() error {
-	session := waylandSession(w)
-	if session == nil {
-		return ErrWaylandPortalUnavailable
-	}
-	session.mu.Lock()
-	defer session.mu.Unlock()
-	session.status.State = WaylandCaptureReconnecting
-	session.status.Connected = false
-	session.status.LastError = ErrWaylandPipeWireDisconnected
-	return ErrWaylandPipeWireDisconnected
-}
-
-func (w *waylandCapture) ReconnectWaylandCapture() error {
-	session := waylandSession(w)
-	if session == nil {
-		return ErrWaylandPortalUnavailable
-	}
-	session.mu.Lock()
-	defer session.mu.Unlock()
-	session.status.Reconnects++
-	session.status.Connected = false
-	session.status.State = WaylandCaptureReconnecting
-	session.status.LastError = ErrWaylandPipeWireDisconnected
-	return ErrWaylandPipeWireDisconnected
-}
-
-func (w *waylandCapture) WaylandCaptureStatus() WaylandCaptureStatus {
-	session := waylandSession(w)
-	if session == nil {
-		return WaylandCaptureStatus{State: WaylandCaptureUnavailable, LastError: ErrWaylandPortalUnavailable}
-	}
-	session.mu.Lock()
-	defer session.mu.Unlock()
-	return session.status
-}
-

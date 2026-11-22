@@ -143,6 +143,7 @@ CREATE TABLE IF NOT EXISTS exam_submissions (
 	score INTEGER NOT NULL DEFAULT 0,
 	max_score INTEGER NOT NULL DEFAULT 0,
 	submitted_at INTEGER NOT NULL,
+	essay_scores_json TEXT NOT NULL DEFAULT '{}',
 	PRIMARY KEY (paper_id, student_id)
 );`
 	if _, err := s.db.Exec(ddl); err != nil {
@@ -151,6 +152,8 @@ CREATE TABLE IF NOT EXISTS exam_submissions (
 	// Safe migrations for existing databases created prior to auth columns.
 	_, _ = s.db.Exec(`ALTER TABLE teacher_settings ADD COLUMN auth_username TEXT NOT NULL DEFAULT 'admin'`)
 	_, _ = s.db.Exec(`ALTER TABLE teacher_settings ADD COLUMN auth_password_hash TEXT NOT NULL DEFAULT ''`)
+	// Manual (essay) grading results, persisted alongside the submission row.
+	_, _ = s.db.Exec(`ALTER TABLE exam_submissions ADD COLUMN essay_scores_json TEXT NOT NULL DEFAULT '{}'`)
 	return nil
 }
 
@@ -392,7 +395,10 @@ func (s *Store) LoadChats(limit int) ([]core.ChatMessage, error) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	rows, err := s.db.Query(`SELECT id, sender_id, sender, text, created_at FROM chat_messages ORDER BY created_at ASC LIMIT ?`, limit)
+	// Select the newest `limit` messages, then return them in chronological order.
+	rows, err := s.db.Query(`SELECT id, sender_id, sender, text, created_at FROM (
+		SELECT id, sender_id, sender, text, created_at, rowid AS rid FROM chat_messages ORDER BY created_at DESC, rid DESC LIMIT ?
+	) ORDER BY created_at ASC, rid ASC`, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -441,29 +447,66 @@ func (s *Store) LoadLatestExamPaper() (*core.ExamPaper, error) {
 	return &p, nil
 }
 
+// SaveExamSubmission upserts a submission row. When sub.EssayScores is non-nil
+// the persisted manual (essay) scores are replaced as well; a nil map leaves
+// previously stored essay scores untouched.
 func (s *Store) SaveExamSubmission(sub core.ExamSubmission) error {
 	aJSON, _ := json.Marshal(sub.Answers)
 	ts := sub.Submitted
 	if ts.IsZero() {
 		ts = time.Now()
 	}
+	essayJSON := "{}"
+	keepEssay := 1
+	if sub.EssayScores != nil {
+		b, err := json.Marshal(sub.EssayScores)
+		if err != nil {
+			return err
+		}
+		essayJSON = string(b)
+		keepEssay = 0
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	_, err := s.db.Exec(`INSERT INTO exam_submissions (paper_id, student_id, answers_json, score, max_score, submitted_at)
-		VALUES (?, ?, ?, ?, ?, ?)
+	_, err := s.db.Exec(`INSERT INTO exam_submissions (paper_id, student_id, answers_json, score, max_score, submitted_at, essay_scores_json)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(paper_id, student_id) DO UPDATE SET
 			answers_json=excluded.answers_json,
 			score=excluded.score,
 			max_score=excluded.max_score,
-			submitted_at=excluded.submitted_at`,
-		sub.PaperID, sub.StudentID, string(aJSON), sub.Score, sub.MaxScore, ts.UnixMilli())
+			submitted_at=excluded.submitted_at,
+			essay_scores_json=CASE WHEN ? = 1 THEN exam_submissions.essay_scores_json ELSE excluded.essay_scores_json END`,
+		sub.PaperID, sub.StudentID, string(aJSON), sub.Score, sub.MaxScore, ts.UnixMilli(), essayJSON, keepEssay)
 	return err
+}
+
+// SaveExamEssayScores updates only the manual grading results (and the
+// recomputed score) of an existing submission row.
+func (s *Store) SaveExamEssayScores(paperID, studentID string, essayScores map[string]int, score, maxScore int) error {
+	if essayScores == nil {
+		essayScores = map[string]int{}
+	}
+	b, err := json.Marshal(essayScores)
+	if err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	res, err := s.db.Exec(`UPDATE exam_submissions SET essay_scores_json = ?, score = ?, max_score = ? WHERE paper_id = ? AND student_id = ?`,
+		string(b), score, maxScore, paperID, studentID)
+	if err != nil {
+		return err
+	}
+	if n, err := res.RowsAffected(); err == nil && n == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
 }
 
 func (s *Store) LoadExamSubmissions(paperID string) ([]core.ExamSubmission, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	rows, err := s.db.Query(`SELECT paper_id, student_id, answers_json, score, max_score, submitted_at FROM exam_submissions WHERE paper_id = ?`, paperID)
+	rows, err := s.db.Query(`SELECT paper_id, student_id, answers_json, score, max_score, submitted_at, essay_scores_json FROM exam_submissions WHERE paper_id = ?`, paperID)
 	if err != nil {
 		return nil, err
 	}
@@ -471,12 +514,16 @@ func (s *Store) LoadExamSubmissions(paperID string) ([]core.ExamSubmission, erro
 	var out []core.ExamSubmission
 	for rows.Next() {
 		var sub core.ExamSubmission
-		var aJSON string
+		var aJSON, essayJSON string
 		var ts int64
-		if err := rows.Scan(&sub.PaperID, &sub.StudentID, &aJSON, &sub.Score, &sub.MaxScore, &ts); err != nil {
+		if err := rows.Scan(&sub.PaperID, &sub.StudentID, &aJSON, &sub.Score, &sub.MaxScore, &ts, &essayJSON); err != nil {
 			continue
 		}
 		_ = json.Unmarshal([]byte(aJSON), &sub.Answers)
+		var essay map[string]int
+		if err := json.Unmarshal([]byte(essayJSON), &essay); err == nil && len(essay) > 0 {
+			sub.EssayScores = essay
+		}
 		sub.Submitted = time.UnixMilli(ts)
 		out = append(out, sub)
 	}

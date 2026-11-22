@@ -26,7 +26,7 @@ type Service struct {
 	activeID    string
 	papers      map[string]core.ExamPaper
 	submissions map[string]map[string]core.ExamSubmission // paperID -> studentID -> submission
-	essayScores map[string]map[string]map[string]int    // paperID -> studentID -> questionID -> points
+	essayScores map[string]map[string]map[string]int      // paperID -> studentID -> questionID -> points
 	listeners   []func()
 }
 
@@ -108,6 +108,8 @@ func (s *Service) SubmitAnswer(sub core.ExamSubmission) core.ExamSubmission {
 	}
 	sub.PaperID = paperID
 	sub.Answers = cloneAnswers(sub.Answers)
+	// Manual essay scores are teacher-side state; never trust peer-supplied values.
+	sub.EssayScores = nil
 
 	if hasPaper {
 		if _, ok := s.submissions[paperID]; !ok {
@@ -116,14 +118,54 @@ func (s *Service) SubmitAnswer(sub core.ExamSubmission) core.ExamSubmission {
 		if _, ok := s.essayScores[paperID]; !ok {
 			s.essayScores[paperID] = make(map[string]map[string]int)
 		}
-		score, maxScore := gradeSubmission(paper, sub.Answers, s.essayScores[paperID][sub.StudentID])
+		manual := s.essayScores[paperID][sub.StudentID]
+		score, maxScore := gradeSubmission(paper, sub.Answers, manual)
 		sub.Score = score
 		sub.MaxScore = maxScore
+		sub.EssayScores = cloneScores(manual)
 		s.submissions[paperID][sub.StudentID] = sub
 	}
 	s.mu.Unlock()
 	s.notify()
-	return sub
+	return cloneSubmission(sub)
+}
+
+// RestoreSubmission reloads a previously persisted (teacher-side) submission,
+// including its manual essay scores from sub.EssayScores, and re-grades it
+// against the stored paper. Use it instead of SubmitAnswer when loading from
+// the store, because SubmitAnswer discards peer-supplied essay scores.
+func (s *Service) RestoreSubmission(sub core.ExamSubmission) core.ExamSubmission {
+	paperID := sub.PaperID
+	s.mu.Lock()
+	if paperID == "" {
+		paperID = s.activeID
+	}
+	if paperID != "" && len(sub.EssayScores) > 0 {
+		if _, ok := s.essayScores[paperID]; !ok {
+			s.essayScores[paperID] = make(map[string]map[string]int)
+		}
+		s.essayScores[paperID][sub.StudentID] = cloneScores(sub.EssayScores)
+	}
+	s.mu.Unlock()
+	sub.PaperID = paperID
+	return s.SubmitAnswer(sub)
+}
+
+// EssayScores returns a copy of the manual essay scores recorded for a student.
+func (s *Service) EssayScores(paperID, studentID string) map[string]int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return cloneScores(s.essayScores[paperID][studentID])
+}
+
+// RedactedPaper returns a deep copy of paper with all correct answers removed,
+// suitable for distribution to students.
+func RedactedPaper(paper core.ExamPaper) core.ExamPaper {
+	out := clonePaper(paper)
+	for i := range out.Questions {
+		out.Questions[i].Answer = nil
+	}
+	return out
 }
 
 func (s *Service) GradeEssay(paperID, studentID, questionID string, points int) (core.ExamSubmission, error) {
@@ -170,10 +212,11 @@ func (s *Service) GradeEssay(paperID, studentID, questionID string, points int) 
 	score, maxScore := gradeSubmission(paper, sub.Answers, s.essayScores[paperID][studentID])
 	sub.Score = score
 	sub.MaxScore = maxScore
+	sub.EssayScores = cloneScores(s.essayScores[paperID][studentID])
 	subs[studentID] = sub
 	s.mu.Unlock()
 	s.notify()
-	return sub, nil
+	return cloneSubmission(sub), nil
 }
 
 func (s *Service) ListSubmissions(paperID string) []core.ExamSubmission {
@@ -182,9 +225,7 @@ func (s *Service) ListSubmissions(paperID string) []core.ExamSubmission {
 	subs := s.submissions[paperID]
 	out := make([]core.ExamSubmission, 0, len(subs))
 	for _, sub := range subs {
-		cloned := sub
-		cloned.Answers = cloneAnswers(sub.Answers)
-		out = append(out, cloned)
+		out = append(out, cloneSubmission(sub))
 	}
 	sort.Slice(out, func(i, j int) bool {
 		return out[i].StudentID < out[j].StudentID
@@ -353,6 +394,23 @@ func clonePaper(p core.ExamPaper) core.ExamPaper {
 		out.Questions[i] = q
 		out.Questions[i].Options = append([]string(nil), q.Options...)
 		out.Questions[i].Answer = append([]string(nil), q.Answer...)
+	}
+	return out
+}
+
+func cloneSubmission(sub core.ExamSubmission) core.ExamSubmission {
+	sub.Answers = cloneAnswers(sub.Answers)
+	sub.EssayScores = cloneScores(sub.EssayScores)
+	return sub
+}
+
+func cloneScores(src map[string]int) map[string]int {
+	if src == nil {
+		return nil
+	}
+	out := make(map[string]int, len(src))
+	for k, v := range src {
+		out[k] = v
 	}
 	return out
 }

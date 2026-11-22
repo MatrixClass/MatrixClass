@@ -3,19 +3,16 @@
 package remoteexec
 
 import (
-	"bufio"
 	"context"
 	"errors"
-	"io"
+	"os"
 	"os/exec"
-	"sync"
 	"syscall"
 	"time"
 )
 
 func executeCommand(ctx context.Context, req CommandRequest, maxOutput int, onOutput func(CommandOutput)) CommandResult {
 	started := time.Now()
-	result := CommandResult{StartedAt: started, Status: "failed", ExitCode: -1}
 	name, args := "/bin/sh", []string{"-c", req.Command}
 	switch req.Shell {
 	case ShellSH:
@@ -24,85 +21,25 @@ func executeCommand(ctx context.Context, req CommandRequest, maxOutput int, onOu
 	case ShellPowerShell:
 		name, args = "pwsh", []string{"-NoLogo", "-NoProfile", "-NonInteractive", "-Command", req.Command}
 	default:
-		result.Error = ErrInvalidShell.Error()
-		result.FinishedAt = time.Now()
-		return result
+		now := time.Now()
+		return CommandResult{StartedAt: started, FinishedAt: now, Status: "failed", ExitCode: -1, Error: ErrInvalidShell.Error()}
 	}
 	cmd := exec.CommandContext(ctx, name, args...)
+	// Run the shell in its own process group so cancellation/timeout can kill
+	// every descendant, not only the shell itself.
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	if req.WorkingDir != "" {
-		cmd.Dir = req.WorkingDir
-	}
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		result.Error = err.Error()
-		result.FinishedAt = time.Now()
-		return result
-	}
-	stderr, err := cmd.StderrPipe()
-	if err != nil {
-		result.Error = err.Error()
-		result.FinishedAt = time.Now()
-		return result
-	}
-	if err := cmd.Start(); err != nil {
-		if ctx.Err() != nil {
-			result.Status, result.Error = commandContextStatus(ctx)
-		} else {
-			result.Error = err.Error()
+	cmd.Cancel = func() error {
+		if cmd.Process == nil {
+			return nil
 		}
-		result.FinishedAt = time.Now()
-		return result
-	}
-	var wg sync.WaitGroup
-	wg.Add(2)
-	go readLinuxOutput(stdout, "stdout", req.RequestID, maxOutput, onOutput, &wg)
-	go readLinuxOutput(stderr, "stderr", req.RequestID, maxOutput, onOutput, &wg)
-	waitErr := cmd.Wait()
-	wg.Wait()
-	result.FinishedAt = time.Now()
-	if ctx.Err() != nil {
-		result.Status, result.Error = commandContextStatus(ctx)
-		return result
-	}
-	if waitErr != nil {
-		var exitErr *exec.ExitError
-		if errors.As(waitErr, &exitErr) {
-			result.ExitCode = exitErr.ExitCode()
-		} else {
-			result.Error = waitErr.Error()
-		}
-		return result
-	}
-	result.ExitCode, result.Status = 0, "completed"
-	return result
-}
-
-func commandContextStatus(ctx context.Context) (string, string) {
-	if ctx.Err() == context.DeadlineExceeded {
-		return "timeout", ctx.Err().Error()
-	}
-	return "cancelled", context.Canceled.Error()
-}
-
-func readLinuxOutput(r io.Reader, stream, requestID string, maxOutput int, onOutput func(CommandOutput), wg *sync.WaitGroup) {
-	defer wg.Done()
-	reader := bufio.NewReader(r)
-	total := 0
-	for {
-		line, err := reader.ReadString('\n')
-		if len(line) > 0 && total < maxOutput {
-			remaining := maxOutput - total
-			if len(line) > remaining {
-				line = line[:remaining]
-			}
-			total += len(line)
-			if onOutput != nil {
-				onOutput(CommandOutput{RequestID: requestID, Stream: stream, Data: line})
-			}
+		err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		if errors.Is(err, syscall.ESRCH) {
+			return os.ErrProcessDone
 		}
 		if err != nil {
-			return
+			return cmd.Process.Kill()
 		}
+		return nil
 	}
+	return runPreparedCommand(ctx, cmd, req, maxOutput, onOutput, started)
 }

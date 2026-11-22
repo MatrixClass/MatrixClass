@@ -1,38 +1,40 @@
+<#
+.SYNOPSIS
+  Builds Linux binaries and matrixclass-linux-<arch> directory + tar.gz packages.
+.DESCRIPTION
+  Archives are written with tools/mkarchive so binaries and install scripts keep
+  their executable bit even when packaged on Windows.
+#>
 param(
-    [string]$OutputDir = "dist/linux"
+    [string]$OutputDir = "dist/linux",
+    [string[]]$Architectures = @("amd64", "arm64"),
+    [string]$Version = "",
+    [switch]$SkipBuild
 )
 
-$ErrorActionPreference = "Stop"
-$architectures = @("amd64", "arm64", "loong64")
-$repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
+. (Join-Path $PSScriptRoot "lib/common.ps1")
 
-& (Join-Path $PSScriptRoot "build-linux.ps1") -OutputDir $OutputDir
+$Version = Get-MatrixClassVersion $Version
+$outputPath = Resolve-RepoPath $OutputDir
+if (-not $SkipBuild) {
+    & (Join-Path $PSScriptRoot "build-linux.ps1") -OutputDir $outputPath -Architectures $Architectures -Version $Version
+}
 
-foreach ($arch in $architectures) {
-    $stage = Join-Path $OutputDir "matrixclass-linux-$arch"
-    $archive = Join-Path $OutputDir "matrixclass-linux-$arch.tar.gz"
+$packaging = Join-Path $script:RepoRoot "packaging/linux"
+foreach ($arch in $Architectures) {
+    $stageName = "matrixclass-linux-$arch"
+    $stage = Join-Path $outputPath $stageName
     if (Test-Path $stage) { Remove-Item -Recurse -Force $stage }
-    if (Test-Path $archive) { Remove-Item -Force $archive }
     New-Item -ItemType Directory -Force -Path $stage | Out-Null
-    Copy-Item (Join-Path $OutputDir "matrixclass-teacher-linux-$arch") (Join-Path $stage "matrixclass-teacher-linux-$arch")
-    Copy-Item (Join-Path $OutputDir "matrixclass-student-linux-$arch") (Join-Path $stage "matrixclass-student-linux-$arch")
-    Copy-Item (Join-Path $repoRoot "packaging/linux/matrixclass-teacher.desktop") $stage
-    Copy-Item (Join-Path $repoRoot "packaging/linux/matrixclass-student.desktop") $stage
-    Copy-Item (Join-Path $repoRoot "packaging/linux/matrixclass.svg") $stage
-    Copy-Item (Join-Path $repoRoot "packaging/linux/matrixclass-teacher.service") $stage
-    Copy-Item (Join-Path $repoRoot "packaging/linux/matrixclass-student.service") $stage
-    Copy-Item (Join-Path $repoRoot "packaging/linux/install.sh") $stage
-    Copy-Item (Join-Path $repoRoot "packaging/linux/uninstall.sh") $stage
-    Copy-Item (Join-Path $repoRoot "packaging/linux/README.md") $stage
-    tar -czf $archive -C $OutputDir "matrixclass-linux-$arch"
-    if ($LASTEXITCODE -ne 0) { throw "archive failed for $arch" }
+    foreach ($app in @("teacher", "student")) {
+        Copy-Item (Join-Path $outputPath "matrixclass-$app-linux-$arch") $stage
+    }
+    foreach ($f in @("matrixclass-teacher.desktop", "matrixclass-student.desktop", "matrixclass.svg",
+            "matrixclass-teacher.service", "matrixclass-student.service", "install.sh", "uninstall.sh", "README.md")) {
+        Copy-Item (Join-Path $packaging $f) $stage
+    }
+    New-ReleaseArchive -Output (Join-Path $outputPath "$stageName.tar.gz") -BaseDir $outputPath -Entries @($stageName)
 }
 
-Write-Host "Linux packages completed: $($architectures -join ', ')"
-
-if (-not (Get-Command dpkg-deb -ErrorAction SilentlyContinue)) {
-    Write-Host "Skipping .deb generation: dpkg-deb is unavailable on this host."
-}
-if (-not (Get-Command rpmbuild -ErrorAction SilentlyContinue)) {
-    Write-Host "Skipping .rpm generation: rpmbuild is unavailable on this host."
-}
+Write-Host "Linux packages completed: $($Architectures -join ', ')"
+Write-Host "For .deb/.rpm run scripts/build-linux-distro-packages.sh on Linux (or build-linux-distro-packages.ps1 via WSL)."

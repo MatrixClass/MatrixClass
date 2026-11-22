@@ -15,3 +15,5 @@ func (n *noopProcessInspector) ListProcesses() ([]ProcessInfo, error) {
 func (n *noopProcessInspector) TerminateProcess(pid uint32) error {
 	return nil
 }
+
+var platformProtectedProcesses = []string{"init", "launchd"}

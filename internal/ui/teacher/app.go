@@ -25,6 +25,7 @@ import (
 	"github.com/egoist/mygo/ui/video"
 
 	"nexlab/internal/core"
+	"nexlab/internal/exam"
 	"nexlab/internal/protocol"
 	"nexlab/internal/remoteexec"
 	"nexlab/internal/store"
@@ -136,6 +137,10 @@ type App struct {
 	remoteResult      *remoteexec.CommandResult
 	remoteApps        []remoteexec.Application
 	screenLocked      bool
+	lockMu            sync.RWMutex
+	lockAll           bool
+	lockedIDs         map[string]bool
+	lockMessageSnap   string
 	lockMessage       string
 	activeModeLabel   string
 	statusNote        string
@@ -150,13 +155,15 @@ type App struct {
 	useMulticast bool
 
 	// Monitor wall & MyTheatre video bitmaps
-	monitorTiles  map[string]*ui.Bitmap
-	remoteBitmap  *ui.Bitmap
-	demoBitmap    *ui.Bitmap
-	theatreFrame  *ui.Bitmap
-	theatrePlayer *ui.VideoPlayer
-	theatre       core.TheatreState
-	theatreMedia  []string
+	monitorTiles map[string]*ui.Bitmap
+	remoteBitmap *ui.Bitmap
+	// remoteTargetSnap mirrors remoteControlID under mu for frame callbacks.
+	remoteTargetSnap string
+	demoBitmap       *ui.Bitmap
+	theatreFrame     *ui.Bitmap
+	theatrePlayer    *ui.VideoPlayer
+	theatre          core.TheatreState
+	theatreMedia     []string
 
 	pendingMonitor       map[string]*core.VideoFrame
 	pendingRemote        *core.VideoFrame
@@ -199,6 +206,7 @@ type App struct {
 	policyModal       bool
 	channelModal      bool
 	channelInput      string
+	pendingChannel    string
 	channelNum        float64
 	authUsername      string
 	authPasswordHash  string
@@ -216,16 +224,22 @@ type App struct {
 	theatreFlag           atomic.Bool
 	mcastFlag             atomic.Bool
 	qualValue             atomic.Int64
+	monitoringFlag        atomic.Bool
+	monitorFPSValue       atomic.Int64
 	micGainBits           atomic.Uint32
 	demoIDMu              sync.RWMutex
 	demoIDAtomic          string
 
-	ctrlCh chan ctrlOutbound
+	ctrlNotify      chan struct{}
+	ctrlMu          sync.Mutex
+	ctrlQueue       []ctrlOutbound
+	ctrlQueuedInput int
 }
 
 type ctrlOutbound struct {
 	env       protocol.Envelope
 	targetIDs []string
+	input     bool
 }
 
 // New creates a Teacher Console App wired to core interfaces.
@@ -319,7 +333,7 @@ func (a *App) Start(parent context.Context) error {
 		return nil
 	}
 	a.lifecycleCtx, a.lifecycleCancel = context.WithCancel(parent)
-	a.ctrlCh = make(chan ctrlOutbound, 64)
+	a.ctrlNotify = make(chan struct{}, 1)
 	a.lifecycleStarted = true
 	a.lifecycleWG.Add(1)
 	a.mu.Unlock()
@@ -443,8 +457,16 @@ func (a *App) loadPersistedState() {
 		if paper, err := a.store.LoadLatestExamPaper(); err == nil && paper != nil {
 			a.opts.Exam.PublishPaper(*paper)
 			if subs, err := a.store.LoadExamSubmissions(paper.ID); err == nil {
+				restorer, canRestore := a.opts.Exam.(interface {
+					RestoreSubmission(core.ExamSubmission) core.ExamSubmission
+				})
 				for _, sub := range subs {
-					a.opts.Exam.SubmitAnswer(sub)
+					if canRestore {
+						// Keeps teacher-graded essay scores across restarts.
+						restorer.RestoreSubmission(sub)
+					} else {
+						a.opts.Exam.SubmitAnswer(sub)
+					}
 				}
 			}
 		}
@@ -456,7 +478,7 @@ func (a *App) savePersistedSettings() {
 		return
 	}
 	_ = a.store.SaveSettings(store.TeacherSettings{
-		Channel:          a.channel,
+		Channel:          a.persistedChannel(),
 		AuthUsername:     a.authUsername,
 		AuthPasswordHash: a.authPasswordHash,
 		UseMulticast:     a.useMulticast,
@@ -474,6 +496,21 @@ func (a *App) savePersistedSettings() {
 		BlockedSites:     a.blockedSitesInput,
 		LockMessage:      a.lockMessage,
 	})
+}
+
+// persistedChannel is the channel to use on next start: a pending change
+// from Settings, otherwise the live channel.
+func (a *App) persistedChannel() string {
+	if a.pendingChannel != "" {
+		return a.pendingChannel
+	}
+	return a.channel
+}
+
+// openSettings shows the settings modal with the channel draft reset.
+func (a *App) openSettings() {
+	a.channelInput = a.persistedChannel()
+	a.settingsOpen = true
 }
 
 func hashPassword(raw string) string {
@@ -559,6 +596,8 @@ func (a *App) syncRuntimeFlags() {
 	a.theatreFlag.Store(a.theatre.Playing)
 	a.mcastFlag.Store(a.useMulticast)
 	a.qualValue.Store(int64(a.monitorQual))
+	a.monitoringFlag.Store(a.monitoring)
+	a.monitorFPSValue.Store(int64(a.monitorFPS))
 	a.syncMicGain()
 	a.demoIDMu.Lock()
 	a.demoIDAtomic = a.studentDemoID
@@ -601,6 +640,25 @@ func (a *App) Invalidate() {
 	if fw != nil {
 		fw.Invalidate()
 	}
+}
+
+// runOnUI runs fn on the UI thread when a window is attached, so state read
+// by View is never mutated concurrently from transport or worker goroutines.
+// Without a window there is no concurrent View, so fn runs inline.
+func (a *App) runOnUI(fn func()) {
+	a.mu.Lock()
+	w := a.win
+	a.mu.Unlock()
+	if w != nil {
+		w.Update(fn)
+		return
+	}
+	fn()
+}
+
+// SetStatusNote updates the status bar note; safe to call from any goroutine.
+func (a *App) SetStatusNote(note string) {
+	a.runOnUI(func() { a.statusNote = note })
 }
 
 // ShowMainWindow restores and focuses the main teacher window.
@@ -653,7 +711,7 @@ func (a *App) BuildMenu() *mygo.Menu {
 				{Label: "发起点名签到", Accelerator: "CmdOrCtrl+R", Click: func(_ *mygo.MenuItem, _ *mygo.Window) { a.StartCheckIn() }},
 				{Label: "清空举手队列", Click: func(_ *mygo.MenuItem, _ *mygo.Window) { a.clearAllHands() }},
 				mygo.Separator(),
-				{Label: "课堂参数设置", Accelerator: "CmdOrCtrl+,", Click: func(_ *mygo.MenuItem, _ *mygo.Window) { a.settingsOpen = true; a.Invalidate() }},
+				{Label: "课堂参数设置", Accelerator: "CmdOrCtrl+,", Click: func(_ *mygo.MenuItem, _ *mygo.Window) { a.openSettings(); a.Invalidate() }},
 				mygo.Separator(),
 				{Role: mygo.RoleQuit, Label: "退出教师端"},
 			},
@@ -718,6 +776,11 @@ func (a *App) UpdateRemoteFrame(studentID string, frame *core.VideoFrame) {
 		return
 	}
 	a.mu.Lock()
+	if studentID != a.remoteTargetSnap {
+		// Late frames from a previous (or no) remote-control target.
+		a.mu.Unlock()
+		return
+	}
 	w := a.win
 	if w == nil {
 		if a.remoteBitmap == nil {
@@ -1008,7 +1071,7 @@ func (a *App) buildToolbar(c *ui.Context, pal theme.Palette) {
 					ui.Text(c, "设置").FontSize(12)
 				})
 			}).Clicked() {
-				a.settingsOpen = true
+				a.openSettings()
 			}
 			if ui.Button(c, "管控策略").Tooltip("编排并下发课堂管控策略").Padding(5, 10).Radius(4).Clicked() {
 				a.policyModal = true
@@ -1170,7 +1233,9 @@ func (a *App) buildSeatMapTab(c *ui.Context, pal theme.Palette, students []core.
 				return
 			}
 
-			ui.Row(c).Wrap().Gap(12).Children(func() {
+			// Fill the available width: column count follows the viewport
+			// (measured last frame) instead of fixed-width wrapped cards.
+			ui.Grid(c).Columns(seatGridColumns(scroll.Bounds().W)).Gap(seatGridGap).FillWidth().Children(func() {
 				for _, st := range students {
 					a.buildSeatCard(c, pal, st, students)
 				}
@@ -1191,11 +1256,23 @@ func (a *App) buildSeatCard(c *ui.Context, pal theme.Palette, st core.StudentInf
 		border = pal.Accent
 	}
 
-	statusText, statusColor := statusBadge(pal, st)
+	offline := st.Status == core.StatusOffline
+	handUp := st.HandRaised || st.Status == core.StatusHandRaised
+	if handUp && !selected {
+		// Strongest monochrome emphasis without color: a heavy dark border.
+		border = pal.Accent
+	}
+	borderW := float32(1)
+	if selected || handUp {
+		borderW = 2
+	}
 
-	card := ui.Column(c).Key("seat-"+st.ID).Width(178).Padding(9).Gap(5).Radius(3).
-		Background(bg).Border(1.5, border).Focusable().
+	card := ui.Column(c).Key("seat-"+st.ID).FillWidth().MinWidth(seatCardMinWidth).Padding(10).Gap(6).Radius(4).
+		Background(bg).Border(borderW, border).Focusable().
 		Label(fmt.Sprintf("%s %s", st.MachineName, st.StudentNo))
+	if offline {
+		card.Opacity(0.45)
+	}
 	if b := card.Bounds(); b.W > 0 && b.H > 0 {
 		a.itemBounds = ensureBoundsMap(a.itemBounds)
 		a.itemBounds[st.ID] = b
@@ -1213,16 +1290,16 @@ func (a *App) buildSeatCard(c *ui.Context, pal theme.Palette, st core.StudentInf
 					ui.Text(c, "编号 "+st.StudentNo).FontSize(11).TextColor(pal.TextMuted).SingleLine()
 				}
 			})
-			if st.HandRaised {
+			if handUp {
 				ui.Image(c, theme.IconHandRaise).Size(18, 18)
 			}
 		})
 
-		ui.Row(c).AlignItems(ui.Center).Gap(4).Children(func() {
-			ui.Text(c, statusText).FontSize(11).Bold().TextColor(statusColor)
+		ui.Row(c).AlignItems(ui.Center).Gap(6).Children(func() {
+			seatStatusPill(c, pal, st)
 			ui.Spacer(c)
 			if st.CheckedIn {
-				ui.Text(c, "已签到").FontSize(10).TextColor(pal.Success)
+				ui.Text(c, "✓ 已签到").FontSize(10).Bold().TextColor(pal.Text)
 			} else {
 				ui.Text(c, "未签到").FontSize(10).TextColor(pal.TextMuted)
 			}
@@ -1588,8 +1665,9 @@ func (a *App) buildFilesTab(c *ui.Context, pal theme.Palette) {
 
 func (a *App) buildRightSidebar(c *ui.Context, pal theme.Palette, students []core.StudentInfo) {
 	ui.Column(c).Fill().Background(pal.ChromeRail).BorderWidth(0, 0, 0, 1).BorderColor(pal.CardBorder).Children(func() {
-		ui.Row(c).Padding(6, 8).Background(pal.ChromeBar).BorderWidth(0, 0, 1, 0).BorderColor(pal.CardBorder).Children(func() {
-			ui.Segmented(c, &a.sideTab, "消息/举手").FillEqually()
+		ui.Row(c).Padding(9, 12).Gap(6).Background(pal.ChromeBar).BorderWidth(0, 0, 1, 0).BorderColor(pal.CardBorder).AlignItems(ui.Center).Children(func() {
+			ui.Image(c, theme.IconChat).Size(16, 16)
+			ui.Text(c, "消息与举手").FontSize(13).Bold()
 		})
 
 		ui.Column(c).Grow(1).Padding(8).Gap(8).Children(func() {
@@ -1601,15 +1679,20 @@ func (a *App) buildRightSidebar(c *ui.Context, pal theme.Palette, students []cor
 
 		ui.Divider(c)
 		// Fixed bottom volume sliders for the right panel
-		ui.Column(c).Background(pal.ChromeBar).Padding(10).Gap(8).Children(func() {
+		ui.Column(c).Background(pal.ChromeBar).Padding(8, 10).Gap(4).Children(func() {
 			ui.Row(c).AlignItems(ui.Center).Gap(6).Children(func() {
-				ui.Text(c, "扬声器音量").FontSize(12).Bold()
-				ui.Spacer(c)
+				ui.Text(c, "扬声器").FontSize(12).Bold().Width(42)
+				if ui.Slider(c, &a.volume, 0, 100).Label("扬声器音量滑块").Grow(1).Changed() {
+					if a.volume > 0 && a.speakerMuted {
+						a.speakerMuted = false
+					}
+					a.applySpeakerVolume()
+				}
 				spkTxt := fmt.Sprintf("%d%%", int(a.volume))
 				if a.speakerMuted {
 					spkTxt = "已静音"
 				}
-				ui.Text(c, spkTxt).FontSize(11).TextColor(pal.Accent)
+				ui.Text(c, spkTxt).FontSize(11).TextColor(pal.TextMuted).Width(40)
 				spkMuteLbl := "静音"
 				if a.speakerMuted {
 					spkMuteLbl = "取消静音"
@@ -1618,21 +1701,20 @@ func (a *App) buildRightSidebar(c *ui.Context, pal theme.Palette, students []cor
 					a.ToggleSpeakerMute()
 				}
 			})
-			if ui.Slider(c, &a.volume, 0, 100).Label("扬声器音量滑块").Changed() {
-				if a.volume > 0 && a.speakerMuted {
-					a.speakerMuted = false
-				}
-				a.applySpeakerVolume()
-			}
 
 			ui.Row(c).AlignItems(ui.Center).Gap(6).Children(func() {
-				ui.Text(c, "麦克风音量").FontSize(12).Bold()
-				ui.Spacer(c)
+				ui.Text(c, "麦克风").FontSize(12).Bold().Width(42)
+				if ui.Slider(c, &a.micVolume, 0, 100).Label("麦克风音量滑块").Grow(1).Changed() {
+					if a.micVolume > 0 && a.micMuted {
+						a.micMuted = false
+					}
+					a.syncMicGain()
+				}
 				micTxt := fmt.Sprintf("%d%%", int(a.micVolume))
 				if a.micMuted {
 					micTxt = "已静音"
 				}
-				ui.Text(c, micTxt).FontSize(11).TextColor(pal.Accent)
+				ui.Text(c, micTxt).FontSize(11).TextColor(pal.TextMuted).Width(40)
 				micMuteLbl := "静音"
 				if a.micMuted {
 					micMuteLbl = "取消静音"
@@ -1641,12 +1723,6 @@ func (a *App) buildRightSidebar(c *ui.Context, pal theme.Palette, students []cor
 					a.ToggleMicMute()
 				}
 			})
-			if ui.Slider(c, &a.micVolume, 0, 100).Label("麦克风音量滑块").Changed() {
-				if a.micVolume > 0 && a.micMuted {
-					a.micMuted = false
-				}
-				a.syncMicGain()
-			}
 		})
 	})
 }
@@ -1789,10 +1865,9 @@ func (a *App) buildSettingsModal(c *ui.Context, pal theme.Palette) {
 	ui.Column(c).Width(460).Background(pal.Canvas).Border(1, pal.CardBorder).Radius(4).Padding(16).Gap(10).Children(func() {
 		ui.Text(c, "教师端课堂设置").FontSize(16).Bold()
 		ui.Text(c, "频道 ID (数字)").FontSize(12).TextColor(pal.TextMuted)
-		if ui.Select(c, &a.channel, numericChannelOptions()).Changed() {
-			a.channelInput = a.channel
-			a.channelNum = parseChannelNum(a.channel)
-		}
+		// Edit a draft: the running transport and discovery beacon keep the
+		// channel chosen at startup, so a change only applies after restart.
+		ui.Select(c, &a.channelInput, numericChannelOptions())
 		ui.Text(c, "默认作业存放目录").FontSize(12).TextColor(pal.TextMuted)
 		ui.Row(c).FillWidth().Gap(8).AlignItems(ui.Center).Children(func() {
 			ui.TextInput(c, &a.collectSaveDir).Placeholder("默认: 系统下载目录 (Downloads)").Grow(1)
@@ -1830,8 +1905,14 @@ func (a *App) buildSettingsModal(c *ui.Context, pal theme.Palette) {
 				if a.monitoring {
 					a.sendMonitorConfig()
 				}
+				if draft := normalizeChannelID(a.channelInput); draft != a.channel {
+					a.pendingChannel = draft
+					a.statusNote = fmt.Sprintf("频道已改为 %s，重启教师端后生效（当前仍为 %s）", draft, a.channel)
+				} else {
+					a.pendingChannel = ""
+					a.statusNote = "课堂设置已保存"
+				}
 				a.savePersistedSettings()
-				a.statusNote = "课堂通道设置已更新: " + a.channel
 			}
 		})
 	})
@@ -2041,6 +2122,9 @@ func (a *App) applyMonitorState() {
 }
 
 func (a *App) sendMonitorConfig() {
+	// Publish the snapshot read by runtime goroutines before notifying students.
+	a.monitoringFlag.Store(a.monitoring)
+	a.monitorFPSValue.Store(int64(a.monitorFPS))
 	fps := int(a.monitorFPS)
 	if !a.monitoring {
 		fps = 0
@@ -2069,6 +2153,7 @@ func (a *App) StartRemoteControl(studentID string) {
 	}
 	a.remoteControlID = studentID
 	a.remoteControlOpen = true
+	a.resetRemoteView(studentID)
 	a.activeModeLabel = "远程控制"
 	a.statusNote = "已发起远程控制请求 -> " + studentID
 	a.sendControlEnvelope(protocol.MsgRemoteControlReq, map[string]any{"student_id": studentID, "enabled": true}, []string{studentID})
@@ -2080,8 +2165,19 @@ func (a *App) StopRemoteControl() {
 	}
 	a.remoteControlID = ""
 	a.remoteControlOpen = false
+	a.resetRemoteView("")
 	a.activeModeLabel = "待机监听"
 	a.statusNote = "已结束远程控制"
+}
+
+// resetRemoteView drops the previous target's frames so the modal never
+// shows one student's screen while input goes to another.
+func (a *App) resetRemoteView(target string) {
+	a.mu.Lock()
+	a.remoteTargetSnap = target
+	a.remoteBitmap = nil
+	a.pendingRemote = nil
+	a.mu.Unlock()
 }
 
 func (a *App) sendRemoteInput(ev core.RemoteInputEvent) {
@@ -2092,16 +2188,59 @@ func (a *App) sendRemoteInput(ev core.RemoteInputEvent) {
 }
 
 func (a *App) ToggleScreenLock() {
-	a.screenLocked = !a.screenLocked
-	a.applyScreenLock()
+	targets := a.targetStudentIDs()
+	a.setScreenLockTargets(!a.targetsLocked(targets), targets)
 }
 
 func (a *App) applyScreenLock() {
-	a.setScreenLockTargets(a.screenLocked, a.targetStudentIDs())
+	a.ToggleScreenLock()
+}
+
+// targetsLocked reports whether every target (or the whole class when
+// targets is empty) is currently locked.
+func (a *App) targetsLocked(targets []string) bool {
+	a.lockMu.RLock()
+	defer a.lockMu.RUnlock()
+	if len(targets) == 0 {
+		return a.lockAll
+	}
+	for _, id := range targets {
+		if !a.lockAll && !a.lockedIDs[id] {
+			return false
+		}
+	}
+	return true
 }
 
 func (a *App) setScreenLockTargets(locked bool, targets []string) {
-	a.screenLocked = locked
+	a.lockMu.Lock()
+	switch {
+	case len(targets) == 0:
+		a.lockAll = locked
+		a.lockedIDs = make(map[string]bool)
+	case locked:
+		if a.lockedIDs == nil {
+			a.lockedIDs = make(map[string]bool)
+		}
+		for _, id := range targets {
+			a.lockedIDs[id] = true
+		}
+	default:
+		if a.lockAll {
+			// Convert "whole class locked" into an explicit set minus targets.
+			a.lockAll = false
+			a.lockedIDs = make(map[string]bool)
+			for _, st := range a.listStudents() {
+				a.lockedIDs[st.ID] = true
+			}
+		}
+		for _, id := range targets {
+			delete(a.lockedIDs, id)
+		}
+	}
+	a.lockMessageSnap = a.lockMessage
+	a.screenLocked = a.lockAll || len(a.lockedIDs) > 0
+	a.lockMu.Unlock()
 	if locked {
 		a.activeModeLabel = "黑屏锁屏"
 		if len(targets) > 1 {
@@ -2114,7 +2253,7 @@ func (a *App) setScreenLockTargets(locked bool, targets []string) {
 		a.statusNote = "已解除学生端屏幕锁定"
 	}
 	a.sendControlEnvelope(protocol.MsgScreenLock, map[string]any{
-		"locked":  a.screenLocked,
+		"locked":  locked,
 		"message": a.lockMessage,
 	}, targets)
 }
@@ -2132,8 +2271,13 @@ func (a *App) ApproveHandRaise(studentID string) {
 		a.opts.Classroom.RaiseHand(studentID, false)
 	}
 	a.sendControlEnvelope(protocol.MsgHandClear, map[string]any{"student_id": studentID, "approved": true}, []string{studentID})
-	a.studentDemoID = ""
-	a.ToggleStudentDemo(studentID)
+	if a.studentDemoID != studentID {
+		if a.studentDemoID != "" {
+			// Stops the current demo and notifies the previous presenter.
+			a.ToggleStudentDemo("")
+		}
+		a.ToggleStudentDemo(studentID)
+	}
 	a.statusNote = "已批准举手学生演示: " + studentID
 }
 
@@ -2181,12 +2325,11 @@ func (a *App) ApplyClassroomPolicy() {
 		AllowedApps:    splitCSV(a.allowedAppsInput),
 		BlockedDomains: splitCSV(a.blockedSitesInput),
 		AllowedDomains: splitCSV(a.allowedSitesInput),
-		LockScreen:     a.screenLocked,
+		LockScreen:     a.ScreenLockAll(),
 		LockMessage:    a.lockMessage,
 	}
-	if a.opts.Control != nil {
-		_ = a.opts.Control.ApplyPolicy(rule)
-	}
+	// The policy targets student machines only; opts.Control is the teacher's
+	// own machine and must not be locked or have processes killed.
 	a.savePersistedSettings()
 	a.sendControlEnvelope(protocol.MsgPolicySync, rule, nil)
 	a.statusNote = "管控策略已同步至学生端 (" + a.policyMode + ")"
@@ -2196,11 +2339,8 @@ func (a *App) RevokeClassroomPolicy() {
 	a.policyActive = false
 	rule := core.PolicyRule{
 		Mode:        "off",
-		LockScreen:  a.screenLocked,
+		LockScreen:  a.ScreenLockAll(),
 		LockMessage: a.lockMessage,
-	}
-	if a.opts.Control != nil {
-		_ = a.opts.Control.ApplyPolicy(rule)
 	}
 	a.savePersistedSettings()
 	a.sendControlEnvelope(protocol.MsgPolicySync, rule, nil)
@@ -2213,9 +2353,6 @@ func (a *App) ExecutePower(action core.PowerAction) {
 
 func (a *App) ExecutePowerTargets(action core.PowerAction, targets []string) {
 	if len(targets) == 0 {
-		if a.opts.Control != nil {
-			_ = a.opts.Control.ExecutePower(action, "")
-		}
 		a.sendControlEnvelope(protocol.MsgPowerCommand, map[string]any{"action": action, "mac": ""}, nil)
 		a.statusNote = fmt.Sprintf("已发送全班电源指令: %s", action)
 		return
@@ -2226,7 +2363,10 @@ func (a *App) ExecutePowerTargets(action core.PowerAction, targets []string) {
 	}
 	for _, id := range targets {
 		mac := macMap[id]
-		if a.opts.Control != nil {
+		// Only Wake-on-LAN is executed locally: it sends a magic packet to
+		// the (powered-off) student. Shutdown/reboot/logoff must never run
+		// on the teacher's own machine; students execute them on receipt.
+		if action == core.PowerWake && mac != "" && a.opts.Control != nil {
 			_ = a.opts.Control.ExecutePower(action, mac)
 		}
 		a.sendControlEnvelope(protocol.MsgPowerCommand, map[string]any{"action": action, "mac": mac}, []string{id})
@@ -2260,18 +2400,11 @@ func (a *App) DistributeFile() {
 		if ctx.Err() != nil {
 			return
 		}
-		a.mu.Lock()
-		if a.lifecycleClosed {
-			a.mu.Unlock()
-			return
-		}
 		if err != nil {
-			a.statusNote = "文件分发失败: " + err.Error()
+			a.SetStatusNote("文件分发失败: " + err.Error())
 		} else {
-			a.statusNote = "文件已分发: " + task.FileName
+			a.SetStatusNote("文件已分发: " + task.FileName)
 		}
-		a.mu.Unlock()
-		a.Invalidate()
 	}()
 }
 
@@ -2669,11 +2802,7 @@ func (a *App) DistributeQueue() {
 		return
 	}
 	go func() {
-		defer func() {
-			a.mu.Lock()
-			a.fileSending = false
-			a.mu.Unlock()
-		}()
+		defer a.runOnUI(func() { a.fileSending = false })
 		sent := 0
 		var lastErr error
 		for _, it := range items {
@@ -2686,20 +2815,10 @@ func (a *App) DistributeQueue() {
 				sent++
 			}
 		}
-		a.mu.Lock()
-		if a.lifecycleClosed {
-			a.mu.Unlock()
-			return
-		}
 		if lastErr != nil {
-			a.statusNote = fmt.Sprintf("分发完成 %d/%d（部分失败: %v）", sent, len(items), lastErr)
+			a.SetStatusNote(fmt.Sprintf("分发完成 %d/%d（部分失败: %v）", sent, len(items), lastErr))
 		} else {
-			a.statusNote = fmt.Sprintf("已成功发送 %d 个文件至 %d 台学生", sent, len(targets))
-		}
-		fw := a.fileDistWin
-		a.mu.Unlock()
-		if fw != nil {
-			fw.Invalidate()
+			a.SetStatusNote(fmt.Sprintf("已成功发送 %d 个文件至 %d 台学生", sent, len(targets)))
 		}
 		a.Invalidate()
 	}()
@@ -3352,7 +3471,8 @@ func (a *App) publishExam() {
 		_ = a.store.SaveExamPaper(paper)
 	}
 	a.examPublished = true
-	a.sendControlEnvelope(protocol.MsgExamPublish, paper, nil)
+	// Students get the paper without correct answers; grading happens here.
+	a.sendControlEnvelope(protocol.MsgExamPublish, exam.RedactedPaper(paper), nil)
 	a.statusNote = fmt.Sprintf("已发布随堂测验: %s (%d 题)", paper.Title, len(questions))
 }
 
@@ -3417,9 +3537,7 @@ func (a *App) exportExamCSV(paperID string) {
 		if werr := os.WriteFile(path, data, 0o644); werr != nil {
 			note = "导出写入失败: " + werr.Error()
 		}
-		a.mu.Lock()
-		a.statusNote = note
-		a.mu.Unlock()
+		a.SetStatusNote(note)
 		a.Invalidate()
 	}()
 }
@@ -3478,10 +3596,7 @@ func (a *App) openDistributeFilePicker() {
 		if err != nil || len(paths) == 0 {
 			return
 		}
-		a.mu.Lock()
-		a.distributePath = paths[0]
-		a.mu.Unlock()
-		a.Invalidate()
+		a.runOnUI(func() { a.distributePath = paths[0] })
 	}()
 }
 
@@ -3494,10 +3609,7 @@ func (a *App) openCollectDirPicker() {
 		if err != nil || len(paths) == 0 {
 			return
 		}
-		a.mu.Lock()
-		a.collectSaveDir = paths[0]
-		a.mu.Unlock()
-		a.Invalidate()
+		a.runOnUI(func() { a.collectSaveDir = paths[0] })
 	}()
 }
 
@@ -3513,13 +3625,7 @@ func (a *App) openVideoPicker() {
 			return
 		}
 		path := paths[0]
-		if a.win != nil {
-			a.win.Update(func() {
-				a.loadLocalVideo(path)
-			})
-		} else {
-			a.loadLocalVideo(path)
-		}
+		a.runOnUI(func() { a.loadLocalVideo(path) })
 	}()
 }
 
@@ -3552,9 +3658,17 @@ func (a *App) loadLocalVideo(path string) {
 }
 
 func (a *App) sendControlEnvelope(msgType protocol.MsgType, payload any, targetIDs []string) {
+	a.sendControlEnvelopeWithRequest(msgType, payload, targetIDs, "")
+}
+
+// maxQueuedRemoteInput bounds how many remote input events may wait in the
+// control queue; older input is worthless, so newer input is dropped beyond it.
+const maxQueuedRemoteInput = 64
+
+func (a *App) sendControlEnvelopeWithRequest(msgType protocol.MsgType, payload any, targetIDs []string, requestID string) {
 	a.mu.Lock()
 	closed := a.lifecycleClosed
-	ctrlCh := a.ctrlCh
+	started := a.ctrlNotify != nil
 	a.mu.Unlock()
 	if closed {
 		return
@@ -3567,28 +3681,32 @@ func (a *App) sendControlEnvelope(msgType protocol.MsgType, payload any, targetI
 		return
 	}
 	env.Channel = a.channel
+	env.RequestID = requestID
 	env.Timestamp = time.Now().UnixMilli()
 	var targets []string
 	if len(targetIDs) > 0 {
 		targets = append([]string(nil), targetIDs...)
 	}
-	if msgType == protocol.MsgRemoteInputEvent {
-		select {
-		case ctrlCh <- ctrlOutbound{env: env, targetIDs: targets}:
-		default:
-		}
-		return
-	}
-	if ctrlCh == nil {
+	if !started {
 		_ = a.opts.Transport.BroadcastControl(env, targets)
 		return
 	}
+	// A single FIFO keeps control messages ordered (e.g. lock then unlock);
+	// the previous overflow goroutine could let a later message overtake.
+	isInput := msgType == protocol.MsgRemoteInputEvent
+	a.ctrlMu.Lock()
+	if isInput && a.ctrlQueuedInput >= maxQueuedRemoteInput {
+		a.ctrlMu.Unlock()
+		return
+	}
+	a.ctrlQueue = append(a.ctrlQueue, ctrlOutbound{env: env, targetIDs: targets, input: isInput})
+	if isInput {
+		a.ctrlQueuedInput++
+	}
+	a.ctrlMu.Unlock()
 	select {
-	case ctrlCh <- ctrlOutbound{env: env, targetIDs: targets}:
+	case a.ctrlNotify <- struct{}{}:
 	default:
-		go func() {
-			_ = a.opts.Transport.BroadcastControl(env, targets)
-		}()
 	}
 }
 
@@ -3669,7 +3787,7 @@ func (a *App) cancelRemoteCommand() {
 	if a.remoteRequestID == "" {
 		return
 	}
-	a.sendControlEnvelope(protocol.MsgRemoteCommandCancel, nil, a.remoteTargetIDs())
+	a.sendControlEnvelopeWithRequest(protocol.MsgRemoteCommandCancel, map[string]string{"request_id": a.remoteRequestID}, a.remoteTargetIDs(), a.remoteRequestID)
 	a.statusNote = "已发送取消远程命令请求"
 }
 
@@ -3691,14 +3809,19 @@ func (a *App) handleRemoteEnvelope(env protocol.Envelope) {
 	case protocol.MsgRemoteCommandResult, protocol.MsgRemoteAppResult:
 		var result remoteexec.CommandResult
 		if json.Unmarshal(env.Payload, &result) == nil {
+			if a.remoteRequestID != "" && result.RequestID != "" && result.RequestID != a.remoteRequestID {
+				return
+			}
 			a.remoteResult = &result
 			a.statusNote = "远程操作" + result.Status
 		}
 	}
 }
 
+// HandleRemoteEnvelope is called from transport goroutines; state changes are
+// applied on the UI thread.
 func (a *App) HandleRemoteEnvelope(env protocol.Envelope) {
-	a.handleRemoteEnvelope(env)
+	a.runOnUI(func() { a.handleRemoteEnvelope(env) })
 	a.Invalidate()
 }
 
@@ -3802,13 +3925,30 @@ func (a *App) buildRemoteCommandPanel(c *ui.Context, pal theme.Palette) {
 func (a *App) controlSendWorker() {
 	a.mu.Lock()
 	ctx := a.lifecycleCtx
-	ch := a.ctrlCh
+	notify := a.ctrlNotify
 	a.mu.Unlock()
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case item := <-ch:
+		case <-notify:
+		}
+		for {
+			a.ctrlMu.Lock()
+			if len(a.ctrlQueue) == 0 {
+				a.ctrlMu.Unlock()
+				break
+			}
+			item := a.ctrlQueue[0]
+			a.ctrlQueue[0] = ctrlOutbound{}
+			a.ctrlQueue = a.ctrlQueue[1:]
+			if item.input {
+				a.ctrlQueuedInput--
+			}
+			a.ctrlMu.Unlock()
+			if ctx.Err() != nil {
+				return
+			}
 			if a.opts.Transport != nil {
 				_ = a.opts.Transport.BroadcastControl(item.env, item.targetIDs)
 			}
@@ -3859,6 +3999,50 @@ func (a *App) filteredStudents() []core.StudentInfo {
 	return out
 }
 
+const (
+	seatCardMinWidth = 176
+	seatGridGap      = 12
+	seatGridPadding  = 12
+)
+
+// seatGridColumns picks how many seat cards fit in the scroll viewport width.
+func seatGridColumns(viewportW float32) int {
+	usable := viewportW - 2*seatGridPadding - 14 // minus scrollbar gutter
+	if usable <= 0 {
+		return 4
+	}
+	cols := int((usable + seatGridGap) / (seatCardMinWidth + seatGridGap))
+	if cols < 1 {
+		cols = 1
+	}
+	return cols
+}
+
+// seatStatusPill renders the student state in strict monochrome, using fill,
+// border and weight rather than color:
+//   - hand raised: solid dark pill (most urgent)
+//   - locked: gray filled pill with a lock icon
+//   - remote/broadcast/exam: outlined pill
+//   - online/offline: plain text (offline cards are faded as a whole)
+func seatStatusPill(c *ui.Context, pal theme.Palette, st core.StudentInfo) {
+	text, _ := statusBadge(pal, st)
+	switch {
+	case st.HandRaised || st.Status == core.StatusHandRaised:
+		ui.Badge(c, text).Background(pal.Accent).TextColor(pal.AccentText).Bold()
+	case st.Status == core.StatusLocked:
+		ui.Row(c).AlignItems(ui.Center).Gap(3).Padding(1, 7).Radius(9).Background(pal.ChromeActive).Children(func() {
+			ui.Image(c, theme.IconLockScreen).Size(11, 11)
+			ui.Text(c, text).FontSize(10).Bold().TextColor(pal.Text)
+		})
+	case st.Status == core.StatusControlled, st.Status == core.StatusBroadcast, st.Status == core.StatusExamining:
+		ui.Badge(c, text).Background(pal.Card).Border(1, pal.Text).TextColor(pal.Text)
+	case st.Status == core.StatusOffline:
+		ui.Text(c, text).FontSize(11).TextColor(pal.TextMuted)
+	default:
+		ui.Text(c, "● "+text).FontSize(11).Bold().TextColor(pal.Text)
+	}
+}
+
 func statusBadge(pal theme.Palette, st core.StudentInfo) (string, ui.Color) {
 	if st.HandRaised || st.Status == core.StatusHandRaised {
 		return "举手", pal.Warning
@@ -3897,15 +4081,38 @@ func (a *App) SetMainTab(tab int)  { a.mainTab = tab }
 func (a *App) SideTab() int        { return a.sideTab }
 func (a *App) SetSideTab(tab int)  { a.sideTab = tab }
 func (a *App) Volume() float64     { return a.volume }
-func (a *App) MonitorFPS() float64 { return a.monitorFPS }
+func (a *App) MonitorFPS() float64 { return float64(a.monitorFPSValue.Load()) }
 func (a *App) MonitorQual() float64 {
 	return float64(a.qualValue.Load())
 }
 func (a *App) Broadcasting() bool { return a.broadcastFlag.Load() }
-func (a *App) ScreenLocked() bool { return a.screenLocked }
+func (a *App) ScreenLocked() bool {
+	a.lockMu.RLock()
+	defer a.lockMu.RUnlock()
+	return a.lockAll || len(a.lockedIDs) > 0
+}
+
+// ScreenLockAll reports whether the whole class is locked.
+func (a *App) ScreenLockAll() bool {
+	a.lockMu.RLock()
+	defer a.lockMu.RUnlock()
+	return a.lockAll
+}
+
+// ScreenLockedFor reports whether studentID should be locked, e.g. when it
+// (re)registers. Safe to call from runtime goroutines.
+func (a *App) ScreenLockedFor(studentID string) (bool, string) {
+	a.lockMu.RLock()
+	defer a.lockMu.RUnlock()
+	msg := a.lockMessageSnap
+	if msg == "" {
+		msg = "请注意听讲，教师已锁定屏幕。"
+	}
+	return a.lockAll || a.lockedIDs[studentID], msg
+}
 func (a *App) SelectedID() string { return a.selectedID }
 func (a *App) VoiceActive() bool  { return a.voiceFlag.Load() }
-func (a *App) Monitoring() bool   { return a.monitoring }
+func (a *App) Monitoring() bool   { return a.monitoringFlag.Load() }
 func (a *App) RemoteControlID() string {
 	return a.remoteControlID
 }

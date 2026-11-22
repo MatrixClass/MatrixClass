@@ -14,13 +14,13 @@ const (
 type StudentStatus string
 
 const (
-	StatusOffline     StudentStatus = "offline"
-	StatusOnline      StudentStatus = "online"
-	StatusBroadcast   StudentStatus = "broadcasting"
-	StatusLocked      StudentStatus = "locked"
-	StatusControlled  StudentStatus = "controlled"
-	StatusExamining   StudentStatus = "examining"
-	StatusHandRaised  StudentStatus = "hand_raised"
+	StatusOffline    StudentStatus = "offline"
+	StatusOnline     StudentStatus = "online"
+	StatusBroadcast  StudentStatus = "broadcasting"
+	StatusLocked     StudentStatus = "locked"
+	StatusControlled StudentStatus = "controlled"
+	StatusExamining  StudentStatus = "examining"
+	StatusHandRaised StudentStatus = "hand_raised"
 )
 
 type SeatPos struct {
@@ -219,6 +219,10 @@ type ExamSubmission struct {
 	Score     int                 `json:"score"`
 	MaxScore  int                 `json:"max_score"`
 	Submitted time.Time           `json:"submitted"`
+	// EssayScores holds teacher-assigned points per essay question ID. It is
+	// authoritative only on the teacher side; values received from students
+	// are ignored by exam.Service.SubmitAnswer.
+	EssayScores map[string]int `json:"essay_scores,omitempty"`
 }
 
 type ExamStats struct {

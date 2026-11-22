@@ -14,8 +14,16 @@ case "$arch" in
   x86_64|amd64) arch=amd64 ;;
   aarch64|arm64) arch=arm64 ;;
   loongarch64|loong64) arch=loong64 ;;
+  riscv64) arch=riscv64 ;;
+  i386|i686) arch=386 ;;
+  armv7l|armv7*) arch=arm ;;
   *) echo "unsupported Linux architecture: $arch" >&2; exit 1 ;;
 esac
+
+if [ ! -f "$script_dir/matrixclass-teacher-linux-$arch" ]; then
+  echo "This package does not contain binaries for $arch; download matrixclass-linux-$arch.tar.gz instead." >&2
+  exit 1
+fi
 
 mkdir -p "$prefix" "$bindir" "$desktopdir" "$icondir"
 mkdir -p "$datadir" "$configdir" "$logdir"

@@ -9,6 +9,7 @@ const (
 	ShellPowerShell Shell = "powershell"
 	ShellSH         Shell = "sh"
 	ShellBash       Shell = "bash"
+	ShellZsh        Shell = "zsh"
 )
 
 type Application struct {

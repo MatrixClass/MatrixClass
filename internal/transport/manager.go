@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net"
 	"runtime"
 	"sort"
@@ -29,7 +30,18 @@ const (
 	internalFallbackReqID  = "__nexlab_mcast_fallback__"
 	internalMcastInfoReqID = "__nexlab_mcast_info__"
 	internalMcastAckReqID  = "__nexlab_mcast_ack__"
+
+	// maxMcastChunks bounds the number of chunks a single multicast frame may
+	// claim (about 9.8 MB at defaultMcastChunkSize) so a hostile or corrupt
+	// header cannot force huge reassembly allocations.
+	maxMcastChunks = 8192
+	// mcastResyncFactor * ringSize is how far a sequence may jump backwards
+	// before the receiver assumes the sender restarted and resynchronizes.
+	mcastResyncFactor = 4
 )
+
+// listenUDPFunc is swapped in tests to exercise StartTeacher error paths.
+var listenUDPFunc = net.ListenUDP
 
 var (
 	ErrNoSession       = errors.New("transport: session not found")
@@ -73,10 +85,13 @@ func WithMulticastFEC(dataShards, parityShards int) ManagerOption {
 func WithCipherKey(key []byte) ManagerOption {
 	return func(m *Manager) {
 		c, err := NewFrameCipher(key)
-		if err == nil {
-			m.cipher = c
-			m.kcpCfg.Cipher = c
+		if err != nil {
+			log.Printf("transport: invalid cipher key: %v", err)
+			m.optErr = fmt.Errorf("transport: cipher key: %w", err)
+			return
 		}
+		m.cipher = c
+		m.kcpCfg.Cipher = c
 	}
 }
 
@@ -154,6 +169,7 @@ type Manager struct {
 	fecEncoder          *FECEncoder
 	fecDecoder          *FECDecoder
 	mcastLimiter        *rate.Limiter
+	optErr              error
 
 	listener    *KCPListener
 	broadcaster *BeaconBroadcaster
@@ -162,6 +178,9 @@ type Manager struct {
 	mcastTarget *net.UDPAddr
 	mcastRxConn net.PacketConn
 	mcastAddr   string
+	// mcastSourceIP is the teacher IP multicast packets must originate from
+	// (student role). nil disables filtering (unknown or loopback teacher).
+	mcastSourceIP net.IP
 
 	sessions         map[string]*SmuxSession
 	aliases          map[string]*SmuxSession
@@ -355,6 +374,9 @@ func (m *Manager) StartTeacher(ctx context.Context, listenAddr string, beacon pr
 	if m.closed {
 		return ErrConnClosed
 	}
+	if m.optErr != nil {
+		return m.optErr
+	}
 	if m.started || m.starting {
 		return ErrAlreadyStarted
 	}
@@ -362,12 +384,32 @@ func (m *Manager) StartTeacher(ctx context.Context, listenAddr string, beacon pr
 	m.role = core.RoleTeacher
 	m.ctx, m.cancel = context.WithCancel(ctx)
 
-	listener, err := ListenKCP(listenAddr, m.kcpCfg)
-	if err != nil {
+	var listener *KCPListener
+	var mcastConn *net.UDPConn
+	fail := func(err error) error {
+		if listener != nil {
+			_ = listener.Close()
+		}
+		if mcastConn != nil {
+			_ = mcastConn.Close()
+		}
+		if m.cancel != nil {
+			m.cancel()
+		}
+		m.ctx, m.cancel = nil, nil
+		m.listener = nil
+		m.mcastConn = nil
+		m.mcastTarget = nil
+		m.broadcaster = nil
 		m.starting = false
 		return err
 	}
-	m.listener = listener
+
+	listener, err := ListenKCP(listenAddr, m.kcpCfg)
+	if err != nil {
+		listener = nil
+		return fail(err)
+	}
 
 	if udpAddr, ok := listener.Addr().(*net.UDPAddr); ok && beacon.KCPPort == 0 {
 		beacon.KCPPort = udpAddr.Port
@@ -375,37 +417,35 @@ func (m *Manager) StartTeacher(ctx context.Context, listenAddr string, beacon pr
 	if beacon.Role == "" {
 		beacon.Role = string(core.RoleTeacher)
 	}
-	m.beacon = beacon
 
+	var mcastTarget *net.UDPAddr
 	if beacon.MulticastIP != "" && beacon.McastPort > 0 {
 		target, err := net.ResolveUDPAddr("udp4", net.JoinHostPort(beacon.MulticastIP, strconv.Itoa(beacon.McastPort)))
 		if err != nil {
-			_ = listener.Close()
-			m.starting = false
-			return err
+			return fail(err)
 		}
-		mcastConn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4zero, Port: 0})
+		conn, err := listenUDPFunc("udp4", &net.UDPAddr{IP: net.IPv4zero, Port: 0})
 		if err != nil {
-			_ = listener.Close()
-			return err
+			return fail(err)
 		}
+		mcastConn = conn
 		_ = mcastConn.SetWriteBuffer(2 * 1024 * 1024)
-		m.mcastTarget = target
-		m.mcastConn = mcastConn
+		mcastTarget = target
 	}
 
+	var bc *BeaconBroadcaster
 	if m.discoveryCfg.Port > 0 {
-		bc, err := StartBeaconBroadcaster(m.ctx, beacon, m.discoveryCfg)
+		bc, err = StartBeaconBroadcaster(m.ctx, beacon, m.discoveryCfg)
 		if err != nil {
-			_ = listener.Close()
-			if m.mcastConn != nil {
-				_ = m.mcastConn.Close()
-			}
-			m.starting = false
-			return err
+			return fail(err)
 		}
-		m.broadcaster = bc
 	}
+
+	m.listener = listener
+	m.beacon = beacon
+	m.mcastTarget = mcastTarget
+	m.mcastConn = mcastConn
+	m.broadcaster = bc
 
 	go m.acceptLoop()
 	m.started = true
@@ -458,7 +498,10 @@ func (m *Manager) acceptLoop() {
 		sess.SetOnClose(func(closed core.Session) {
 			m.removeSession(closed.ID())
 		})
-		m.addSession(sess)
+		if !m.addSessionIfCurrent(sess, 0) {
+			_ = sess.Close()
+			continue
+		}
 		m.mu.RLock()
 		mcastIP := m.beacon.MulticastIP
 		mcastPort := m.beacon.McastPort
@@ -491,6 +534,10 @@ func (m *Manager) StartStudent(ctx context.Context, channel string) error {
 		m.mu.Unlock()
 		return ErrConnClosed
 	}
+	if m.optErr != nil {
+		m.mu.Unlock()
+		return m.optErr
+	}
 	if m.started || m.starting {
 		m.mu.Unlock()
 		return ErrAlreadyStarted
@@ -505,6 +552,9 @@ func (m *Manager) StartStudent(ctx context.Context, channel string) error {
 	if err := m.connectStudentOnce(channel); err != nil {
 		m.mu.Lock()
 		if !m.closed {
+			if m.cancel != nil {
+				m.cancel()
+			}
 			m.cancel = nil
 			m.ctx = nil
 		}
@@ -526,6 +576,7 @@ func (m *Manager) connectStudentOnce(channel string) error {
 		return ErrConnClosed
 	}
 	ctx := m.ctx
+	connectionGeneration := m.connectionGen.Load()
 	teacherAddr := m.explicitTeacherAddr
 	dPort := m.discoveryCfg.Port
 	explicitMcast := m.explicitMcastListen
@@ -558,14 +609,15 @@ func (m *Manager) connectStudentOnce(channel string) error {
 		_ = kcpConn.Close()
 		return err
 	}
-	m.mu.RLock()
-	connectionGeneration := m.connectionGen.Load()
-	m.mu.RUnlock()
 	sess.SetOnClose(func(closed core.Session) {
 		m.removeSession(closed.ID())
 		m.scheduleStudentReconnect(connectionGeneration)
 	})
-	m.addSession(sess)
+	if !m.addSessionIfCurrent(sess, connectionGeneration) {
+		_ = sess.Close()
+		return ErrConnClosed
+	}
+	m.resetMulticastRxState(teacherSourceIP(kcpConn.RemoteAddr()))
 	localAddress := ""
 	if addr := kcpConn.LocalAddr(); addr != nil {
 		localAddress = addr.String()
@@ -598,10 +650,10 @@ func (m *Manager) scheduleStudentReconnect(closedGeneration uint64) {
 	ctx := m.ctx
 	channel := m.studentChannel
 	generation := m.connectionGen.Load()
+	m.mu.RUnlock()
 	if closedGeneration != 0 && closedGeneration != generation {
 		return
 	}
-	m.mu.RUnlock()
 	if !isStudent || closed || ctx == nil || ctx.Err() != nil {
 		return
 	}
@@ -954,9 +1006,12 @@ func (m *Manager) multicastReadLoop(pc net.PacketConn) {
 	buf := m.mcastPktPool.Get().([]byte)
 	defer m.mcastPktPool.Put(buf)
 	for {
-		n, _, err := pc.ReadFrom(buf)
+		n, src, err := pc.ReadFrom(buf)
 		if err != nil {
 			return
+		}
+		if !m.acceptMulticastSource(src) {
+			continue
 		}
 		m.rxBytesTotal.Add(uint64(n))
 		pkt := buf[:n]
@@ -968,12 +1023,112 @@ func (m *Manager) multicastReadLoop(pc net.PacketConn) {
 			pkt = dec
 		}
 		if m.processIncomingMulticastPacket(pkt) && m.role == core.RoleStudent && m.mcastAckSent.CompareAndSwap(false, true) {
-			m.sendMulticastAck()
+			if err := m.sendMulticastAck(); err != nil {
+				// Retry on the next multicast packet.
+				m.mcastAckSent.Store(false)
+			}
 		}
 	}
 }
 
-func (m *Manager) sendMulticastAck() {
+// teacherSourceIP returns the IP multicast traffic is expected to originate
+// from, or nil when filtering should be disabled (unknown, unspecified or
+// loopback teacher: the local multicast source address then varies).
+func teacherSourceIP(addr net.Addr) net.IP {
+	udpAddr, ok := addr.(*net.UDPAddr)
+	if !ok || udpAddr == nil || udpAddr.IP == nil {
+		return nil
+	}
+	ip := udpAddr.IP
+	if ip.IsLoopback() || ip.IsUnspecified() {
+		return nil
+	}
+	return append(net.IP(nil), ip...)
+}
+
+// acceptMulticastSource reports whether a multicast datagram from src should
+// be processed. Students only accept packets from the teacher they are
+// connected to when that teacher's IP is known.
+func (m *Manager) acceptMulticastSource(src net.Addr) bool {
+	m.mu.RLock()
+	expected := m.mcastSourceIP
+	m.mu.RUnlock()
+	if expected == nil {
+		return true
+	}
+	udpAddr, ok := src.(*net.UDPAddr)
+	if !ok || udpAddr == nil {
+		return false
+	}
+	return udpAddr.IP.Equal(expected)
+}
+
+// resetMulticastRxState clears per-teacher multicast receive state after a
+// (re)connect so sequence tracking and the multicast ack restart cleanly.
+func (m *Manager) resetMulticastRxState(sourceIP net.IP) {
+	m.mu.Lock()
+	m.mcastSourceIP = sourceIP
+	m.mu.Unlock()
+	m.mcastRxMu.Lock()
+	m.resetMulticastSeqLocked()
+	m.mcastRxMu.Unlock()
+	m.mcastAckSent.Store(false)
+}
+
+func (m *Manager) resetMulticastSeqLocked() {
+	m.mcastSeenInit = false
+	m.mcastExpectedSeq = 0
+	m.mcastReasm = make(map[uint64]*mcastReassembly)
+	m.mcastDelivered = make(map[uint64]struct{})
+	m.nackPending = make(map[uint64]time.Time)
+}
+
+// trackMulticastSeqLocked advances the expected sequence for an arriving seq
+// and schedules NACKs for bounded gaps. Forward jumps beyond what the sender's
+// ring can serve and large backward jumps (sender restart) resync instead of
+// NACKing. Caller holds mcastRxMu.
+func (m *Manager) trackMulticastSeqLocked(seq uint64, now time.Time) {
+	ring := uint64(m.ringSize)
+	if ring == 0 {
+		ring = defaultRingBufferSize
+	}
+	if !m.mcastSeenInit {
+		m.mcastSeenInit = true
+		m.mcastExpectedSeq = seq + 1
+		return
+	}
+	expected := m.mcastExpectedSeq
+	switch {
+	case seq == expected:
+		m.mcastExpectedSeq = seq + 1
+	case seq > expected:
+		if seq-expected > ring {
+			// Too far ahead to recover via NACK; skip the gap.
+			for miss := range m.nackPending {
+				if miss < seq-ring {
+					delete(m.nackPending, miss)
+				}
+			}
+			m.mcastExpectedSeq = seq + 1
+			return
+		}
+		for miss := expected; miss < seq; miss++ {
+			if _, exists := m.nackPending[miss]; !exists {
+				m.nackPending[miss] = now
+			}
+		}
+		m.mcastExpectedSeq = seq + 1
+	default:
+		if expected-seq > ring*mcastResyncFactor {
+			// Sender restarted (sequence reset); start over from seq.
+			m.resetMulticastSeqLocked()
+			m.mcastSeenInit = true
+			m.mcastExpectedSeq = seq + 1
+		}
+	}
+}
+
+func (m *Manager) sendMulticastAck() error {
 	env := protocol.Envelope{
 		Type:      protocol.MsgHelloAck,
 		RequestID: internalMcastAckReqID,
@@ -986,9 +1141,10 @@ func (m *Manager) sendMulticastAck() {
 		break
 	}
 	m.mu.RUnlock()
-	if target != nil {
-		_ = target.SendEnvelope(env)
+	if target == nil {
+		return ErrNoSession
 	}
+	return target.SendEnvelope(env)
 }
 
 func (m *Manager) processIncomingMulticastPacket(pkt []byte) bool {
@@ -1011,7 +1167,7 @@ func (m *Manager) processIncomingMulticastPacket(pkt []byte) bool {
 	seq := binary.BigEndian.Uint64(pkt[2:10])
 	idx := int(binary.BigEndian.Uint16(pkt[10:12]))
 	total := int(binary.BigEndian.Uint16(pkt[12:14]))
-	if total <= 0 || idx >= total {
+	if total <= 0 || total > maxMcastChunks || idx >= total {
 		return false
 	}
 	payload := pkt[mcastHeaderSize:]
@@ -1025,21 +1181,13 @@ func (m *Manager) processIncomingMulticastPacket(pkt []byte) bool {
 
 	m.mcastRxMu.Lock()
 	now := time.Now()
-	if !m.mcastSeenInit {
-		m.mcastSeenInit = true
-		m.mcastExpectedSeq = seq
+	if rasm, ok := m.mcastReasm[seq]; ok && (total != rasm.total || idx >= len(rasm.chunks)) {
+		// Inconsistent with the first chunk seen for this seq: drop it.
+		m.mcastRxMu.Unlock()
+		return false
 	}
-	if seq > m.mcastExpectedSeq {
-		for miss := m.mcastExpectedSeq; miss < seq; miss++ {
-			if _, exists := m.nackPending[miss]; !exists {
-				m.nackPending[miss] = now
-			}
-		}
-		m.mcastExpectedSeq = seq + 1
-	} else if seq == m.mcastExpectedSeq {
-		m.mcastExpectedSeq = seq + 1
-	}
-
+	m.trackMulticastSeqLocked(seq, now)
+	// Look up again: trackMulticastSeqLocked may reset state on resync.
 	rasm, ok := m.mcastReasm[seq]
 	if !ok {
 		rasm = &mcastReassembly{
@@ -1124,19 +1272,7 @@ func (m *Manager) evictOlderIncompleteLocked(completedSeq uint64, now time.Time)
 func (m *Manager) deliverMulticastFrame(seq uint64, frame []byte) {
 	m.mcastRxMu.Lock()
 	now := time.Now()
-	if !m.mcastSeenInit {
-		m.mcastSeenInit = true
-		m.mcastExpectedSeq = seq + 1
-	} else if seq > m.mcastExpectedSeq {
-		for miss := m.mcastExpectedSeq; miss < seq; miss++ {
-			if _, exists := m.nackPending[miss]; !exists {
-				m.nackPending[miss] = now
-			}
-		}
-		m.mcastExpectedSeq = seq + 1
-	} else if seq == m.mcastExpectedSeq {
-		m.mcastExpectedSeq = seq + 1
-	}
+	m.trackMulticastSeqLocked(seq, now)
 	delete(m.nackPending, seq)
 	delete(m.mcastReasm, seq)
 	if _, dup := m.mcastDelivered[seq]; dup {
@@ -1386,9 +1522,22 @@ func (m *Manager) LookupRingFrame(seq uint64) ([]byte, bool) {
 }
 
 func (m *Manager) addSession(s *SmuxSession) {
+	m.addSessionIfCurrent(s, 0)
+}
+
+// addSessionIfCurrent registers s unless the manager is closed, s is already
+// closed, or a non-zero generation is stale. It reports whether s was added.
+func (m *Manager) addSessionIfCurrent(s *SmuxSession, generation uint64) bool {
 	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.closed || s.isClosed() {
+		return false
+	}
+	if generation != 0 && m.connectionGen.Load() != generation {
+		return false
+	}
 	m.sessions[s.ID()] = s
-	m.mu.Unlock()
+	return true
 }
 
 func (m *Manager) removeSession(id string) {
@@ -1420,7 +1569,9 @@ func (m *Manager) handleEnvelope(sess core.Session, env protocol.Envelope) {
 	if env.SenderID != "" {
 		if sm, ok := sess.(*SmuxSession); ok {
 			m.mu.Lock()
-			m.aliases[env.SenderID] = sm
+			if existing, ok := m.aliases[env.SenderID]; !ok || existing == sm || existing.isClosed() || sameRemoteHost(existing, sm) {
+				m.aliases[env.SenderID] = sm
+			}
 			m.mu.Unlock()
 		}
 	}
@@ -1470,6 +1621,18 @@ func (m *Manager) handleEnvelope(sess core.Session, env protocol.Envelope) {
 	if cb != nil {
 		cb(sess, env)
 	}
+}
+
+// sameRemoteHost reports whether two sessions come from the same remote IP,
+// which lets a reconnecting student rebind its alias before the old session
+// times out while preventing other hosts from hijacking it.
+func sameRemoteHost(a, b *SmuxSession) bool {
+	ah, _, errA := net.SplitHostPort(a.RemoteAddr())
+	bh, _, errB := net.SplitHostPort(b.RemoteAddr())
+	if errA != nil || errB != nil || ah == "" {
+		return false
+	}
+	return ah == bh
 }
 
 func (m *Manager) serveNACK(sess core.Session, seqs []uint64) {

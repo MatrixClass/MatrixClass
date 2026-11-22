@@ -22,6 +22,9 @@ const (
 type Capabilities struct {
 	OS                    string           `json:"os"`
 	Architecture          string           `json:"architecture"`
+	OSVersion             string           `json:"os_version,omitempty"`
+	HostArchitecture      string           `json:"host_architecture,omitempty"`
+	Translated            bool             `json:"translated,omitempty"`
 	Desktop               Desktop          `json:"desktop"`
 	ScreenCapture         bool             `json:"screen_capture"`
 	AudioCapture          bool             `json:"audio_capture"`
@@ -50,8 +53,15 @@ type Capabilities struct {
 }
 
 func (c Capabilities) Summary() string {
-	return fmt.Sprintf("%s/%s desktop=%s screen=%s(%s) audio=%s(%s) input=%s(%s) lock=%s(%s)",
-		c.OS, c.Architecture, c.Desktop,
+	identity := c.OS + "/" + c.Architecture
+	if c.OSVersion != "" {
+		identity += " version=" + c.OSVersion
+	}
+	if c.Translated {
+		identity += " rosetta(host=" + c.HostArchitecture + ")"
+	}
+	return fmt.Sprintf("%s desktop=%s screen=%s(%s) audio=%s(%s) input=%s(%s) lock=%s(%s)",
+		identity, c.Desktop,
 		c.ScreenCaptureStatus, c.ScreenCaptureReason,
 		c.AudioCaptureStatus, c.AudioCaptureReason,
 		c.RemoteInputStatus, c.RemoteInputReason,

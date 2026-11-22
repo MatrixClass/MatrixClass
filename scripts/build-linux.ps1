@@ -1,22 +1,30 @@
+<#
+.SYNOPSIS
+  Cross-builds MatrixClass Linux binaries (CGO_ENABLED=0).
+.DESCRIPTION
+  Default architectures are the ones with a native mygo UI backend (amd64, arm64).
+  loong64, riscv64, 386 and arm (GOARM=7) are accepted as compile-only targets:
+  they build, but mygo reports "not supported yet" at startup.
+#>
 param(
-    [string]$OutputDir = "dist/linux"
+    [string]$OutputDir = "dist/linux",
+    [string[]]$Architectures = @("amd64", "arm64"),
+    [string]$Version = ""
 )
 
-$ErrorActionPreference = "Stop"
-$architectures = @("amd64", "arm64", "loong64")
-New-Item -ItemType Directory -Force -Path $OutputDir | Out-Null
+. (Join-Path $PSScriptRoot "lib/common.ps1")
 
-foreach ($arch in $architectures) {
-    $env:GOOS = "linux"
-    $env:GOARCH = $arch
-    $env:CGO_ENABLED = "0"
-    go build -tags mygo_nowebview -o "$OutputDir/matrixclass-teacher-linux-$arch" ./cmd/teacher
-    if ($LASTEXITCODE -ne 0) { throw "teacher build failed for linux/$arch" }
-    go build -tags mygo_nowebview -o "$OutputDir/matrixclass-student-linux-$arch" ./cmd/student
-    if ($LASTEXITCODE -ne 0) { throw "student build failed for linux/$arch" }
+$Version = Get-MatrixClassVersion $Version
+Assert-Architectures "linux" $Architectures
+$outputPath = Resolve-RepoPath $OutputDir
+New-Item -ItemType Directory -Force -Path $outputPath | Out-Null
+
+foreach ($arch in $Architectures) {
+    Write-Host "Building linux/$arch (version $Version)"
+    foreach ($app in @("teacher", "student")) {
+        Invoke-GoBuild -Goos linux -Goarch $arch -App $app -Version $Version `
+            -Output (Join-Path $outputPath "matrixclass-$app-linux-$arch")
+    }
 }
 
-Remove-Item Env:GOOS -ErrorAction SilentlyContinue
-Remove-Item Env:GOARCH -ErrorAction SilentlyContinue
-Remove-Item Env:CGO_ENABLED -ErrorAction SilentlyContinue
-Write-Host "Linux builds completed: $($architectures -join ', ')"
+Write-Host "Linux builds completed: $($Architectures -join ', ')"

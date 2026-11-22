@@ -2,6 +2,7 @@ package teacher
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"sync"
@@ -12,6 +13,7 @@ import (
 	"github.com/egoist/mygo/ui"
 
 	"nexlab/internal/core"
+	"nexlab/internal/protocol"
 	"nexlab/internal/store"
 	"nexlab/internal/ui/demo"
 )
@@ -777,8 +779,52 @@ func TestUpdateMonitorFrameResizeAndConcurrency(t *testing.T) {
 	tester.Frame()
 }
 
+// lastSentPolicy returns the most recent MsgPolicySync sent to students.
+// Control envelopes are delivered by an asynchronous ordered queue, so wait
+// until wantCount policy envelopes have been sent.
+func lastSentPolicy(t *testing.T, tr *demo.Transport, wantCount int) core.PolicyRule {
+	t.Helper()
+	waitForTeacherFileTasks(t, 2*time.Second, func() bool {
+		return countSent(tr, protocol.MsgPolicySync) >= wantCount
+	})
+	var rule core.PolicyRule
+	found := false
+	for _, env := range tr.Broadcasts() {
+		if env.Type == protocol.MsgPolicySync {
+			rule = core.PolicyRule{}
+			if err := json.Unmarshal(env.Payload, &rule); err != nil {
+				t.Fatalf("decode policy payload: %v", err)
+			}
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected a MsgPolicySync envelope to be sent")
+	}
+	return rule
+}
+
+func countSent(tr *demo.Transport, msgType protocol.MsgType) int {
+	n := 0
+	for _, env := range tr.Broadcasts() {
+		if env.Type == msgType {
+			n++
+		}
+	}
+	return n
+}
+
+// The policy targets students only; it must never be applied to the
+// teacher's own machine through the local control engine.
+func assertNoLocalPolicy(t *testing.T, ctrl *demo.Control) {
+	t.Helper()
+	if ctrl.Policy.Mode != "" || len(ctrl.Policy.BlockedApps) != 0 || ctrl.Policy.LockScreen {
+		t.Fatalf("policy must not be applied to the teacher machine, got %+v", ctrl.Policy)
+	}
+}
+
 func TestRevokeClassroomPolicy(t *testing.T) {
-	app, _, _, ctrl := newTestTeacherApp()
+	app, tr, _, ctrl := newTestTeacherApp()
 	app.blockedAppsInput = "WeChat.exe, steam.exe"
 	app.blockedSitesInput = "bilibili.com"
 
@@ -796,9 +842,10 @@ func TestRevokeClassroomPolicy(t *testing.T) {
 	if !app.policyActive {
 		t.Fatalf("expected policyActive=true after apply")
 	}
-	if ctrl.Policy.Mode != "blacklist" || len(ctrl.Policy.BlockedApps) != 2 {
-		t.Fatalf("unexpected applied policy: %+v", ctrl.Policy)
+	if sent := lastSentPolicy(t, tr, 1); sent.Mode != "blacklist" || len(sent.BlockedApps) != 2 {
+		t.Fatalf("unexpected sent policy: %+v", sent)
 	}
+	assertNoLocalPolicy(t, ctrl)
 
 	if err := tester.Click("管控策略"); err != nil {
 		t.Fatalf("failed to reopen policy editor: %v", err)
@@ -811,12 +858,14 @@ func TestRevokeClassroomPolicy(t *testing.T) {
 	if app.policyActive {
 		t.Fatalf("expected policyActive=false after revoke")
 	}
-	if ctrl.Policy.Mode != "off" {
-		t.Fatalf("expected revoked policy mode=off, got %q", ctrl.Policy.Mode)
+	revoked := lastSentPolicy(t, tr, 2)
+	if revoked.Mode != "off" {
+		t.Fatalf("expected revoked policy mode=off, got %q", revoked.Mode)
 	}
-	if len(ctrl.Policy.BlockedApps) != 0 || len(ctrl.Policy.BlockedDomains) != 0 {
-		t.Fatalf("expected empty blocklists after revoke, got %+v", ctrl.Policy)
+	if len(revoked.BlockedApps) != 0 || len(revoked.BlockedDomains) != 0 {
+		t.Fatalf("expected empty blocklists after revoke, got %+v", revoked)
 	}
+	assertNoLocalPolicy(t, ctrl)
 	if app.blockedAppsInput != "WeChat.exe, steam.exe" || app.blockedSitesInput != "bilibili.com" {
 		t.Fatalf("expected input fields preserved after revoke")
 	}
@@ -845,7 +894,7 @@ func TestTeacherPolicyOpensFromNavigation(t *testing.T) {
 }
 
 func TestPolicyCSVRulesCompile(t *testing.T) {
-	app, _, _, ctrl := newTestTeacherApp()
+	app, tr, _, ctrl := newTestTeacherApp()
 	app.blockedAppsInput = "game.exe,chat.exe"
 	app.allowedAppsInput = "notepad.exe"
 	app.blockedSitesInput = "example.com,video.example.com"
@@ -855,12 +904,14 @@ func TestPolicyCSVRulesCompile(t *testing.T) {
 	if got := app.blockedAppsInput; got != "game.exe,chat.exe" {
 		t.Fatalf("unexpected blocked app CSV: %q", got)
 	}
-	if len(ctrl.Policy.BlockedApps) != 2 || len(ctrl.Policy.AllowedApps) != 1 {
-		t.Fatalf("expected compiled app rules, got %+v", ctrl.Policy)
+	sent := lastSentPolicy(t, tr, 1)
+	if len(sent.BlockedApps) != 2 || len(sent.AllowedApps) != 1 {
+		t.Fatalf("expected compiled app rules, got %+v", sent)
 	}
-	if len(ctrl.Policy.BlockedDomains) != 2 || len(ctrl.Policy.AllowedDomains) != 1 {
-		t.Fatalf("expected compiled domain rules, got %+v", ctrl.Policy)
+	if len(sent.BlockedDomains) != 2 || len(sent.AllowedDomains) != 1 {
+		t.Fatalf("expected compiled domain rules, got %+v", sent)
 	}
+	assertNoLocalPolicy(t, ctrl)
 }
 
 func TestTheatrePlaybackRequiresVideo(t *testing.T) {
@@ -874,4 +925,96 @@ func TestTheatrePlaybackRequiresVideo(t *testing.T) {
 	if app.statusNote == "" {
 		t.Fatalf("expected actionable status note when playback is attempted without a video")
 	}
+}
+
+func TestPowerCommandsNeverRunOnTeacherMachine(t *testing.T) {
+	app, tr, _, ctrl := newTestTeacherApp()
+	students := app.listStudents()
+	if len(students) < 2 {
+		t.Fatalf("need demo students")
+	}
+	targets := []string{students[0].ID, students[1].ID}
+	for _, action := range []core.PowerAction{core.PowerShutdown, core.PowerReboot, core.PowerLogoff} {
+		app.ExecutePowerTargets(action, targets)
+		app.ExecutePowerTargets(action, nil)
+	}
+	if len(ctrl.PowerCalls) != 0 {
+		t.Fatalf("shutdown/reboot/logoff must not execute locally, got %v", ctrl.PowerCalls)
+	}
+	want := 3 * (len(targets) + 1)
+	waitForTeacherFileTasks(t, 2*time.Second, func() bool {
+		return countSent(tr, protocol.MsgPowerCommand) >= want
+	})
+	if len(ctrl.PowerCalls) != 0 {
+		t.Fatalf("shutdown/reboot/logoff must not execute locally, got %v", ctrl.PowerCalls)
+	}
+}
+
+func TestScreenLockIsTrackedPerStudent(t *testing.T) {
+	app, _, _, _ := newTestTeacherApp()
+	students := app.listStudents()
+	if len(students) < 3 {
+		t.Fatalf("need demo students")
+	}
+	a, b, c := students[0].ID, students[1].ID, students[2].ID
+
+	app.setScreenLockTargets(true, []string{a})
+	if locked, _ := app.ScreenLockedFor(a); !locked {
+		t.Fatalf("expected %s locked", a)
+	}
+	if locked, _ := app.ScreenLockedFor(b); locked {
+		t.Fatalf("locking %s must not lock %s on reconnect", a, b)
+	}
+	// Toggling with B selected locks B instead of unlocking A.
+	app.selectSingle(b)
+	app.ToggleScreenLock()
+	if locked, _ := app.ScreenLockedFor(a); !locked {
+		t.Fatalf("toggling B must keep A locked")
+	}
+	if locked, _ := app.ScreenLockedFor(b); !locked {
+		t.Fatalf("expected B locked after toggle")
+	}
+	// Whole-class lock, then unlocking one student keeps the others locked.
+	app.setScreenLockTargets(true, nil)
+	app.setScreenLockTargets(false, []string{a})
+	if locked, _ := app.ScreenLockedFor(a); locked {
+		t.Fatalf("expected A unlocked")
+	}
+	if locked, _ := app.ScreenLockedFor(c); !locked {
+		t.Fatalf("expected C still locked after unlocking only A")
+	}
+	app.setScreenLockTargets(false, nil)
+	if app.ScreenLocked() {
+		t.Fatalf("expected nobody locked after class unlock")
+	}
+}
+
+func TestApproveHandRaiseStopsPreviousDemo(t *testing.T) {
+	app, tr, _, _ := newTestTeacherApp()
+	students := app.listStudents()
+	if len(students) < 2 {
+		t.Fatalf("need demo students")
+	}
+	a, b := students[0].ID, students[1].ID
+	app.ToggleStudentDemo(a)
+	app.ApproveHandRaise(b)
+	if app.studentDemoID != b {
+		t.Fatalf("expected demo switched to %s, got %q", b, app.studentDemoID)
+	}
+	stoppedA := func() bool {
+		for _, env := range tr.Broadcasts() {
+			if env.Type != protocol.MsgStudentDemoReq {
+				continue
+			}
+			var req struct {
+				Active    bool   `json:"active"`
+				StudentID string `json:"student_id"`
+			}
+			if json.Unmarshal(env.Payload, &req) == nil && !req.Active && req.StudentID == a {
+				return true
+			}
+		}
+		return false
+	}
+	waitForTeacherFileTasks(t, 2*time.Second, stoppedA)
 }

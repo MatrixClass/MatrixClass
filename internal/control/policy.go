@@ -64,6 +64,7 @@ type PolicyEnforcer struct {
 	pollInterval time.Duration
 	selfPID      uint32
 	protected    map[string]struct{}
+	protGlobs    []string
 	hostsPath    string
 	hostsDryRun  bool
 	onViolation  func(PolicyViolation)
@@ -77,22 +78,10 @@ type PolicyEnforcer struct {
 	proxyLn     net.Listener
 }
 
-var defaultProtectedProcesses = []string{
-	"system",
-	"idle",
-	"smss.exe",
-	"csrss.exe",
-	"wininit.exe",
-	"winlogon.exe",
-	"services.exe",
-	"lsass.exe",
-	"svchost.exe",
-	"explorer.exe",
-	"dwm.exe",
-	"conhost.exe",
-	"taskmgr.exe",
-	"nexlab.exe",
-}
+// defaultProtectedProcesses combines the cross-platform list with the
+// per-platform session/system process list (platformProtectedProcesses).
+// Entries may be glob patterns (e.g. "gsd-*").
+var defaultProtectedProcesses = append(append([]string(nil), commonProtectedProcesses...), platformProtectedProcesses...)
 
 func NewPolicyEnforcer(opts PolicyOptions) *PolicyEnforcer {
 	inspector := opts.Inspector
@@ -111,20 +100,34 @@ func NewPolicyEnforcer(opts PolicyOptions) *PolicyEnforcer {
 	if dialTimeout <= 0 {
 		dialTimeout = 10 * time.Second
 	}
-	protected := make(map[string]struct{}, len(defaultProtectedProcesses)+len(opts.Protected))
+	protected := make(map[string]struct{}, len(defaultProtectedProcesses)+len(opts.Protected)+1)
+	var protGlobs []string
+	addProtected := func(name string) {
+		norm := normalizeAppName(name)
+		if norm == "" || norm == "." {
+			return
+		}
+		if strings.ContainsAny(norm, "*?[") {
+			protGlobs = append(protGlobs, norm)
+			return
+		}
+		protected[norm] = struct{}{}
+	}
 	for _, name := range defaultProtectedProcesses {
-		protected[normalizeAppName(name)] = struct{}{}
+		addProtected(name)
+	}
+	if exe, err := os.Executable(); err == nil {
+		addProtected(exe)
 	}
 	for _, name := range opts.Protected {
-		if norm := normalizeAppName(name); norm != "" {
-			protected[norm] = struct{}{}
-		}
+		addProtected(name)
 	}
 	return &PolicyEnforcer{
 		inspector:    inspector,
 		pollInterval: pollInterval,
 		selfPID:      selfPID,
 		protected:    protected,
+		protGlobs:    protGlobs,
 		hostsPath:    opts.HostsPath,
 		hostsDryRun:  opts.HostsDryRun,
 		onViolation:  opts.OnViolation,
@@ -160,6 +163,7 @@ func (p *PolicyEnforcer) EnforceProcessesOnce() ([]ProcessInfo, error) {
 	inspector := p.inspector
 	selfPID := p.selfPID
 	protected := p.protected
+	protGlobs := p.protGlobs
 	onViolation := p.onViolation
 	p.mu.RUnlock()
 
@@ -184,8 +188,7 @@ func (p *PolicyEnforcer) EnforceProcessesOnce() ([]ProcessInfo, error) {
 		if proc.PID == 0 || proc.PID == selfPID {
 			continue
 		}
-		normName := normalizeAppName(proc.Name)
-		if _, isProtected := protected[normName]; isProtected {
+		if isProtectedProcessName(proc.Name, protected, protGlobs) {
 			continue
 		}
 		if !IsProcessBlocked(proc.Name, rule) {
@@ -386,6 +389,22 @@ func (p *PolicyEnforcer) handleConnect(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.Copy(clientConn, upstream)
 		clientConn.Close()
 	}()
+}
+
+func isProtectedProcessName(name string, protected map[string]struct{}, globs []string) bool {
+	norm := normalizeAppName(name)
+	if _, ok := protected[norm]; ok {
+		return true
+	}
+	if _, ok := protected[strings.TrimSuffix(norm, ".exe")]; ok {
+		return true
+	}
+	for _, pattern := range globs {
+		if matched, err := filepath.Match(pattern, norm); err == nil && matched {
+			return true
+		}
+	}
+	return false
 }
 
 func IsProcessBlocked(procName string, rule core.PolicyRule) bool {

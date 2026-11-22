@@ -69,44 +69,44 @@ type KCPStats struct {
 type KCP struct {
 	mu sync.Mutex
 
-	conv     uint32
-	mtu      uint32
-	mss      uint32
-	state    uint32
-	sndUna   uint32
-	sndNxt   uint32
-	rcvNxt   uint32
-	ssthresh uint32
-	rxRttVal int32
-	rxSRTT   int32
-	rxRTO    int32
-	rxMinRTO int32
-	sndWnd   uint32
-	rcvWnd   uint32
-	rmtWnd   uint32
-	cwnd     uint32
-	probe    uint32
-	current  uint32
-	interval uint32
-	tsFlush  uint32
-	xmit     uint32
-	nodelay  uint32
-	updated  bool
-	tsProbe  uint32
+	conv      uint32
+	mtu       uint32
+	mss       uint32
+	state     uint32
+	sndUna    uint32
+	sndNxt    uint32
+	rcvNxt    uint32
+	ssthresh  uint32
+	rxRttVal  int32
+	rxSRTT    int32
+	rxRTO     int32
+	rxMinRTO  int32
+	sndWnd    uint32
+	rcvWnd    uint32
+	rmtWnd    uint32
+	cwnd      uint32
+	probe     uint32
+	current   uint32
+	interval  uint32
+	tsFlush   uint32
+	xmit      uint32
+	nodelay   uint32
+	updated   bool
+	tsProbe   uint32
 	probeWait uint32
-	deadLink uint32
-	incr     uint32
+	deadLink  uint32
+	incr      uint32
 
 	sndQueue []*kcpSegment
 	rcvQueue []*kcpSegment
 	sndBuf   []*kcpSegment
 	rcvBuf   []*kcpSegment
 
-	acklist  []kcpAck
-	buffer   []byte
+	acklist    []kcpAck
+	buffer     []byte
 	fastResend uint32
-	nocwnd   uint32
-	stream   bool
+	nocwnd     uint32
+	stream     bool
 
 	output func(buf []byte, size int)
 	stats  KCPStats

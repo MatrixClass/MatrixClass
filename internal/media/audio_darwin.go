@@ -4,6 +4,7 @@ package media
 
 import (
 	"errors"
+	"fmt"
 	"sync"
 
 	"nexlab/internal/core"
@@ -13,6 +14,12 @@ var (
 	ErrDarwinCoreAudioUnavailable   = errors.New("media: CoreAudio is unavailable; native Darwin bridge is not enabled")
 	ErrDarwinCoreAudioPermission    = errors.New("media: macOS microphone permission is required")
 	ErrDarwinAudioDeviceUnavailable = errors.New("media: macOS audio device is unavailable")
+	// ErrDarwinAudioLoopbackUnavailable is returned for loopback (system
+	// audio) capture: macOS has no built-in loopback device, so it needs a
+	// virtual audio driver or ScreenCaptureKit audio, neither of which the
+	// AudioQueue bridge uses.
+	ErrDarwinAudioLoopbackUnavailable = errors.New("media: macOS system audio (loopback) capture is unavailable without a virtual audio device")
+	ErrDarwinAudioClosed              = errors.New("media: macOS audio engine is closed")
 )
 
 const (
@@ -20,9 +27,10 @@ const (
 	darwinAudioToolboxFramework = "/System/Library/Frameworks/AudioToolbox.framework/AudioToolbox"
 )
 
-// DarwinAudioBridge is the boundary for a native CoreAudio/AudioToolbox
-// implementation. The default bridge remains unavailable until the native
-// callback and permission flow are implemented on macOS.
+// DarwinAudioBridge is the boundary for the native CoreAudio/AudioToolbox
+// implementation. NewAudioEngine uses the AudioQueue bridge
+// (audio_darwin_aq.go) and falls back to an unavailable bridge when the
+// frameworks cannot be loaded.
 type DarwinAudioBridge interface {
 	StartCapture(loopback bool, onFrame func(*core.AudioFrame)) error
 	StopCapture() error
@@ -66,14 +74,63 @@ type DarwinMediaCapabilityStatus struct {
 }
 
 func DarwinMediaCapabilities() DarwinMediaCapabilityStatus {
-	return DarwinMediaCapabilityStatus{
-		ScreenCaptureError:        ErrDarwinScreenCaptureUnavailable,
-		CoreAudioError:            ErrDarwinCoreAudioUnavailable,
-		MicrophonePermissionError: ErrDarwinCoreAudioPermission,
-		AudioDeviceError:          ErrDarwinAudioDeviceUnavailable,
-		CoreAudioFramework:        darwinCoreAudioFramework,
-		AudioToolboxFramework:     darwinAudioToolboxFramework,
+	// The probe never triggers a screen-recording permission prompt.
+	_, screenErr := DarwinScreenCaptureProbe()
+	status := DarwinMediaCapabilityStatus{
+		ScreenCaptureAvailable: screenErr == nil,
+		ScreenCaptureError:     screenErr,
+		CoreAudioFramework:     darwinCoreAudioFramework,
+		AudioToolboxFramework:  darwinAudioToolboxFramework,
 	}
+	native := newDarwinAudioAQNative()
+	if err := native.Available(); err != nil {
+		status.CoreAudioError = err
+		status.MicrophonePermissionError = ErrDarwinCoreAudioPermission
+		status.AudioDeviceError = ErrDarwinAudioDeviceUnavailable
+		return status
+	}
+	status.CoreAudioAvailable = true
+	status.MicrophonePermissionError = darwinAudioCapabilityPermission(native.MicrophoneAuthorization())
+	if in, out, err := native.DefaultDevices(); err != nil {
+		status.AudioDeviceError = fmt.Errorf("%w: %v", ErrDarwinAudioDeviceUnavailable, err)
+	} else if in == aqAudioObjectUnknown && out == aqAudioObjectUnknown {
+		status.AudioDeviceError = ErrDarwinAudioDeviceUnavailable
+	} else if in == aqAudioObjectUnknown {
+		status.AudioDeviceError = fmt.Errorf("%w: no default input device", ErrDarwinAudioDeviceUnavailable)
+	} else if out == aqAudioObjectUnknown {
+		status.AudioDeviceError = fmt.Errorf("%w: no default output device", ErrDarwinAudioDeviceUnavailable)
+	}
+	return status
+}
+
+// darwinAudioCapabilityPermission reports nil only when microphone access
+// is granted; a pending prompt or unknown status is still reported as the
+// permission error so callers do not assume capture will deliver audio.
+func darwinAudioCapabilityPermission(status darwinAudioAuthStatus) error {
+	if status == darwinAudioAuthAuthorized {
+		return nil
+	}
+	return fmt.Errorf("%w (%s)", ErrDarwinCoreAudioPermission, status)
+}
+
+func darwinAudioErrors() darwinAudioBridgeErrors {
+	return darwinAudioBridgeErrors{
+		Unavailable: ErrDarwinCoreAudioUnavailable,
+		Permission:  ErrDarwinCoreAudioPermission,
+		Device:      ErrDarwinAudioDeviceUnavailable,
+		Loopback:    ErrDarwinAudioLoopbackUnavailable,
+		Closed:      ErrDarwinAudioClosed,
+	}
+}
+
+// newDarwinDefaultAudioBridge returns the AudioQueue bridge, or the
+// unavailable bridge when AudioToolbox/CoreAudio cannot be loaded.
+func newDarwinDefaultAudioBridge() DarwinAudioBridge {
+	native := newDarwinAudioAQNative()
+	if native.Available() != nil {
+		return &darwinAudioUnavailableBridge{}
+	}
+	return newDarwinAudioQueueBridge(native, darwinAudioErrors())
 }
 
 type AudioEngine struct {
@@ -83,7 +140,7 @@ type AudioEngine struct {
 }
 
 func NewAudioEngine() *AudioEngine {
-	return newDarwinAudioEngine(&darwinAudioUnavailableBridge{})
+	return newDarwinAudioEngine(newDarwinDefaultAudioBridge())
 }
 
 func newDarwinAudioEngine(bridge DarwinAudioBridge) *AudioEngine {

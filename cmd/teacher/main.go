@@ -8,6 +8,7 @@ import (
 	"flag"
 	"io"
 	"log"
+	"net"
 	"os"
 	"path/filepath"
 	"sync"
@@ -17,6 +18,7 @@ import (
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
 
+	"nexlab/internal/apppaths"
 	"nexlab/internal/classroom"
 	"nexlab/internal/control"
 	"nexlab/internal/core"
@@ -38,14 +40,18 @@ type videoStreamPacket struct {
 }
 
 type Runtime struct {
-	App       *teacher.App
-	Transport *transport.Manager
-	Media     *media.Manager
-	Control   *control.Manager
-	Classroom *classroom.Service
-	Files     *filetransfer.Service
-	Exam      *exam.Service
-	Store     *store.Store
+	// sessionStudents binds a transport session to the student ID it
+	// registered as, so later messages can't claim another identity.
+	sessMu          sync.RWMutex
+	sessionStudents map[string]string
+	App             *teacher.App
+	Transport       *transport.Manager
+	Media           *media.Manager
+	Control         *control.Manager
+	Classroom       *classroom.Service
+	Files           *filetransfer.Service
+	Exam            *exam.Service
+	Store           *store.Store
 
 	channel   string
 	teacherID string
@@ -57,7 +63,8 @@ type Runtime struct {
 	audioMode string // "", "voice", "loopback"
 
 	forceKeyFrame   atomic.Bool
-	startOnce       sync.Once
+	startMu         sync.Mutex
+	started         bool
 	lifecycleMu     sync.Mutex
 	lifecycleCtx    context.Context
 	lifecycleStop   context.CancelFunc
@@ -82,9 +89,25 @@ func NewRuntimeWithStore(channel, teacherID, teacherName, archiveDir string, dbS
 	ex := exam.NewService()
 
 	var appRef *teacher.App
+	var rtRef *Runtime
 	ft := filetransfer.NewService(filetransfer.Config{
+		Role:       filetransfer.RoleTeacher,
 		ArchiveDir: archiveDir,
 		ReceiveDir: archiveDir,
+		SessionIdentity: func(sessID string) (filetransfer.StudentMeta, bool) {
+			if rtRef == nil {
+				return filetransfer.StudentMeta{}, false
+			}
+			studentID, ok := rtRef.studentForSession(sessID)
+			if !ok {
+				return filetransfer.StudentMeta{}, false
+			}
+			st, ok := cr.GetStudent(studentID)
+			if !ok {
+				return filetransfer.StudentMeta{ID: studentID}, true
+			}
+			return filetransfer.StudentMeta{ID: st.ID, StudentNo: st.StudentNo, Name: st.MachineName}, true
+		},
 		OnProgress: func(_ core.TransferTask) {
 			if appRef != nil {
 				appRef.Invalidate()
@@ -143,6 +166,7 @@ func NewRuntimeWithStore(channel, teacherID, teacherName, archiveDir string, dbS
 		teacherID:       teacherID,
 		studentDecoders: make(map[string]*media.HybridVideoCodec),
 	}
+	rtRef = rt
 	rt.lifecycleCtx, rt.lifecycleStop = context.WithCancel(context.Background())
 	rt.wireHandlers()
 	return rt, nil
@@ -164,6 +188,11 @@ func (rt *Runtime) wireHandlers() {
 		if senderID == "" {
 			senderID = sess.ID()
 		}
+		// Once a session has registered, its identity is fixed: ignore a
+		// different SenderID claimed in later envelopes.
+		if bound, ok := rt.studentForSession(sess.ID()); ok {
+			senderID = bound
+		}
 		switch env.Type {
 		case protocol.MsgPong:
 			var sentTs int64
@@ -179,6 +208,10 @@ func (rt *Runtime) wireHandlers() {
 			if err := json.Unmarshal(env.Payload, &st); err == nil {
 				if st.ID == "" {
 					st.ID = sess.ID()
+				}
+				if !rt.bindSessionStudent(sess, st.ID) {
+					log.Printf("reject register: student %s already bound to another live session (from %s)", st.ID, sess.RemoteAddr())
+					return
 				}
 				rt.Files.RegisterSession(st.ID, sess)
 				rt.Files.RegisterStudentMeta(filetransfer.StudentMeta{
@@ -207,10 +240,10 @@ func (rt *Runtime) wireHandlers() {
 						_ = sess.SendEnvelope(bEnv)
 					}
 				}
-				if rt.App.ScreenLocked() {
+				if locked, lockMsg := rt.App.ScreenLockedFor(st.ID); locked {
 					if lEnv, err := protocol.NewEnvelope(protocol.MsgScreenLock, rt.teacherID, map[string]any{
 						"locked":  true,
-						"message": "请注意听讲，教师已锁定屏幕。",
+						"message": lockMsg,
 					}); err == nil {
 						lEnv.Channel = rt.channel
 						lEnv.Timestamp = time.Now().UnixMilli()
@@ -281,9 +314,17 @@ func (rt *Runtime) wireHandlers() {
 		case protocol.MsgExamAnswer:
 			var sub core.ExamSubmission
 			if err := json.Unmarshal(env.Payload, &sub); err == nil {
-				rt.Exam.SubmitAnswer(sub)
+				studentID, ok := rt.studentForSession(sess.ID())
+				if !ok {
+					log.Printf("drop exam answer from unregistered session %s", sess.ID())
+					break
+				}
+				sub.StudentID = studentID
+				// Persist the server-graded result, not the student's
+				// self-reported score.
+				graded := rt.Exam.SubmitAnswer(sub)
 				if rt.Store != nil {
-					_ = rt.Store.SaveExamSubmission(sub)
+					_ = rt.Store.SaveExamSubmission(graded)
 				}
 			}
 		case protocol.MsgFileRetryReq:
@@ -295,8 +336,10 @@ func (rt *Runtime) wireHandlers() {
 				AutoOpen   bool   `json:"auto_open"`
 			}
 			if err := json.Unmarshal(env.Payload, &req); err == nil {
-				targetID := req.StudentID
-				if targetID == "" {
+				// Only the requesting student may receive the retry; the
+				// payload's student_id is not trusted.
+				targetID, ok := rt.studentForSession(sess.ID())
+				if !ok {
 					targetID = senderID
 				}
 				if targetID != "" && rt.Files != nil {
@@ -436,7 +479,7 @@ func (rt *Runtime) acceptFileStreams(ctx context.Context, sess core.Session) {
 		}
 		if kind == protocol.StreamFile {
 			rt.goLifecycle(func(taskCtx context.Context) {
-				_ = rt.Files.HandleStream(taskCtx, stream)
+				_ = rt.Files.HandleStreamFrom(taskCtx, sess.ID(), stream)
 				rt.App.Invalidate()
 			})
 		} else {
@@ -446,8 +489,21 @@ func (rt *Runtime) acceptFileStreams(ctx context.Context, sess core.Session) {
 }
 
 func (rt *Runtime) Start(ctx context.Context, listenAddr string, teacherName string) error {
+	// Unlike sync.Once, a failed start (port in use, NIC not ready) can be
+	// retried instead of leaving the teacher silently offline.
+	rt.startMu.Lock()
+	defer rt.startMu.Unlock()
+	if rt.started {
+		return nil
+	}
+	rt.lifecycleMu.Lock()
+	closed := rt.lifecycleClosed
+	rt.lifecycleMu.Unlock()
+	if closed {
+		return errors.New("teacher runtime is closed")
+	}
 	var startErr error
-	rt.startOnce.Do(func() {
+	func() {
 		beacon := protocol.DiscoveryBeacon{
 			Role:        string(core.RoleTeacher),
 			TeacherID:   rt.teacherID,
@@ -477,8 +533,96 @@ func (rt *Runtime) Start(ctx context.Context, listenAddr string, teacherName str
 			defer rt.lifecycleWG.Done()
 			rt.heartbeatLoop(lifecycleCtx)
 		}()
-	})
+		rt.started = true
+	}()
 	return startErr
+}
+
+// bindSessionStudent records that sess registered as studentID. It refuses
+// when studentID is already bound to a different session that is still live
+// and comes from another host (an impersonation attempt); a reconnect from
+// the same host replaces the stale binding.
+func (rt *Runtime) bindSessionStudent(sess core.Session, studentID string) bool {
+	rt.sessMu.Lock()
+	defer rt.sessMu.Unlock()
+	if rt.sessionStudents == nil {
+		rt.sessionStudents = make(map[string]string)
+	}
+	for otherSess, otherStudent := range rt.sessionStudents {
+		if otherSess == sess.ID() {
+			continue
+		}
+		other := rt.liveSession(otherSess)
+		if other == nil {
+			// Prune bindings of sessions that have gone away.
+			delete(rt.sessionStudents, otherSess)
+			continue
+		}
+		if otherStudent != studentID {
+			continue
+		}
+		if hostOf(other.RemoteAddr()) != hostOf(sess.RemoteAddr()) {
+			return false
+		}
+		delete(rt.sessionStudents, otherSess)
+	}
+	rt.sessionStudents[sess.ID()] = studentID
+	return true
+}
+
+func (rt *Runtime) studentForSession(sessID string) (string, bool) {
+	rt.sessMu.RLock()
+	defer rt.sessMu.RUnlock()
+	id, ok := rt.sessionStudents[sessID]
+	return id, ok
+}
+
+func (rt *Runtime) liveSession(sessID string) core.Session {
+	if rt.Transport == nil {
+		return nil
+	}
+	for _, s := range rt.Transport.Sessions() {
+		if s.ID() == sessID {
+			return s
+		}
+	}
+	return nil
+}
+
+func hostOf(addr string) string {
+	if host, _, err := net.SplitHostPort(addr); err == nil {
+		return host
+	}
+	return addr
+}
+
+// retryTeacherStart keeps retrying a failed transport start (e.g. port busy,
+// network not ready) until it succeeds or the app shuts down.
+func retryTeacherStart(ctx context.Context, rt *Runtime, listenAddr, teacherName string) {
+	delay := 2 * time.Second
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(delay):
+		}
+		err := rt.Start(ctx, listenAddr, teacherName)
+		if err == nil {
+			rt.App.SetStatusNote("课堂网络已启动 · 等待学生端加入")
+			return
+		}
+		rt.lifecycleMu.Lock()
+		closed := rt.lifecycleClosed
+		rt.lifecycleMu.Unlock()
+		if closed {
+			return
+		}
+		log.Printf("retry teacher transport: %v", err)
+		rt.App.SetStatusNote("课堂网络启动失败，正在重试：" + err.Error())
+		if delay < 30*time.Second {
+			delay *= 2
+		}
+	}
 }
 
 func (rt *Runtime) SetChannel(ch string) {
@@ -644,12 +788,16 @@ func (rt *Runtime) syncAudioCapture() {
 
 func (rt *Runtime) Close() error {
 	rt.closeOnce.Do(func() {
+		// Take startMu first (same order as Start) so an in-flight start
+		// retry cannot bring the transport up after Close.
+		rt.startMu.Lock()
 		rt.lifecycleMu.Lock()
 		rt.lifecycleClosed = true
 		if rt.lifecycleStop != nil {
 			rt.lifecycleStop()
 		}
 		rt.lifecycleMu.Unlock()
+		rt.startMu.Unlock()
 		var closeErrs []error
 		if rt.Transport != nil {
 			closeErrs = append(closeErrs, rt.Transport.Close())
@@ -685,11 +833,10 @@ func main() {
 	teacherLabel := "教师端"
 	archiveDir := flag.String("archive", "", "homework archive directory (defaults to Downloads)")
 	flag.Parse()
-	logDir := "logs"
-	if exePath, err := os.Executable(); err == nil && exePath != "" {
-		logDir = filepath.Join(filepath.Dir(exePath), "logs")
-	}
-	appLogger, loggerErr := logging.New(logging.Config{Dir: logDir, Role: "teacher"})
+	// Portable folder next to the exe when writable, otherwise per-user
+	// standard dirs (macOS .app bundles, Linux /opt or /usr installs).
+	paths := apppaths.Resolve("nexlab-teacher.db")
+	appLogger, loggerErr := logging.New(logging.Config{Dir: paths.LogDir, Role: "teacher"})
 	if loggerErr == nil {
 		defer appLogger.Close()
 		log.SetOutput(appLogger)
@@ -717,9 +864,12 @@ func main() {
 	defer cancel()
 
 	var app *teacher.App
-	var cleanup func()
+	var rt *Runtime
+	var winRef *mygo.Window
+	windowTitle := "矩联电子教室 MatrixClass - 教师端"
 
 	if *demoMode {
+		windowTitle += " [" + *channel + "]"
 		app = teacher.New(teacher.Options{
 			TeacherID:   "teacher-01",
 			TeacherName: teacherLabel,
@@ -734,64 +884,55 @@ func main() {
 			},
 		})
 	} else {
-		exePath, exeErr := os.Executable()
-		dbDir := "."
-		if exeErr == nil && exePath != "" {
-			dbDir = filepath.Dir(exePath)
-		}
-		dbPath := filepath.Join(dbDir, "nexlab-teacher.db")
+		dbPath := filepath.Join(paths.DataDir, "nexlab-teacher.db")
+		log.Printf("teacher data dir=%s log dir=%s portable=%v", paths.DataDir, paths.LogDir, paths.Portable)
 		dbStore, dbErr := store.Open(dbPath)
 		if dbErr != nil {
 			log.Printf("open sqlite store %s failed: %v", dbPath, dbErr)
 		}
 
-		var rt *Runtime
-		var winRef *mygo.Window
-		rt, err := NewRuntimeWithStore(*channel, "teacher-01", teacherLabel, *archiveDir, dbStore, true, func(chosen string) {
+		var err error
+		rt, err = NewRuntimeWithStore(*channel, "teacher-01", teacherLabel, *archiveDir, dbStore, true, func(chosen string) {
 			rt.SetChannel(chosen)
 			if winRef != nil {
 				winRef.SetTitle("矩联电子教室 MatrixClass - 教师端 [" + chosen + "]")
 			}
 			if startErr := rt.Start(ctx, *listenAddr, teacherLabel); startErr != nil {
 				log.Printf("start teacher transport: %v", startErr)
+				rt.App.SetStatusNote("课堂网络启动失败，正在重试：" + startErr.Error())
+				go retryTeacherStart(ctx, rt, *listenAddr, teacherLabel)
 			}
 		})
 		if err != nil {
 			log.Fatalf("init teacher runtime: %v", err)
 		}
 		app = rt.App
-		cleanup = func() { _ = rt.Close() }
-		mygo.App.WhenReady(func() {
-			win := mygo.NewWindow(mygo.WindowOptions{
-				Title:     "矩联电子教室 MatrixClass - 教师端",
-				Width:     980,
-				Height:    640,
-				MinWidth:  800,
-				MinHeight: 540,
-				StateKey:  "nexlab-teacher-main-v2",
-				Content:   ui.View(app.View),
-			})
-			winRef = win
-			app.AttachWindow(win)
-			app.InstallTray()
-		})
-		mygo.App.Run()
-		return
 	}
-	if cleanup != nil {
-		defer cleanup()
-	}
+
+	// Shut down the UI first (stops UI-owned background tasks), then the
+	// runtime (transport, media, store), so nothing uses a closed service.
+	defer func() {
+		if closeErr := app.Close(); closeErr != nil {
+			log.Printf("close teacher app: %v", closeErr)
+		}
+		if rt != nil {
+			if closeErr := rt.Close(); closeErr != nil {
+				log.Printf("close teacher runtime: %v", closeErr)
+			}
+		}
+	}()
 
 	mygo.App.WhenReady(func() {
 		win := mygo.NewWindow(mygo.WindowOptions{
-			Title:     "矩联电子教室 MatrixClass - 教师端 [" + *channel + "]",
-			Width:     980,
-			Height:    640,
-			MinWidth:  800,
-			MinHeight: 540,
-			StateKey:  "nexlab-teacher-main-v2",
+			Title:     windowTitle,
+			Width:     1280,
+			Height:    800,
+			MinWidth:  960,
+			MinHeight: 600,
+			StateKey:  "nexlab-teacher-main-v3",
 			Content:   ui.View(app.View),
 		})
+		winRef = win
 		app.AttachWindow(win)
 		app.InstallTray()
 	})
@@ -802,6 +943,6 @@ func main() {
 	})
 
 	if err := mygo.App.Run(); err != nil {
-		log.Fatal(err)
+		log.Printf("teacher ui run: %v", err)
 	}
 }

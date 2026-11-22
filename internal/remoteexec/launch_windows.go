@@ -5,13 +5,12 @@ package remoteexec
 import (
 	"context"
 	"os/exec"
-	"strings"
 	"time"
 )
 
 func launchApplication(ctx context.Context, req AppLaunchRequest, executable string) CommandResult {
 	started := time.Now()
-	cmd := exec.CommandContext(ctx, executable, splitArguments(req.Arguments)...)
+	cmd := exec.CommandContext(ctx, executable, splitCommandLine(req.Arguments, false)...)
 	if req.WorkingDir != "" {
 		cmd.Dir = req.WorkingDir
 	}
@@ -30,11 +29,4 @@ func launchApplication(ctx context.Context, req AppLaunchRequest, executable str
 		}
 	}
 	return result
-}
-
-func splitArguments(value string) []string {
-	if strings.TrimSpace(value) == "" {
-		return nil
-	}
-	return strings.Fields(value)
 }

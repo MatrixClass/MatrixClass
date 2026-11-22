@@ -17,6 +17,8 @@ const (
 	wmKeyDown    = 0x0100
 	wmSysKeyDown = 0x0104
 	wmQuit       = 0x0012
+	wmUser       = 0x0400
+	pmNoRemove   = 0x0000
 
 	llkhfAltDown = 0x20
 
@@ -34,6 +36,7 @@ var (
 	procCallNextHookEx      = user32DLL.NewProc("CallNextHookEx")
 	procGetMessageW         = user32DLL.NewProc("GetMessageW")
 	procPostThreadMessageW  = user32DLL.NewProc("PostThreadMessageW")
+	procPeekMessageW        = user32DLL.NewProc("PeekMessageW")
 	procGetKeyState         = user32DLL.NewProc("GetKeyState")
 )
 
@@ -98,12 +101,22 @@ func (b *WindowsLockBackend) EnableLock(message string) error {
 
 	if err := <-readyCh; err != nil {
 		b.mu.Lock()
-		b.active = false
-		b.doneCh = nil
+		if b.doneCh == doneCh {
+			b.active = false
+			b.doneCh = nil
+		}
 		b.mu.Unlock()
 		return err
 	}
 
+	// DisableLock may have run while the hook thread was starting; do not show
+	// an overlay for a lock session that has already been torn down.
+	b.mu.Lock()
+	stillActive := b.active && b.doneCh == doneCh
+	b.mu.Unlock()
+	if !stillActive {
+		return nil
+	}
 	if overlays.OnShow != nil {
 		overlays.OnShow(message)
 	}
@@ -145,7 +158,7 @@ func (b *WindowsLockBackend) DisableLock() error {
 	return nil
 }
 
-func (b *WindowsLockBackend) runHookLoop(readyCh chan<- error, doneCh chan<- struct{}) {
+func (b *WindowsLockBackend) runHookLoop(readyCh chan<- error, doneCh chan struct{}) {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 	defer close(doneCh)
@@ -159,6 +172,11 @@ func (b *WindowsLockBackend) runHookLoop(readyCh chan<- error, doneCh chan<- str
 		return ret
 	})
 
+	// Force creation of this thread's message queue so a WM_QUIT posted by
+	// DisableLock as soon as threadID is published cannot be lost.
+	var peek win32Msg
+	_, _, _ = procPeekMessageW.Call(uintptr(unsafe.Pointer(&peek)), 0, wmUser, wmUser, pmNoRemove)
+
 	hook, _, err := procSetWindowsHookExW.Call(whKeyboardLL, cb, 0, 0)
 	if hook == 0 {
 		readyCh <- fmt.Errorf("control: SetWindowsHookExW failed: %w", err)
@@ -166,6 +184,14 @@ func (b *WindowsLockBackend) runHookLoop(readyCh chan<- error, doneCh chan<- str
 	}
 
 	b.mu.Lock()
+	if b.doneCh != doneCh {
+		// DisableLock already ran (it saw threadID==0 and could not post WM_QUIT);
+		// tear down immediately instead of entering the message loop forever.
+		b.mu.Unlock()
+		_, _, _ = procUnhookWindowsHookEx.Call(hook)
+		readyCh <- nil
+		return
+	}
 	b.hook = hook
 	b.threadID = tid
 	b.mu.Unlock()
@@ -182,8 +208,10 @@ func (b *WindowsLockBackend) runHookLoop(readyCh chan<- error, doneCh chan<- str
 
 	_, _, _ = procUnhookWindowsHookEx.Call(hook)
 	b.mu.Lock()
-	b.hook = 0
-	b.threadID = 0
+	if b.threadID == tid {
+		b.hook = 0
+		b.threadID = 0
+	}
 	b.mu.Unlock()
 }
 

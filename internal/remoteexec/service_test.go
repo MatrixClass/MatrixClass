@@ -13,7 +13,7 @@ func TestStartCommandCapturesOutput(t *testing.T) {
 	outputs := make(chan CommandOutput, 4)
 	shell := ShellCMD
 	command := "echo hello"
-	if runtime.GOOS == "linux" {
+	if runtime.GOOS != "windows" {
 		shell = ShellSH
 	}
 	task, err := service.StartCommand(context.Background(), CommandRequest{RequestID: "req-1", Shell: shell, Command: command, TimeoutSec: 5}, func(output CommandOutput) {
@@ -39,7 +39,7 @@ func TestStartCommandCanBeCancelled(t *testing.T) {
 	service := NewService()
 	shell := ShellCMD
 	command := "ping 127.0.0.1 -n 20"
-	if runtime.GOOS == "linux" {
+	if runtime.GOOS != "windows" {
 		shell = ShellSH
 		command = "sleep 20"
 	}
@@ -60,7 +60,7 @@ func TestStartCommandCanBeCancelled(t *testing.T) {
 }
 
 func TestStartCommandRejectsUnsupportedShell(t *testing.T) {
-	_, err := NewService().StartCommand(context.Background(), CommandRequest{Shell: "bash", Command: "echo nope"}, nil)
+	_, err := NewService().StartCommand(context.Background(), CommandRequest{Shell: Shell("no-such-shell"), Command: "echo nope"}, nil)
 	if err != ErrInvalidShell {
 		t.Fatalf("expected ErrInvalidShell, got %v", err)
 	}
