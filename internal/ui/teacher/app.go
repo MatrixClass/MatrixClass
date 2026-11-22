@@ -722,7 +722,7 @@ func (a *App) BuildMenu() *mygo.Menu {
 				{Label: "屏幕广播 (全屏/窗口)", Accelerator: "F5", Click: func(_ *mygo.MenuItem, _ *mygo.Window) { a.ToggleBroadcast() }},
 				{Label: "语音广播", Accelerator: "F6", Click: func(_ *mygo.MenuItem, _ *mygo.Window) { a.ToggleVoice() }},
 				{Label: "学生演示", Click: func(_ *mygo.MenuItem, _ *mygo.Window) { a.ToggleStudentDemo(a.selectedID) }},
-				{Label: "网络影院 (MyTheatre)", Click: func(_ *mygo.MenuItem, _ *mygo.Window) { a.mainTab = TabMyTheatre; a.Invalidate() }},
+				{Label: "网络影院", Click: func(_ *mygo.MenuItem, _ *mygo.Window) { a.mainTab = TabMyTheatre; a.Invalidate() }},
 			},
 		},
 		{
@@ -1085,7 +1085,7 @@ func (a *App) buildToolbar(c *ui.Context, pal theme.Palette) {
 			a.toolbarButton(c, pal, "网络影院", theme.IconMyTheatre, a.mainTab == TabMyTheatre, func() {
 				a.mainTab = TabMyTheatre
 				a.activeModeLabel = "网络影院"
-				a.statusNote = "已切换至网络影院 (MyTheatre)"
+				a.statusNote = "已切换至网络影院"
 			})
 			a.toolbarToggle(c, pal, "屏幕监控", theme.IconMonitor, &a.monitoring, func() {
 				a.applyMonitorState()
@@ -1381,7 +1381,7 @@ func (a *App) buildMonitorWallTab(c *ui.Context, pal theme.Palette, students []c
 func (a *App) buildMyTheatreTab(c *ui.Context, pal theme.Palette) {
 	ui.Column(c).Grow(1).Padding(12).Gap(10).Children(func() {
 		ui.Row(c).AlignItems(ui.Center).Gap(8).Children(func() {
-			ui.Text(c, "网络影院 (MyTheatre)").FontSize(15).Bold()
+			ui.Text(c, "网络影院").FontSize(15).Bold()
 			if len(a.theatreMedia) > 0 {
 				ui.Select(c, &a.theatre.Media, a.theatreMedia).Width(260)
 			} else {
@@ -1395,7 +1395,7 @@ func (a *App) buildMyTheatreTab(c *ui.Context, pal theme.Palette) {
 			}
 		})
 
-		// Video stage with subtle "mytheatre" watermark when idle
+		// Video stage with a subtle idle-state label.
 		ui.Box(c).Grow(1).MinHeight(280).Background(pal.TheatreBg).Radius(3).Center().Clip().Children(func() {
 			if a.theatrePlayer != nil {
 				if a.theatrePlayer.Ready() {
@@ -1408,7 +1408,7 @@ func (a *App) buildMyTheatreTab(c *ui.Context, pal theme.Palette) {
 			}
 			if a.theatrePlayer == nil && (!a.theatre.Playing || a.theatreFrame == nil) {
 				ui.Column(c).Center().Gap(6).Children(func() {
-					ui.Text(c, "mytheatre").FontSize(34).Bold().TextColor(ui.RGBA(255, 255, 255, 0.14))
+					ui.Text(c, "网络影院").FontSize(34).Bold().TextColor(ui.RGBA(255, 255, 255, 0.14))
 					if a.theatre.Media == "" {
 						ui.Text(c, "请点击下方「选择本地视频」添加媒体文件").FontSize(12).TextColor(ui.RGBA(212, 212, 212, 0.7))
 					} else {
@@ -3551,7 +3551,7 @@ func (a *App) toggleTheatrePlayback() {
 	}
 	if a.theatre.Playing {
 		a.activeModeLabel = "网络影院"
-		a.statusNote = "MyTheatre 正在同步播放: " + a.theatre.Media
+		a.statusNote = "网络影院正在同步播放: " + a.theatre.Media
 		a.sendControlEnvelope(protocol.MsgBroadcastStart, core.BroadcastConfig{
 			Mode:         core.BroadcastWindowed,
 			WithAudio:    true,
@@ -3562,7 +3562,7 @@ func (a *App) toggleTheatrePlayback() {
 		}, nil)
 	} else {
 		a.activeModeLabel = "待机监听"
-		a.statusNote = "MyTheatre 已暂停"
+		a.statusNote = "网络影院已暂停"
 		a.sendControlEnvelope(protocol.MsgBroadcastStop, nil, nil)
 	}
 	a.sendControlEnvelope(protocol.MsgTheatreControl, a.theatre, nil)
@@ -3576,7 +3576,7 @@ func (a *App) stopTheatrePlayback() {
 		a.theatrePlayer.Seek(0)
 	}
 	a.activeModeLabel = "待机监听"
-	a.statusNote = "MyTheatre 已停止"
+	a.statusNote = "网络影院已停止"
 	a.sendControlEnvelope(protocol.MsgBroadcastStop, nil, nil)
 	a.sendControlEnvelope(protocol.MsgTheatreControl, a.theatre, nil)
 }
@@ -3638,7 +3638,7 @@ func (a *App) loadLocalVideo(path string) {
 	a.theatre.Media = path
 	a.theatre.Playing = true
 	a.activeModeLabel = "网络影院"
-	a.statusNote = "MyTheatre 正在播放: " + path
+	a.statusNote = "网络影院正在播放: " + path
 	a.sendControlEnvelope(protocol.MsgBroadcastStart, core.BroadcastConfig{
 		Mode:         core.BroadcastWindowed,
 		WithAudio:    true,

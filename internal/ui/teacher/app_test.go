@@ -144,7 +144,7 @@ func TestTeacherConsoleViewsAndTabs(t *testing.T) {
 		t.Fatalf("expected broadcast control envelope to be sent")
 	}
 
-	// Switch to MyTheatre tab
+	// Switch to the network theatre tab
 	if err := tester.Click("网络影院"); err != nil {
 		t.Fatalf("click 网络影院 failed: %v", err)
 	}
@@ -152,8 +152,8 @@ func TestTeacherConsoleViewsAndTabs(t *testing.T) {
 	if app.MainTab() != TabMyTheatre {
 		t.Fatalf("expected TabMyTheatre (%d), got %d", TabMyTheatre, app.MainTab())
 	}
-	if !tester.HasText("mytheatre") {
-		t.Fatalf("expected mytheatre watermark in idle theatre view")
+	if !tester.HasText("网络影院") {
+		t.Fatalf("expected network theatre label in idle theatre view")
 	}
 
 	// Switch to Exam & Stats tab and publish exam
