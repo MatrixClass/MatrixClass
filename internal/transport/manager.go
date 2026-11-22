@@ -565,8 +565,41 @@ func (m *Manager) StartStudent(ctx context.Context, channel string) error {
 	m.mu.Lock()
 	m.started = true
 	m.starting = false
+	studentCtx := m.ctx
+	studentGeneration := m.connectionGen.Load()
 	m.mu.Unlock()
+	go m.studentConnectionSupervisor(studentCtx, studentGeneration)
 	return nil
+}
+
+// studentConnectionSupervisor keeps the reconnect path alive even when a
+// network transition removes a session without immediately running its close
+// callback. It exits only when the manager is closed or its start context is
+// cancelled; a healthy session makes it a cheap periodic check.
+func (m *Manager) studentConnectionSupervisor(ctx context.Context, generation uint64) {
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+		if !m.connectionGenerationCurrent(generation) {
+			return
+		}
+		m.mu.RLock()
+		closed := m.closed
+		role := m.role
+		hasSession := len(m.sessions) > 0
+		m.mu.RUnlock()
+		if closed || role != core.RoleStudent {
+			return
+		}
+		if !hasSession {
+			m.scheduleStudentReconnect(generation)
+		}
+	}
 }
 
 func (m *Manager) connectStudentOnce(channel string) error {
