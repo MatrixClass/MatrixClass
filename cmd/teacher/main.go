@@ -276,6 +276,7 @@ func (rt *Runtime) wireHandlers() {
 		case protocol.MsgCheckInSubmit:
 			var req struct {
 				StudentID string `json:"student_id"`
+				ClassName string `json:"class_name"`
 				Name      string `json:"name"`
 				StudentNo string `json:"student_no"`
 			}
@@ -286,6 +287,8 @@ func (rt *Runtime) wireHandlers() {
 				rt.Classroom.SubmitCheckIn(req.StudentID, req.Name, req.StudentNo)
 				if rt.Store != nil {
 					if st, ok := rt.Classroom.GetStudent(req.StudentID); ok {
+						st.ClassName = req.ClassName
+						rt.Classroom.UpsertStudent(st)
 						_ = rt.Store.UpsertStudent(st)
 					}
 				}

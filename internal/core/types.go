@@ -30,6 +30,7 @@ type SeatPos struct {
 
 type StudentInfo struct {
 	ID          string        `json:"id"`
+	ClassName   string        `json:"class_name"`
 	Name        string        `json:"name"`
 	StudentNo   string        `json:"student_no"`
 	MachineName string        `json:"machine_name"`

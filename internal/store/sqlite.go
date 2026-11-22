@@ -113,6 +113,7 @@ CREATE TABLE IF NOT EXISTS groups (
 );
 CREATE TABLE IF NOT EXISTS students (
 	id TEXT PRIMARY KEY,
+	class_name TEXT NOT NULL DEFAULT '',
 	student_no TEXT NOT NULL DEFAULT '',
 	machine_name TEXT NOT NULL DEFAULT '',
 	mac TEXT NOT NULL DEFAULT '',
@@ -151,6 +152,7 @@ CREATE TABLE IF NOT EXISTS exam_submissions (
 	}
 	// Safe migrations for existing databases created prior to auth columns.
 	_, _ = s.db.Exec(`ALTER TABLE teacher_settings ADD COLUMN auth_username TEXT NOT NULL DEFAULT 'admin'`)
+	_, _ = s.db.Exec(`ALTER TABLE students ADD COLUMN class_name TEXT NOT NULL DEFAULT ''`)
 	_, _ = s.db.Exec(`ALTER TABLE teacher_settings ADD COLUMN auth_password_hash TEXT NOT NULL DEFAULT ''`)
 	// Manual (essay) grading results, persisted alongside the submission row.
 	_, _ = s.db.Exec(`ALTER TABLE exam_submissions ADD COLUMN essay_scores_json TEXT NOT NULL DEFAULT '{}'`)
@@ -312,9 +314,10 @@ func (s *Store) UpsertStudent(st core.StudentInfo) error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	_, err := s.db.Exec(`INSERT INTO students (id, student_no, machine_name, mac, group_id, seat_row, seat_col, checked_in, last_seen)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+	_, err := s.db.Exec(`INSERT INTO students (id, class_name, student_no, machine_name, mac, group_id, seat_row, seat_col, checked_in, last_seen)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
+			class_name=excluded.class_name,
 			student_no=excluded.student_no,
 			machine_name=excluded.machine_name,
 			mac=excluded.mac,
@@ -323,7 +326,7 @@ func (s *Store) UpsertStudent(st core.StudentInfo) error {
 			seat_col=excluded.seat_col,
 			checked_in=excluded.checked_in,
 			last_seen=excluded.last_seen`,
-		st.ID, st.StudentNo, st.MachineName, st.MAC, st.GroupID, st.Seat.Row, st.Seat.Col,
+		st.ID, st.ClassName, st.StudentNo, st.MachineName, st.MAC, st.GroupID, st.Seat.Row, st.Seat.Col,
 		boolToInt(st.CheckedIn), st.LastSeen.UnixMilli(),
 	)
 	return err
@@ -332,7 +335,7 @@ func (s *Store) UpsertStudent(st core.StudentInfo) error {
 func (s *Store) LoadStudents() ([]core.StudentInfo, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	rows, err := s.db.Query(`SELECT id, student_no, machine_name, mac, group_id, seat_row, seat_col, checked_in, last_seen FROM students`)
+	rows, err := s.db.Query(`SELECT id, class_name, student_no, machine_name, mac, group_id, seat_row, seat_col, checked_in, last_seen FROM students`)
 	if err != nil {
 		return nil, err
 	}
@@ -342,7 +345,7 @@ func (s *Store) LoadStudents() ([]core.StudentInfo, error) {
 		var st core.StudentInfo
 		var checkedIn int
 		var lastSeenMs int64
-		if err := rows.Scan(&st.ID, &st.StudentNo, &st.MachineName, &st.MAC, &st.GroupID, &st.Seat.Row, &st.Seat.Col, &checkedIn, &lastSeenMs); err != nil {
+		if err := rows.Scan(&st.ID, &st.ClassName, &st.StudentNo, &st.MachineName, &st.MAC, &st.GroupID, &st.Seat.Row, &st.Seat.Col, &checkedIn, &lastSeenMs); err != nil {
 			continue
 		}
 		st.CheckedIn = checkedIn != 0

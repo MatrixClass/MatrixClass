@@ -120,6 +120,7 @@ func TestStudentBarCheckInExamAndLockViews(t *testing.T) {
 
 	// Check-in flow triggered by teacher MsgCheckInStart -> OpenMode(ModeCheckIn)
 	app.OpenMode(ModeCheckIn)
+	app.checkInClass = "一班"
 	app.checkInName = "一班"
 	tester.Frame()
 	if err := tester.Click("确认签到"); err != nil {
@@ -169,7 +170,7 @@ func TestStudentCheckInRequiresManualClassName(t *testing.T) {
 	if app.CheckInSubmitted() {
 		t.Fatal("check-in succeeded without manually entered class name")
 	}
-	if !strings.Contains(app.statusNote, "班级姓名") {
+	if !strings.Contains(app.statusNote, "班级和姓名") {
 		t.Fatalf("status = %q, want class-name validation", app.statusNote)
 	}
 }
