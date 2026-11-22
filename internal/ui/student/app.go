@@ -804,8 +804,8 @@ func (a *App) syncWindowOnMain(w *mygo.Window, show, focus bool) {
 			w.SetAlwaysOnTop(true)
 			w.SetClosable(true)
 			w.SetResizable(true)
-			w.SetMinimumSize(380, 220)
-			w.SetSize(420, 250)
+			w.SetMinimumSize(380, 270)
+			w.SetSize(420, 310)
 			w.Center()
 		case ModeExam:
 			w.SetFullScreen(false)
