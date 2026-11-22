@@ -57,10 +57,11 @@ type App struct {
 	lifecycleClosed  bool
 	lifecycleStarted bool
 
-	opts     Services
-	win      *mygo.Window
-	toastWin *mygo.Window
-	tray     *mygo.Tray
+	opts                Services
+	win                 *mygo.Window
+	toastWin            *mygo.Window
+	connectionNoticeWin *mygo.Window
+	tray                *mygo.Tray
 
 	studentID   string
 	studentNo   string
@@ -190,9 +191,11 @@ func (a *App) Close() error {
 	a.lifecycleClosed = true
 	cancel := a.lifecycleCancel
 	toast := a.toastWin
+	connectionNotice := a.connectionNoticeWin
 	fileWin := a.fileReceiveWin
 	homeworkWin := a.homeworkSubmitWin
 	a.toastWin = nil
+	a.connectionNoticeWin = nil
 	a.fileReceiveWin = nil
 	a.homeworkSubmitWin = nil
 	a.win = nil
@@ -200,7 +203,7 @@ func (a *App) Close() error {
 	if cancel != nil {
 		cancel()
 	}
-	for _, w := range []*mygo.Window{toast, fileWin, homeworkWin} {
+	for _, w := range []*mygo.Window{toast, connectionNotice, fileWin, homeworkWin} {
 		if w != nil {
 			w.Destroy()
 		}
@@ -241,8 +244,98 @@ func (a *App) AttachWindow(w *mygo.Window) {
 				tw.Destroy()
 			}
 		})
+		a.mu.Lock()
+		showConnectionNotice := !a.connected
+		a.mu.Unlock()
+		if showConnectionNotice {
+			a.showConnectionNotice()
+		}
 		a.scheduleBarAutoDock()
 	}
+}
+
+// SetConnectionState updates the student connection indicator and owns the
+// persistent, topmost disconnect notice shown during reconnect attempts.
+func (a *App) SetConnectionState(connected bool, reason string) {
+	a.mu.Lock()
+	a.connected = connected
+	if connected {
+		a.statusNote = "已连接频道: " + a.channel
+	} else {
+		a.statusNote = "连接已断开，正在重新连接…"
+	}
+	w := a.win
+	a.mu.Unlock()
+	if connected {
+		a.hideConnectionNotice()
+	} else if w != nil {
+		a.showConnectionNotice()
+	}
+	if w != nil {
+		w.Invalidate()
+	}
+}
+
+func (a *App) showConnectionNotice() {
+	a.mu.Lock()
+	mainWin := a.win
+	notice := a.connectionNoticeWin
+	a.mu.Unlock()
+	if mainWin == nil {
+		return
+	}
+	mainWin.Update(func() {
+		const noticeW, noticeH = 380, 150
+		wa := mygo.Screen.PrimaryDisplay().WorkArea
+		x := wa.X + (wa.Width-noticeW)/2
+		y := wa.Y + (wa.Height-noticeH)/2
+		if notice == nil {
+			notice = mygo.NewWindow(mygo.WindowOptions{
+				Title:         "矩联电子教室 - 连接状态",
+				Width:         noticeW,
+				Height:        noticeH,
+				X:             x,
+				Y:             y,
+				AlwaysOnTop:   true,
+				SkipTaskbar:   false,
+				DisableResize: true,
+				Content:       ui.View(a.ConnectionNoticeView),
+			})
+			a.mu.Lock()
+			a.connectionNoticeWin = notice
+			a.mu.Unlock()
+		} else {
+			notice.SetPosition(x, y)
+			notice.SetAlwaysOnTop(true)
+			notice.Invalidate()
+		}
+		notice.ShowInactive()
+	})
+}
+
+func (a *App) hideConnectionNotice() {
+	a.mu.Lock()
+	notice := a.connectionNoticeWin
+	a.mu.Unlock()
+	if notice != nil {
+		notice.Hide()
+	}
+}
+
+func (a *App) ConnectionNoticeView(c *ui.Context) {
+	a.mu.Lock()
+	channel := a.channel
+	a.mu.Unlock()
+	pal := theme.GetPalette(false)
+	c.SetTheme(theme.Theme(false))
+	ui.Column(c).Fill().Background(pal.Canvas).Padding(18).Gap(10).Children(func() {
+		ui.Text(c, "连接已断开").FontSize(18).Bold().TextColor(pal.Text)
+		ui.Text(c, "正在重新连接教师端，请稍候…").FontSize(13).TextColor(pal.TextMuted)
+		ui.Text(c, "频道 ID: "+channel).FontSize(12).TextColor(pal.TextMuted)
+		ui.Row(c).FillWidth().Justify(ui.End).Children(func() {
+			ui.Text(c, "学生端会持续尝试连接").FontSize(12).TextColor(pal.Accent)
+		})
+	})
 }
 
 func (a *App) positionBarTopCenter(w *mygo.Window) {

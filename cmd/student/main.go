@@ -151,6 +151,13 @@ func NewRuntime(channel, studentID, studentNo, teacherAddr, recvDir string) (*Ru
 		},
 	})
 	appRef = app
+	tr.OnConnectionState(func(connected bool, reason string) {
+		if connected {
+			app.SetConnectionState(true, "")
+			return
+		}
+		app.SetConnectionState(false, reason)
+	})
 	ctrl.Lock().SetOnStateChange(func(st control.LockState) {
 		// Keep the lock UI in sync when the controller unlocks on its own
 		// (teacher heartbeat timeout).

@@ -207,9 +207,10 @@ type Manager struct {
 	ring     []ringEntry
 	mcastSeq atomic.Uint64
 
-	onSessionCb   func(core.Session)
-	onEnvelopeCb  func(core.Session, protocol.Envelope)
-	onMulticastCb func([]byte)
+	onSessionCb         func(core.Session)
+	onConnectionStateCb func(connected bool, reason string)
+	onEnvelopeCb        func(core.Session, protocol.Envelope)
+	onMulticastCb       func([]byte)
 
 	txBytesTotal     atomic.Uint64
 	rxBytesTotal     atomic.Uint64
@@ -297,6 +298,24 @@ func (m *Manager) OnSession(fn func(core.Session)) {
 	m.mu.Lock()
 	m.onSessionCb = fn
 	m.mu.Unlock()
+}
+
+// OnConnectionState reports student transport connectivity changes. The
+// callback is informational and is never invoked for teacher managers.
+func (m *Manager) OnConnectionState(fn func(connected bool, reason string)) {
+	m.mu.Lock()
+	m.onConnectionStateCb = fn
+	m.mu.Unlock()
+}
+
+func (m *Manager) notifyConnectionState(connected bool, reason string) {
+	m.mu.RLock()
+	cb := m.onConnectionStateCb
+	role := m.role
+	m.mu.RUnlock()
+	if cb != nil && role == core.RoleStudent {
+		cb(connected, reason)
+	}
 }
 
 func (m *Manager) OnEnvelope(fn func(core.Session, protocol.Envelope)) {
@@ -550,6 +569,7 @@ func (m *Manager) StartStudent(ctx context.Context, channel string) error {
 	m.mu.Unlock()
 
 	if err := m.connectStudentOnce(channel); err != nil {
+		m.notifyConnectionState(false, err.Error())
 		m.mu.Lock()
 		if !m.closed {
 			if m.cancel != nil {
@@ -644,6 +664,7 @@ func (m *Manager) connectStudentOnce(channel string) error {
 	}
 	sess.SetOnClose(func(closed core.Session) {
 		m.removeSession(closed.ID())
+		m.notifyConnectionState(false, "教师端连接已断开")
 		m.scheduleStudentReconnect(connectionGeneration)
 	})
 	if !m.addSessionIfCurrent(sess, connectionGeneration) {
@@ -673,6 +694,7 @@ func (m *Manager) connectStudentOnce(channel string) error {
 	if cb != nil {
 		cb(sess)
 	}
+	m.notifyConnectionState(true, "")
 	return nil
 }
 
