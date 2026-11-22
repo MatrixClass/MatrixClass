@@ -3,6 +3,7 @@ package student
 import (
 	"context"
 	"runtime"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -119,6 +120,7 @@ func TestStudentBarCheckInExamAndLockViews(t *testing.T) {
 
 	// Check-in flow triggered by teacher MsgCheckInStart -> OpenMode(ModeCheckIn)
 	app.OpenMode(ModeCheckIn)
+	app.checkInName = "一班"
 	tester.Frame()
 	if err := tester.Click("确认签到"); err != nil {
 		t.Fatalf("click 确认签到 failed: %v", err)
@@ -157,6 +159,18 @@ func TestStudentBarCheckInExamAndLockViews(t *testing.T) {
 	tester.Frame()
 	if app.ScreenLocked() {
 		t.Fatalf("expected emergency unlock to clear screen lock")
+	}
+}
+
+func TestStudentCheckInRequiresManualClassName(t *testing.T) {
+	app := newTestStudentApp()
+	app.OpenMode(ModeCheckIn)
+	app.SubmitCheckIn()
+	if app.CheckInSubmitted() {
+		t.Fatal("check-in succeeded without manually entered class name")
+	}
+	if !strings.Contains(app.statusNote, "班级姓名") {
+		t.Fatalf("status = %q, want class-name validation", app.statusNote)
 	}
 }
 

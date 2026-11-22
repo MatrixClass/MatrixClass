@@ -86,6 +86,7 @@ type App struct {
 	unlockPassInput    string
 	unlockStatus       string
 	checkInNo          string
+	checkInName        string
 	checkInSubmitted   bool
 	homeworkPath       string
 	homeworkSubmitting bool
@@ -152,6 +153,7 @@ func New(opts Options) *App {
 		connected:       true,
 		lockMessage:     "课堂黑屏安静模式：请注意前方黑板或教师讲解。",
 		checkInNo:       opts.StudentNo,
+		checkInName:     "",
 		homeworkPath:    "",
 		statusNote:      "已连接频道: " + opts.Channel,
 		volume:          80,
@@ -1071,7 +1073,11 @@ func (a *App) buildCheckInView(c *ui.Context, pal theme.Palette) {
 				a.syncWindow()
 			}
 		})
-		ui.Text(c, fmt.Sprintf("当前机位：%s，请核对学号后点击签到提交至教师端：", a.machineName)).FontSize(12).TextColor(pal.TextMuted)
+		ui.Text(c, fmt.Sprintf("当前机位：%s，请填写班级姓名和学号后提交签到：", a.machineName)).FontSize(12).TextColor(pal.TextMuted)
+		ui.Row(c).Gap(10).AlignItems(ui.Center).Children(func() {
+			ui.Text(c, "班级姓名").Width(48).FontSize(12)
+			ui.TextInput(c, &a.checkInName).Width(200).Placeholder("请手动输入").AutoFocus()
+		})
 		ui.Row(c).Gap(10).AlignItems(ui.Center).Children(func() {
 			ui.Text(c, "学号").Width(48).FontSize(12)
 			ui.TextInput(c, &a.checkInNo).Width(200)
@@ -1268,15 +1274,20 @@ func (a *App) ToggleHandRaise() {
 }
 
 func (a *App) SubmitCheckIn() {
+	if strings.TrimSpace(a.checkInName) == "" {
+		a.statusNote = "签到失败：请先输入班级姓名"
+		return
+	}
 	if err := a.sendControl(protocol.MsgCheckInSubmit, map[string]string{
 		"student_id": a.studentID,
+		"name":       strings.TrimSpace(a.checkInName),
 		"student_no": a.checkInNo,
 	}); err != nil {
 		a.statusNote = "签到失败: " + err.Error()
 		return
 	}
 	if a.opts.Classroom != nil {
-		a.opts.Classroom.SubmitCheckIn(a.studentID, "", a.checkInNo)
+		a.opts.Classroom.SubmitCheckIn(a.studentID, strings.TrimSpace(a.checkInName), a.checkInNo)
 	}
 	a.checkInSubmitted = true
 	a.statusNote = fmt.Sprintf("签到成功: %s (%s)", a.machineName, a.checkInNo)
