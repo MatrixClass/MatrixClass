@@ -116,9 +116,6 @@ func NewRuntime(channel, studentID, studentNo, teacherAddr, recvDir string) (*Ru
 			if appRef != nil {
 				if task.Direction == core.TransferSend {
 					appRef.RecordIncomingFile(task)
-					if task.Status == "completed" {
-						appRef.OpenTheatreFileIfMatching(task)
-					}
 					return
 				}
 				if task.Status == "completed" {

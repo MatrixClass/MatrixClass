@@ -119,11 +119,12 @@ type MonitorConfig struct {
 }
 
 type TheatreState struct {
-	Playing  bool    `json:"playing"`
-	Media    string  `json:"media"`
-	Position float64 `json:"position"`
-	Duration float64 `json:"duration"`
-	Volume   float32 `json:"volume"`
+	Playing   bool    `json:"playing"`
+	Media     string  `json:"media"`
+	StreamURL string  `json:"stream_url,omitempty"`
+	Position  float64 `json:"position"`
+	Duration  float64 `json:"duration"`
+	Volume    float32 `json:"volume"`
 }
 
 type InputEventKind string

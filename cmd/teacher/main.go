@@ -9,6 +9,7 @@ import (
 	"io"
 	"log"
 	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"sync"
@@ -72,6 +73,7 @@ type Runtime struct {
 	lifecycleClosed bool
 	closeOnce       sync.Once
 	closeErr        error
+	theatreHTTP     *http.Server
 }
 
 func NewRuntime(channel, teacherID, teacherName, archiveDir string) (*Runtime, error) {
@@ -521,6 +523,19 @@ func (rt *Runtime) Start(ctx context.Context, listenAddr string, teacherName str
 			startErr = err
 			return
 		}
+		mux := http.NewServeMux()
+		mux.HandleFunc("/matrixclass/theatre", rt.serveTheatreStream)
+		rt.theatreHTTP = &http.Server{Addr: ":39103", Handler: mux}
+		streamHost := localLANIPv4()
+		if streamHost == "" {
+			streamHost = "127.0.0.1"
+		}
+		rt.App.SetTheatreStreamURL("http://" + net.JoinHostPort(streamHost, "39103") + "/matrixclass/theatre")
+		go func() {
+			if err := rt.theatreHTTP.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				log.Printf("theatre stream server: %v", err)
+			}
+		}()
 		rt.lifecycleMu.Lock()
 		if rt.lifecycleStop != nil {
 			rt.lifecycleStop()
@@ -540,6 +555,56 @@ func (rt *Runtime) Start(ctx context.Context, listenAddr string, teacherName str
 		rt.started = true
 	}()
 	return startErr
+}
+
+func (rt *Runtime) serveTheatreStream(w http.ResponseWriter, req *http.Request) {
+	path := rt.App.TheatreMediaPath()
+	if path == "" {
+		http.Error(w, "network theatre is idle", http.StatusNotFound)
+		return
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		http.Error(w, "media unavailable", http.StatusNotFound)
+		return
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		http.Error(w, "media unavailable", http.StatusNotFound)
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	http.ServeContent(w, req, filepath.Base(path), info.ModTime(), f)
+}
+
+func localLANIPv4() string {
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		return ""
+	}
+	for _, iface := range ifaces {
+		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
+			continue
+		}
+		addrs, err := iface.Addrs()
+		if err != nil {
+			continue
+		}
+		for _, addr := range addrs {
+			var ip net.IP
+			switch v := addr.(type) {
+			case *net.IPNet:
+				ip = v.IP
+			case *net.IPAddr:
+				ip = v.IP
+			}
+			if ip4 := ip.To4(); ip4 != nil && !ip4.IsLoopback() {
+				return ip4.String()
+			}
+		}
+	}
+	return ""
 }
 
 // bindSessionStudent records that sess registered as studentID. It refuses
@@ -803,6 +868,9 @@ func (rt *Runtime) Close() error {
 		rt.lifecycleMu.Unlock()
 		rt.startMu.Unlock()
 		var closeErrs []error
+		if rt.theatreHTTP != nil {
+			closeErrs = append(closeErrs, rt.theatreHTTP.Shutdown(context.Background()))
+		}
 		if rt.Transport != nil {
 			closeErrs = append(closeErrs, rt.Transport.Close())
 		}

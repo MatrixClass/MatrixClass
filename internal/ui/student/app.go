@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"image"
+	"math"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -110,13 +111,14 @@ type App struct {
 	lastWinDocked    bool
 	winSyncedOnce    bool
 
-	videoBitmap    *ui.Bitmap
-	theatrePlayer  *ui.VideoPlayer
-	theatreMedia   string
-	theatrePlaying bool
-	lastFrameAt    time.Time
-	pendingFrame   *core.VideoFrame
-	frameScheduled atomic.Bool
+	videoBitmap      *ui.Bitmap
+	theatrePlayer    *ui.VideoPlayer
+	theatreMedia     string
+	theatreStreamURL string
+	theatrePlaying   bool
+	lastFrameAt      time.Time
+	pendingFrame     *core.VideoFrame
+	frameScheduled   atomic.Bool
 
 	activePaper   *core.ExamPaper
 	examAnswers   map[string]string
@@ -607,31 +609,47 @@ func (a *App) StartTheatre(windowed bool) {
 // file is opened when the corresponding file-transfer task completes.
 func (a *App) SetTheatreState(state core.TheatreState) {
 	a.mu.Lock()
+	streamChanged := strings.TrimSpace(state.StreamURL) != "" && strings.TrimSpace(state.StreamURL) != a.theatreStreamURL
+	wasPlaying := a.theatrePlaying
 	a.theatreMedia = filepath.Base(strings.TrimSpace(state.Media))
+	a.theatreStreamURL = strings.TrimSpace(state.StreamURL)
 	a.theatrePlaying = state.Playing
 	a.statusNote = "网络影院同步播放: " + state.Media
 	if !state.Playing {
 		a.statusNote = "网络影院已暂停"
 	}
 	p := a.theatrePlayer
+	position := state.Position
 	a.mu.Unlock()
 	if p != nil {
+		if state.Playing && math.Abs(p.Position().Seconds()-position) > 0.75 {
+			p.Seek(time.Duration(position * float64(time.Second)))
+		}
 		if state.Playing {
 			p.Play()
 		} else {
 			p.Pause()
 		}
 	}
-	if state.Playing {
+	if state.Playing && (streamChanged || a.theatrePlayer == nil) {
+		a.StartTheatre(true)
+		if state.StreamURL != "" {
+			a.OpenTheatreStream(state.StreamURL, state.Position)
+		}
+	} else if state.Playing && !wasPlaying {
 		a.StartTheatre(true)
 	} else {
-		a.ShowFloatingBar()
+		if !state.Playing {
+			a.ShowFloatingBar()
+		}
 	}
 }
 
-// OpenTheatreFile opens a transferred video in the student's local player.
-func (a *App) OpenTheatreFile(path string) {
-	if strings.TrimSpace(path) == "" {
+// OpenTheatreStream opens the teacher-hosted media stream without downloading
+// the complete video to the student machine.
+func (a *App) OpenTheatreStream(streamURL string, position float64) {
+	streamURL = strings.TrimSpace(streamURL)
+	if streamURL == "" {
 		return
 	}
 	a.mu.Lock()
@@ -642,35 +660,25 @@ func (a *App) OpenTheatreFile(path string) {
 		return
 	}
 	w.Update(func() {
-		p, err := video.Open(path)
+		p, err := video.OpenURL(streamURL)
 		if err != nil {
-			a.SetStatusNote("网络影院视频打开失败: " + err.Error())
+			a.SetStatusNote("网络影院流打开失败: " + err.Error())
 			return
 		}
 		if a.theatrePlayer != nil {
 			a.theatrePlayer.Close()
 		}
 		a.theatrePlayer = p.SetLoop(false)
+		if position > 0 {
+			a.theatrePlayer.Seek(time.Duration(position * float64(time.Second)))
+		}
 		if playing {
 			a.theatrePlayer.Play()
+		} else {
+			a.theatrePlayer.Pause()
 		}
 		a.Invalidate()
 	})
-}
-
-// OpenTheatreFileIfMatching opens a completed transfer only when it matches
-// the media announced by the teacher's current theatre state.
-func (a *App) OpenTheatreFileIfMatching(task core.TransferTask) {
-	if task.Status != "completed" {
-		return
-	}
-	a.mu.Lock()
-	want := a.theatreMedia
-	a.mu.Unlock()
-	if want == "" || !strings.EqualFold(filepath.Base(task.FileName), want) {
-		return
-	}
-	a.OpenTheatreFile(task.LocalPath)
 }
 
 func (a *App) SetBroadcastWindowed(windowed bool) {

@@ -52,6 +52,7 @@ type Options struct {
 	Store             *store.Store
 	PromptChannel     bool
 	OnChannelSelected func(channel string)
+	TheatreStreamURL  string
 	Services          Services
 }
 
@@ -164,6 +165,7 @@ type App struct {
 	theatrePlayer    *ui.VideoPlayer
 	theatre          core.TheatreState
 	theatreMedia     []string
+	theatreStreamURL string
 
 	pendingMonitor       map[string]*core.VideoFrame
 	pendingRemote        *core.VideoFrame
@@ -291,6 +293,7 @@ func New(opts Options) *App {
 		pendingMonitor:    make(map[string]*core.VideoFrame),
 		theatreMedia:      nil,
 		theatre:           core.TheatreState{Volume: 0.75},
+		theatreStreamURL:  opts.TheatreStreamURL,
 		examTitleInput:    "随堂小测：计算机网络基础",
 		examDurInput:      10,
 		examKindInput:     "single",
@@ -3552,7 +3555,6 @@ func (a *App) toggleTheatrePlayback() {
 	if a.theatre.Playing {
 		a.activeModeLabel = "网络影院"
 		a.statusNote = "网络影院正在同步播放: " + a.theatre.Media
-		a.distributeTheatreMedia()
 	} else {
 		a.activeModeLabel = "待机监听"
 		a.statusNote = "网络影院已暂停"
@@ -3630,28 +3632,8 @@ func (a *App) loadLocalVideo(path string) {
 	a.theatre.Playing = true
 	a.activeModeLabel = "网络影院"
 	a.statusNote = "网络影院正在播放: " + path
+	a.theatre.StreamURL = a.theatreStreamURL
 	a.sendControlEnvelope(protocol.MsgTheatreControl, a.theatre, nil)
-	a.distributeTheatreMedia()
-}
-
-func (a *App) distributeTheatreMedia() {
-	if a.opts.Files == nil || strings.TrimSpace(a.theatre.Media) == "" {
-		return
-	}
-	targets := a.resolveFileTargets()
-	if len(targets) == 0 {
-		return
-	}
-	ctx, ok := a.lifecycleContext()
-	if !ok {
-		return
-	}
-	path := a.theatre.Media
-	go func() {
-		if _, err := a.opts.Files.DistributeFile(ctx, path, "", targets, false); err != nil && ctx.Err() == nil {
-			a.SetStatusNote("网络影院视频分发失败: " + err.Error())
-		}
-	}()
 }
 
 func (a *App) sendControlEnvelope(msgType protocol.MsgType, payload any, targetIDs []string) {
@@ -4120,6 +4102,19 @@ func (a *App) StudentDemoID() string {
 }
 func (a *App) TheatrePlaying() bool {
 	return a.theatreFlag.Load()
+}
+
+func (a *App) TheatreMediaPath() string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.theatre.Media
+}
+
+func (a *App) SetTheatreStreamURL(url string) {
+	a.mu.Lock()
+	a.theatreStreamURL = strings.TrimSpace(url)
+	a.theatre.StreamURL = a.theatreStreamURL
+	a.mu.Unlock()
 }
 func (a *App) UseMulticast() bool {
 	return a.mcastFlag.Load()
