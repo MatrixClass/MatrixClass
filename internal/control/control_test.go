@@ -313,6 +313,23 @@ func TestScreenLockStateEmergencyUnlockAndTimeout(t *testing.T) {
 	}
 }
 
+func TestDefaultEmergencyPasswordUnlocksConfiguredController(t *testing.T) {
+	ctrl := NewScreenLockController(LockOptions{
+		Backend:           &mockLockBackend{},
+		EmergencyPassword: DefaultEmergencyPassword,
+	})
+	if err := ctrl.SetLocked(true, "locked"); err != nil {
+		t.Fatal(err)
+	}
+	ok, err := ctrl.EmergencyUnlock(DefaultEmergencyPassword)
+	if err != nil || !ok {
+		t.Fatalf("default emergency password failed: ok=%v err=%v", ok, err)
+	}
+	if ctrl.State().Locked {
+		t.Fatal("controller remained locked after default emergency unlock")
+	}
+}
+
 func TestProcessBlacklistAndWhitelistMatching(t *testing.T) {
 	inspector := &mockProcessInspector{
 		procs: []ProcessInfo{

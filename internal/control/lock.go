@@ -12,6 +12,10 @@ var (
 	ErrInvalidEmergencyPassword = errors.New("control: invalid emergency unlock password")
 )
 
+// DefaultEmergencyPassword is used by the student runtime when the teacher
+// has not provisioned a site-specific emergency password.
+const DefaultEmergencyPassword = "nexlab-unlock"
+
 type LockState struct {
 	Locked          bool      `json:"locked"`
 	Message         string    `json:"message"`

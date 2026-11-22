@@ -26,6 +26,8 @@ go build -tags mygo_nowebview -ldflags "-H windowsgui" -o dist/nexlab-student.ex
 
 当前提供 `linux/amd64`、`linux/arm64` 和 `linux/loong64` 的 `CGO_ENABLED=0` 交叉构建与 tar.gz 发布包：
 
+学生端锁屏页面支持紧急本地解锁。未配置站点专用口令时，默认口令为 `nexlab-unlock`；生产部署建议在运行时配置专用口令，不要继续使用默认口令。
+
 ```powershell
 .\scripts\build-linux.ps1
 # 生成三架构目录包和 tar.gz

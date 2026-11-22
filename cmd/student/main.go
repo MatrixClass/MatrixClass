@@ -99,7 +99,10 @@ func NewRuntime(channel, studentID, studentNo, teacherAddr, recvDir string) (*Ru
 		ProxyAddr:      "127.0.0.1:0",
 		// Auto-unlock if the teacher disappears (crash / network loss) so a
 		// student machine is never left locked with no way out.
-		Lock: control.LockOptions{DisconnectTimeout: 60 * time.Second},
+		Lock: control.LockOptions{
+			DisconnectTimeout: 60 * time.Second,
+			EmergencyPassword: control.DefaultEmergencyPassword,
+		},
 	})
 	cr := classroom.NewService()
 	ex := exam.NewService()
