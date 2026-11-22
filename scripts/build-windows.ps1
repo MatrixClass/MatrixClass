@@ -74,10 +74,12 @@ foreach ($arch in $Architectures) {
     }
     Copy-Item (Join-Path $script:RepoRoot "packaging/windows/README.md") (Join-Path $stage "README.md")
     New-ReleaseArchive -Output (Join-Path $outputPath "$stageName.zip") -BaseDir $outputPath -Entries @($stageName)
-    $installer = Join-Path $outputPath "matrixclass-windows-$arch-$Version-setup.exe"
-    & $nsis "/DAPP_VERSION=$Version" "/DAPP_ARCH=$arch" "/DSTAGE_DIR=$stage" "/DOUT_FILE=$installer" (Join-Path $script:RepoRoot "packaging/windows/matrixclass.nsi")
-    if ($LASTEXITCODE -ne 0) { throw "NSIS installer build failed for windows/$arch" }
-    Write-Host "  installer $installer"
+    foreach ($app in @("teacher", "student")) {
+        $installer = Join-Path $outputPath "matrixclass-$app-windows-$arch-$Version-setup.exe"
+        & $nsis "/DAPP_VERSION=$Version" "/DAPP_ARCH=$arch" "/DAPP_ROLE=$app" "/DSTAGE_DIR=$stage" "/DOUT_FILE=$installer" (Join-Path $script:RepoRoot "packaging/windows/matrixclass-role.nsi")
+        if ($LASTEXITCODE -ne 0) { throw "NSIS installer build failed for windows/$arch/$app" }
+        Write-Host "  installer $installer"
+    }
 }
 
 Write-Host "Windows builds completed: $($Architectures -join ', ') -> $outputPath"

@@ -14,12 +14,14 @@
 | `matrixclass-windows-amd64.zip` | x64 | Windows 10 1809+ / Windows 11 |
 | `matrixclass-windows-arm64.zip` | ARM64 | Windows 11 on ARM（骁龙等），原生运行 |
 
-Windows release 还提供对应的 NSIS 安装程序：
+Windows release 还提供教师端和学生端独立的 NSIS 安装程序：
 
-- `matrixclass-windows-amd64-<version>-setup.exe`
-- `matrixclass-windows-arm64-<version>-setup.exe`
+- `matrixclass-teacher-windows-amd64-<version>-setup.exe`
+- `matrixclass-student-windows-amd64-<version>-setup.exe`
+- `matrixclass-teacher-windows-arm64-<version>-setup.exe`
+- `matrixclass-student-windows-arm64-<version>-setup.exe`
 
-安装程序会将教师端、学生端和卸载程序安装到系统程序目录，并创建教师端和学生端快捷方式。
+教师端和学生端安装到独立目录，并创建各自的桌面和开始菜单快捷方式。学生端卸载前必须通过退出密码验证。
 
 `windows/386`（32 位）可以编译，但 MyGo 没有 32 位原生 UI 后端，程序启动即报 `not supported yet`，因此不发布。
 

@@ -60,7 +60,8 @@ New-Item -ItemType Directory -Force -Path $release | Out-Null
 $files = @()
 foreach ($arch in $script:SupportedTargets.windows) {
     $files += Join-Path $dist "windows/matrixclass-windows-$arch.zip"
-    $files += Join-Path $dist "windows/matrixclass-windows-$arch-$Version-setup.exe"
+    $files += Join-Path $dist "windows/matrixclass-teacher-windows-$arch-$Version-setup.exe"
+    $files += Join-Path $dist "windows/matrixclass-student-windows-$arch-$Version-setup.exe"
 }
 foreach ($arch in $script:SupportedTargets.linux) { $files += Join-Path $dist "linux/matrixclass-linux-$arch.tar.gz" }
 foreach ($arch in @("amd64", "arm64", "universal")) { $files += Join-Path $dist "darwin/matrixclass-macos-$arch.zip" }
