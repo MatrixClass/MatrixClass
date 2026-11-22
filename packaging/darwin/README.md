@@ -31,6 +31,14 @@ xattr -d com.apple.quarantine "/path/to/MatrixClass Teacher.app"
 
 屏幕广播、监控、课堂音频和远程输入需要的 macOS 权限及当前阶段限制见 `permissions.md`。本发布骨架不会绕过系统权限，也不会把静态画面当成真实采集结果。
 
+## 卸载学生端
+
+macOS Finder 直接删除 `.app` 没有可拦截的卸载回调。发布包提供 `uninstall-student.sh`，执行前会调用学生端退出密码验证；验证通过后才删除学生端应用，用户数据会保留：
+
+```sh
+./uninstall-student.sh "/Applications/MatrixClass Student.app"
+```
+
 ## 许可证
 
 本项目继续使用现有 Go + MyGo 依赖，未新增 GPL、LGPL 或 AGPL 传染性依赖。发布前请运行仓库中的许可证检查脚本。

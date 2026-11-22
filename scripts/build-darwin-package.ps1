@@ -71,7 +71,7 @@ foreach ($arch in @("amd64", "arm64", "universal")) {
     if (Test-Path $stage) { Remove-Item -Recurse -Force $stage }
     New-Item -ItemType Directory -Force -Path $stage | Out-Null
     Copy-Item (Join-Path $outputPath "apps/$arch/*.app") $stage -Recurse
-    Copy-Item (Join-Path $outputPath "README-macOS.md"), (Join-Path $outputPath "permissions-macOS.md") $stage
+    Copy-Item (Join-Path $outputPath "README-macOS.md"), (Join-Path $outputPath "permissions-macOS.md"), (Join-Path $packagingPath "uninstall-student.sh") $stage
     New-ReleaseArchive -Output (Join-Path $outputPath "$stageName.zip") -BaseDir $outputPath -Entries @($stageName)
 }
 

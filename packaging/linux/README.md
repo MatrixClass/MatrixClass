@@ -17,6 +17,8 @@
 - 配置：`$XDG_CONFIG_HOME/matrixclass`，默认 `~/.config/matrixclass`
 - 日志：`$XDG_STATE_HOME/matrixclass`，默认 `~/.local/state/matrixclass`
 
+执行 `uninstall.sh` 卸载前会启动学生端密码验证；验证失败或取消都会中止卸载。直接删除文件或使用管理员权限绕过卸载脚本不属于受保护的卸载流程。
+
 `INSTALL_SYSTEMD=1` 时会安装 `matrixclass-teacher.service` 和 `matrixclass-student.service` 到用户 systemd 目录，但不会自动启用。模板中的 `%h/.local/bin/...` 适用于将程序放在用户目录的场景；系统级 `/opt` 安装请通过桌面启动项或自行调整 `ExecStart`。
 
 发行版包：在 Linux 主机执行 `scripts/build-linux-distro-packages.sh dist/linux amd64`。存在 `dpkg-deb` 时生成 `.deb`，存在 `rpmbuild` 时生成 `.rpm`；工具缺失会清晰跳过，不代表安装包已经生成。Windows PowerShell 脚本仅在检测到 WSL 时调用上述脚本。

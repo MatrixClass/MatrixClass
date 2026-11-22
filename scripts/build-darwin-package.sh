@@ -61,7 +61,8 @@ for arch in amd64 arm64 universal; do
   rm -rf "$stage"
   mkdir -p "$stage"
   cp -R "$output_dir/apps/$arch/MatrixClass Teacher.app" "$output_dir/apps/$arch/MatrixClass Student.app" "$stage/"
-  cp "$output_dir/README-macOS.md" "$output_dir/permissions-macOS.md" "$stage/"
+  cp "$output_dir/README-macOS.md" "$output_dir/permissions-macOS.md" "$packaging/uninstall-student.sh" "$stage/"
+  chmod 0755 "$stage/uninstall-student.sh"
   if [ "$(uname -s)" = Darwin ] && command -v ditto >/dev/null 2>&1; then
     # ditto keeps extended attributes and code signatures exactly as Finder expects.
     rm -f "$output_dir/$stage_name.zip"
