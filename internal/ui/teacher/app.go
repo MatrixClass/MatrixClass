@@ -3552,18 +3552,10 @@ func (a *App) toggleTheatrePlayback() {
 	if a.theatre.Playing {
 		a.activeModeLabel = "网络影院"
 		a.statusNote = "网络影院正在同步播放: " + a.theatre.Media
-		a.sendControlEnvelope(protocol.MsgBroadcastStart, core.BroadcastConfig{
-			Mode:         core.BroadcastWindowed,
-			WithAudio:    true,
-			FPS:          20,
-			Quality:      int(a.monitorQual),
-			UseMulticast: a.useMulticast,
-			SourceID:     a.teacherID,
-		}, nil)
+		a.distributeTheatreMedia()
 	} else {
 		a.activeModeLabel = "待机监听"
 		a.statusNote = "网络影院已暂停"
-		a.sendControlEnvelope(protocol.MsgBroadcastStop, nil, nil)
 	}
 	a.sendControlEnvelope(protocol.MsgTheatreControl, a.theatre, nil)
 }
@@ -3577,7 +3569,6 @@ func (a *App) stopTheatrePlayback() {
 	}
 	a.activeModeLabel = "待机监听"
 	a.statusNote = "网络影院已停止"
-	a.sendControlEnvelope(protocol.MsgBroadcastStop, nil, nil)
 	a.sendControlEnvelope(protocol.MsgTheatreControl, a.theatre, nil)
 }
 
@@ -3639,15 +3630,28 @@ func (a *App) loadLocalVideo(path string) {
 	a.theatre.Playing = true
 	a.activeModeLabel = "网络影院"
 	a.statusNote = "网络影院正在播放: " + path
-	a.sendControlEnvelope(protocol.MsgBroadcastStart, core.BroadcastConfig{
-		Mode:         core.BroadcastWindowed,
-		WithAudio:    true,
-		FPS:          20,
-		Quality:      int(a.monitorQual),
-		UseMulticast: a.useMulticast,
-		SourceID:     a.teacherID,
-	}, nil)
 	a.sendControlEnvelope(protocol.MsgTheatreControl, a.theatre, nil)
+	a.distributeTheatreMedia()
+}
+
+func (a *App) distributeTheatreMedia() {
+	if a.opts.Files == nil || strings.TrimSpace(a.theatre.Media) == "" {
+		return
+	}
+	targets := a.resolveFileTargets()
+	if len(targets) == 0 {
+		return
+	}
+	ctx, ok := a.lifecycleContext()
+	if !ok {
+		return
+	}
+	path := a.theatre.Media
+	go func() {
+		if _, err := a.opts.Files.DistributeFile(ctx, path, "", targets, false); err != nil && ctx.Err() == nil {
+			a.SetStatusNote("网络影院视频分发失败: " + err.Error())
+		}
+	}()
 }
 
 func (a *App) sendControlEnvelope(msgType protocol.MsgType, payload any, targetIDs []string) {

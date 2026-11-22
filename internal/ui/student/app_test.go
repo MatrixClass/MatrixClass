@@ -175,6 +175,22 @@ func TestStudentCheckInRequiresManualClassName(t *testing.T) {
 	}
 }
 
+func TestStudentTheatreStateUsesDedicatedMode(t *testing.T) {
+	app := newTestStudentApp()
+	app.SetTheatreState(core.TheatreState{Playing: true, Media: `C:\lesson\network-theatre.mp4`})
+	if app.Mode() != ModeTheatre {
+		t.Fatalf("expected dedicated theatre mode, got %d", app.Mode())
+	}
+	if strings.Contains(app.statusNote, "屏幕广播") {
+		t.Fatalf("theatre status must not be presented as screen broadcast: %q", app.statusNote)
+	}
+
+	app.SetTheatreState(core.TheatreState{Playing: false, Media: `C:\lesson\network-theatre.mp4`})
+	if app.Mode() != ModeBar {
+		t.Fatalf("expected floating bar after theatre stops, got %d", app.Mode())
+	}
+}
+
 type testLockBackend struct{}
 
 func (testLockBackend) EnableLock(string) error    { return nil }

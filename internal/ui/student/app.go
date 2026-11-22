@@ -14,6 +14,7 @@ import (
 
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
+	"github.com/egoist/mygo/ui/video"
 
 	"nexlab/internal/core"
 	"nexlab/internal/protocol"
@@ -47,6 +48,7 @@ const (
 	ModeCheckIn
 	ModeChat
 	ModeHomeworkSubmit
+	ModeTheatre
 )
 
 // App implements the MyGo native Student Client (tray + floating bar + broadcast/lock/exam/check-in views).
@@ -109,6 +111,9 @@ type App struct {
 	winSyncedOnce    bool
 
 	videoBitmap    *ui.Bitmap
+	theatrePlayer  *ui.VideoPlayer
+	theatreMedia   string
+	theatrePlaying bool
 	lastFrameAt    time.Time
 	pendingFrame   *core.VideoFrame
 	frameScheduled atomic.Bool
@@ -581,6 +586,93 @@ func (a *App) StartBroadcast(windowed bool) {
 	}
 }
 
+// StartTheatre switches the student viewer to the teacher's synchronized video.
+// The underlying video stream is shared with screen broadcast, but the UI mode
+// remains distinct so a network theatre session is not presented as a broadcast.
+func (a *App) StartTheatre(windowed bool) {
+	a.mu.Lock()
+	a.broadcastWindow = windowed
+	a.mode = ModeTheatre
+	a.statusNote = "正在接收网络影院视频"
+	w := a.win
+	a.mu.Unlock()
+	if w != nil {
+		w.Update(func() {
+			a.syncWindowOnMain(w, true, true)
+		})
+	}
+}
+
+// SetTheatreState records the synchronized network theatre state. The media
+// file is opened when the corresponding file-transfer task completes.
+func (a *App) SetTheatreState(state core.TheatreState) {
+	a.mu.Lock()
+	a.theatreMedia = filepath.Base(strings.TrimSpace(state.Media))
+	a.theatrePlaying = state.Playing
+	a.statusNote = "网络影院同步播放: " + state.Media
+	if !state.Playing {
+		a.statusNote = "网络影院已暂停"
+	}
+	p := a.theatrePlayer
+	a.mu.Unlock()
+	if p != nil {
+		if state.Playing {
+			p.Play()
+		} else {
+			p.Pause()
+		}
+	}
+	if state.Playing {
+		a.StartTheatre(true)
+	} else {
+		a.ShowFloatingBar()
+	}
+}
+
+// OpenTheatreFile opens a transferred video in the student's local player.
+func (a *App) OpenTheatreFile(path string) {
+	if strings.TrimSpace(path) == "" {
+		return
+	}
+	a.mu.Lock()
+	w := a.win
+	playing := a.theatrePlaying
+	a.mu.Unlock()
+	if w == nil {
+		return
+	}
+	w.Update(func() {
+		p, err := video.Open(path)
+		if err != nil {
+			a.SetStatusNote("网络影院视频打开失败: " + err.Error())
+			return
+		}
+		if a.theatrePlayer != nil {
+			a.theatrePlayer.Close()
+		}
+		a.theatrePlayer = p.SetLoop(false)
+		if playing {
+			a.theatrePlayer.Play()
+		}
+		a.Invalidate()
+	})
+}
+
+// OpenTheatreFileIfMatching opens a completed transfer only when it matches
+// the media announced by the teacher's current theatre state.
+func (a *App) OpenTheatreFileIfMatching(task core.TransferTask) {
+	if task.Status != "completed" {
+		return
+	}
+	a.mu.Lock()
+	want := a.theatreMedia
+	a.mu.Unlock()
+	if want == "" || !strings.EqualFold(filepath.Base(task.FileName), want) {
+		return
+	}
+	a.OpenTheatreFile(task.LocalPath)
+}
+
 func (a *App) SetBroadcastWindowed(windowed bool) {
 	a.mu.Lock()
 	a.broadcastWindow = windowed
@@ -799,6 +891,14 @@ func (a *App) syncWindowOnMain(w *mygo.Window, show, focus bool) {
 			} else {
 				w.SetFullScreen(true)
 			}
+		case ModeTheatre:
+			w.SetFullScreen(false)
+			w.SetClosable(true)
+			w.SetAlwaysOnTop(true)
+			w.SetResizable(true)
+			w.SetMinimumSize(480, 320)
+			w.SetSize(720, 460)
+			w.Center()
 		case ModeCheckIn:
 			w.SetFullScreen(false)
 			w.SetAlwaysOnTop(true)
@@ -880,7 +980,7 @@ func (a *App) View(c *ui.Context) {
 	switch mode {
 	case ModeLock:
 		a.buildLockView(c, pal)
-	case ModeBroadcast:
+	case ModeBroadcast, ModeTheatre:
 		a.buildBroadcastView(c, pal)
 	case ModeExam:
 		a.buildExamView(c, pal)
@@ -1007,7 +1107,14 @@ func (a *App) barIconButton(c *ui.Context, pal theme.Palette, label string, icon
 func (a *App) buildBroadcastView(c *ui.Context, pal theme.Palette) {
 	ui.Column(c).Fill().Background(pal.TheatreBg).Children(func() {
 		ui.Row(c).FillWidth().Padding(6, 12).Background(pal.ChromeBar).AlignItems(ui.Center).Gap(8).DragWindow().Children(func() {
-			ui.Text(c, "屏幕广播 / 网络影院接收").FontSize(12).Bold().TextColor(pal.Text)
+			a.mu.Lock()
+			mode := a.mode
+			a.mu.Unlock()
+			title := "屏幕广播"
+			if mode == ModeTheatre {
+				title = "网络影院"
+			}
+			ui.Text(c, title).FontSize(12).Bold().TextColor(pal.Text)
 			if a.broadcastWindow {
 				ui.Badge(c, "窗口模式").Background(pal.Selection).TextColor(pal.Text)
 			} else {
@@ -1032,6 +1139,14 @@ func (a *App) buildBroadcastView(c *ui.Context, pal theme.Palette) {
 		})
 
 		ui.Column(c).Grow(1).FillWidth().Center().Padding(12).Children(func() {
+			a.mu.Lock()
+			mode := a.mode
+			player := a.theatrePlayer
+			a.mu.Unlock()
+			if mode == ModeTheatre && player != nil {
+				ui.Video(c, player).Fill().Fit(ui.Contain)
+				return
+			}
 			a.mu.Lock()
 			bmp := a.videoBitmap
 			a.mu.Unlock()

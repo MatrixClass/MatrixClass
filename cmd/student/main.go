@@ -116,6 +116,9 @@ func NewRuntime(channel, studentID, studentNo, teacherAddr, recvDir string) (*Ru
 			if appRef != nil {
 				if task.Direction == core.TransferSend {
 					appRef.RecordIncomingFile(task)
+					if task.Status == "completed" {
+						appRef.OpenTheatreFileIfMatching(task)
+					}
 					return
 				}
 				if task.Status == "completed" {
@@ -289,11 +292,7 @@ func (rt *Runtime) wireHandlers() {
 		case protocol.MsgTheatreControl:
 			var ts core.TheatreState
 			if json.Unmarshal(env.Payload, &ts) == nil {
-				if ts.Playing {
-					rt.App.SetStatusNote("网络影院同步播放: " + ts.Media)
-				} else {
-					rt.App.SetStatusNote("网络影院已暂停")
-				}
+				rt.App.SetTheatreState(ts)
 			}
 		case protocol.MsgAudioFrame:
 			var encoded []byte
