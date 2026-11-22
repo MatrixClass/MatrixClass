@@ -988,16 +988,16 @@ func (a *App) barIconButton(c *ui.Context, pal theme.Palette, label string, icon
 		fg = pal.AccentText
 		border = pal.Accent
 	}
-	btn := ui.Row(c).AlignItems(ui.Center).Gap(5).Padding(5, 10).Radius(5).
+	btn := ui.Row(c).AlignItems(ui.Center).Gap(5).Padding(6, 11).Radius(5).
 		Background(bg).Border(1, border).Focusable().Label(label)
 	if btn.Hovered() && !active {
 		btn.Background(pal.ChromeHover)
 	}
 	btn.Children(func() {
 		if icon != nil {
-			ui.Image(c, icon).Size(18, 18)
+			ui.Image(c, icon).Size(20, 20)
 		}
-		ui.Text(c, label).FontSize(12).Bold().TextColor(fg).SingleLine()
+		ui.Text(c, label).FontSize(13).Bold().TextColor(fg).SingleLine()
 	})
 	if btn.Clicked() && onClick != nil {
 		onClick()
