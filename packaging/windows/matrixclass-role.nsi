@@ -39,6 +39,11 @@ RequestExecutionLevel admin
 !endif
 
 !define MUI_ABORTWARNING
+!if "${APP_ROLE}" == "student"
+  !define MUI_FINISHPAGE_RUN
+  !define MUI_FINISHPAGE_RUN_TEXT "启动学生端"
+  !define MUI_FINISHPAGE_RUN_FUNCTION LaunchStudent
+!endif
 !insertmacro MUI_PAGE_WELCOME
 !insertmacro MUI_PAGE_DIRECTORY
 !insertmacro MUI_PAGE_INSTFILES
@@ -63,6 +68,10 @@ VIAddVersionKey "FileVersion" "${APP_VERSION}"
 VIAddVersionKey "ProductVersion" "${APP_VERSION}"
 
 !if "${APP_ROLE}" == "student"
+Function LaunchStudent
+  Exec '"$INSTDIR\matrixclass-student.exe"'
+FunctionEnd
+
 Function un.onInit
   IfFileExists "$INSTDIR\matrixclass-student.exe" 0 done
   ExecWait '"$INSTDIR\matrixclass-student.exe" --verify-uninstall' $0
