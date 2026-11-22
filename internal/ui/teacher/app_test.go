@@ -226,6 +226,24 @@ func TestTeacherAppStartCloseIsIdempotentAndCancelsFileWork(t *testing.T) {
 	}
 }
 
+func TestStartupChannelModalCannotBeDismissedOutside(t *testing.T) {
+	app, _, _, _ := newTestTeacherApp()
+	app.channelModal = true
+	tester := ui.NewTester(app.View, 1280, 820)
+	tester.Frame()
+	tester.ClickAt(4, 4)
+	tester.Frame()
+	if !app.channelModal || !tester.HasText("教师端登录与频道选择") {
+		t.Fatal("startup channel modal was dismissed by clicking outside")
+	}
+	tester.KeyDown(ui.KeyEscape)
+	tester.KeyUp(ui.KeyEscape)
+	tester.Frame()
+	if !app.channelModal {
+		t.Fatal("startup channel modal was dismissed by Escape")
+	}
+}
+
 func TestRemoteExecUsesSplitPanelNavigation(t *testing.T) {
 	app, _, _, _ := newTestTeacherApp()
 	if app.remoteExecPanel != remoteExecPanelLaunch {

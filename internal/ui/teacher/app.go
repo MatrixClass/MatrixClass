@@ -264,7 +264,7 @@ func New(opts Options) *App {
 		teacherID:         opts.TeacherID,
 		teacherName:       opts.TeacherName,
 		channel:           opts.Channel,
-		dark:              opts.Dark,
+		dark:              false,
 		channelModal:      opts.PromptChannel,
 		channelInput:      opts.Channel,
 		channelNum:        parseChannelNum(opts.Channel),
@@ -400,7 +400,7 @@ func (a *App) loadPersistedState() {
 		}
 		a.authPasswordHash = strings.TrimSpace(cfg.AuthPasswordHash)
 		a.useMulticast = cfg.UseMulticast
-		a.dark = cfg.Dark
+		a.dark = false
 		if strings.TrimSpace(cfg.CollectSaveDir) != "" {
 			a.collectSaveDir = cfg.CollectSaveDir
 			a.applyArchiveDir(cfg.CollectSaveDir)
@@ -746,7 +746,6 @@ func (a *App) BuildMenu() *mygo.Menu {
 				{Label: "随堂测验", Click: func(_ *mygo.MenuItem, _ *mygo.Window) { a.mainTab = TabExamStats; a.Invalidate() }},
 				{Label: "文件与作业", Click: func(_ *mygo.MenuItem, _ *mygo.Window) { a.mainTab = TabFiles; a.Invalidate() }},
 				mygo.Separator(),
-				{Label: "切换明暗主题", Click: func(_ *mygo.MenuItem, _ *mygo.Window) { a.dark = !a.dark; a.Invalidate() }},
 			},
 		},
 	})
@@ -1003,9 +1002,12 @@ func (a *App) View(c *ui.Context) {
 		})
 	})
 
-	ui.Modal(c, &a.channelModal, func() {
+	channelDialog := ui.Modal(c, &a.channelModal, func() {
 		a.buildChannelSelectModal(c, pal)
 	})
+	if channelDialog.Dismissed() {
+		a.channelModal = true
+	}
 
 	a.syncRuntimeFlags()
 }
@@ -1053,18 +1055,6 @@ func (a *App) buildToolbar(c *ui.Context, pal theme.Palette) {
 			ui.Badge(c, a.channel).Background(pal.Selection).TextColor(pal.Accent)
 			ui.Spacer(c)
 			ui.SearchField(c, &a.searchQuery).Placeholder("筛选机位 / 学号 / IP...").Width(220)
-			if ui.Button(c, "").Label("切换主题").Tooltip("切换深色/浅色主题").Children(func() {
-				ui.Row(c).Gap(4).AlignItems(ui.Center).Children(func() {
-					ui.Image(c, theme.IconThemeToggle).Size(16, 16)
-					if a.dark {
-						ui.Text(c, "浅色").FontSize(12)
-					} else {
-						ui.Text(c, "深色").FontSize(12)
-					}
-				})
-			}).Clicked() {
-				a.dark = !a.dark
-			}
 			if ui.Button(c, "").Label("设置").Tooltip("课堂通道与组播设置").Children(func() {
 				ui.Row(c).Gap(4).AlignItems(ui.Center).Children(func() {
 					ui.Image(c, theme.IconSettings).Size(16, 16)
@@ -1073,7 +1063,11 @@ func (a *App) buildToolbar(c *ui.Context, pal theme.Palette) {
 			}).Clicked() {
 				a.openSettings()
 			}
-			if ui.Button(c, "管控策略").Tooltip("编排并下发课堂管控策略").Padding(5, 10).Radius(4).Clicked() {
+			if ui.Button(c, "").Label("管控策略").Tooltip("编排并下发课堂管控策略").Children(func() {
+				ui.Row(c).Gap(4).AlignItems(ui.Center).Children(func() {
+					ui.Text(c, "管控策略").FontSize(12)
+				})
+			}).Clicked() {
 				a.policyModal = true
 			}
 		})
@@ -1856,7 +1850,7 @@ func (a *App) buildStatusBar(c *ui.Context, pal theme.Palette) {
 		ui.Text(c, fmt.Sprintf("当前模式: %s", a.activeModeLabel)).FontSize(11).Bold().TextColor(pal.Accent)
 		ui.Spacer(c)
 		ui.Text(c, a.statusNote).FontSize(11).TextColor(pal.TextMuted).SingleLine()
-		ui.Text(c, fmt.Sprintf("KCP 会话:%d | Tx:%dKB/s | 丢包:%.2f%%",
+		ui.Text(c, fmt.Sprintf("会话:%d | Tx:%dKB/s | 丢包:%.2f%%",
 			stats.ActiveSessions, stats.TxBytesPerSec/1024, stats.PacketLossRate*100)).FontSize(11).TextColor(pal.StatusBarText)
 	})
 }
@@ -1876,7 +1870,6 @@ func (a *App) buildSettingsModal(c *ui.Context, pal theme.Palette) {
 			}
 		})
 		ui.Checkbox(c, &a.useMulticast, "优先使用 UDP 组播 + FEC 广播画面")
-		ui.Checkbox(c, &a.dark, "深色主题")
 		ui.Divider(c)
 		ui.Row(c).AlignItems(ui.Center).Children(func() {
 			ui.Text(c, "监控画质").FontSize(12).Bold()
