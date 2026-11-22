@@ -41,8 +41,21 @@ $nsis = if ($SkipPackage) { $null } else { Resolve-NsisCompiler $NsisPath }
 foreach ($arch in $Architectures) {
     Write-Host "Building windows/$arch (version $Version)"
     foreach ($app in @("teacher", "student")) {
-        Invoke-GoBuild -Goos windows -Goarch $arch -App $app -Version $Version `
-            -Output (Join-Path $outputPath "matrixclass-$app-windows-$arch.exe") -ExtraLdflags @("-H", "windowsgui")
+        $iconPng = Join-Path $script:RepoRoot "packaging/windows/matrixclass-$app.png"
+        $iconIco = Join-Path $outputPath "matrixclass-$app-windows-$arch.ico"
+        $iconSyso = Join-Path $script:RepoRoot "cmd/$app/rsrc_windows_$arch.syso"
+        $iconTool = Get-HostTool "pngico"
+        & $iconTool -in $iconPng -out $iconIco
+        if ($LASTEXITCODE -ne 0) { throw "icon conversion failed for windows/$arch/$app" }
+        & go run github.com/akavel/rsrc@v0.10.2 -arch $arch -ico $iconIco -o $iconSyso
+        if ($LASTEXITCODE -ne 0) { throw "PE icon resource generation failed for windows/$arch/$app" }
+        try {
+            Invoke-GoBuild -Goos windows -Goarch $arch -App $app -Version $Version `
+                -Output (Join-Path $outputPath "matrixclass-$app-windows-$arch.exe") -ExtraLdflags @("-H", "windowsgui")
+        }
+        finally {
+            if (Test-Path -LiteralPath $iconSyso) { Remove-Item -LiteralPath $iconSyso -Force }
+        }
     }
     if ($SkipPackage) { continue }
 
