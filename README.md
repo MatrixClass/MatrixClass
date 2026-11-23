@@ -1,40 +1,141 @@
-# 矩联电子教室 MatrixClass（Go + MyGo Native UI + KCP）
+# 矩联电子教室 MatrixClass
 
-基于 Go 与 `github.com/egoist/mygo` 原生 GPU UI（零 WebView）打造的模块化局域网电子教室系统，包含教师端（`cmd/teacher`）与学生端（`cmd/student`）。
+矩联电子教室 MatrixClass 是一套面向局域网教室环境的教师端与学生端软件，使用 Go 和 MyGo 原生 UI 开发，采用 KCP/SMUX 进行局域网通信，提供屏幕广播、屏幕监控、课堂消息、文件分发、作业收取、随堂测验、点名签到、远程控制和管控策略等功能。
 
-## 技术栈
-- **原生 UI**：`github.com/egoist/mygo`（MIT）+ Direct3D 11 / OpenGL / Metal 渲染，构建启用 `-tags mygo_nowebview`。
-- **局域网传输**：纯 Go 自研 MIT KCP ARQ 引擎 + `github.com/xtaci/smux`（MIT）+ `github.com/klauspost/reedsolomon`（MIT）FEC + AES-GCM + UDP 广播自动发现与组播降级。
-- **音视频采集与编码**：Windows DXGI Desktop Duplication / GDI 回退、Tile-Delta Zstd 与 Windows Media Foundation H.264、WASAPI 语音与 `.nxlr` 录课。
+## 项目结构
 
-## 快速构建与测试
-```powershell
-# 全量单元测试与 KCP 端到端集成测试
-go test -tags mygo_nowebview ./...
-
-# 编译教师端与学生端（无 WebView 依赖；-H windowsgui 避免启动时弹出控制台黑框）
-go build -tags mygo_nowebview -ldflags "-H windowsgui" -o dist/nexlab-teacher.exe ./cmd/teacher
-go build -tags mygo_nowebview -ldflags "-H windowsgui" -o dist/nexlab-student.exe ./cmd/student
-
-# 本地预览界面（演示模式）
-.\dist\nexlab-teacher.exe --demo
-.\dist\nexlab-student.exe --demo
+```text
+cmd/teacher        教师端程序
+cmd/student        学生端程序
+internal/core      核心接口和领域模型
+internal/media     屏幕、音频、视频编码和录课
+internal/transport KCP、SMUX、发现和重连
+internal/filetransfer 文件分发和作业传输
+internal/control   远程输入、锁屏、进程和网络策略
+internal/ui        教师端、学生端和演示界面
+packaging          Windows、Linux、macOS 发布文件
+scripts            构建、打包和验证脚本
+third_party/mygo   项目使用的 MyGo 本地副本
+tools              构建辅助工具
 ```
 
-### Pull Request 检查
+工作区目录：`repo/` 存放源码，`release/` 存放发行包，`doc/` 存放文档，`other/` 存放临时验证产物。
 
-所有 Pull Request 必须通过 GitHub Actions 的 `CI / test-and-build` 检查后再合并。仓库管理员需要在 GitHub 的分支保护规则中将 `CI / test-and-build` 设置为必需状态检查，并启用“分支必须为最新后才能合并”。
+## 主要功能
 
-### Linux 多架构构建
+### 教师端
 
-当前提供 `linux/amd64`、`linux/arm64` 和 `linux/loong64` 的 `CGO_ENABLED=0` 交叉构建与 tar.gz 发布包：
+- 数字频道 ID 和教师账号登录
+- 设备视图、屏幕监控、分组管理和批量操作
+- 屏幕广播、监控画质和帧率设置
+- 课堂消息、点名签到和随堂测验发布
+- 文件及文件夹分发，显示进度并支持重试
+- 作业收取、保存目录选择和提交结果查看
+- 远程打开学生端控制面板程序
+- 按路径启动程序，执行 CMD 或 PowerShell 命令
+- 远程控制、锁屏、扬声器和麦克风音量控制
+- 管控策略编排、下发和撤销
+- SQLite 持久化教师端配置和课堂数据
 
-学生端锁屏页面支持紧急本地解锁。未配置站点专用口令时，默认口令为 `nexlab-unlock`；生产部署建议在运行时配置专用口令，不要继续使用默认口令。
+### 学生端
+
+- 安装完成后自动启动
+- 首次启动设置退出密码和数字频道 ID
+- 断线后持续自动重连并显示连接状态
+- 托盘参数设置需要退出密码验证
+- 接收屏幕广播、课堂消息、文件和随堂测验
+- 教师发起签到时弹出独立窗口，手动填写班级和姓名
+- 教师发起收取作业时弹出独立提交窗口
+- 文件接收队列显示下载进度并支持失败重试
+- 退出和卸载学生端需要密码验证
+
+## 技术栈
+
+- **语言**：Go
+- **界面**：MyGo 原生 UI，构建标签为 `mygo_nowebview`
+- **网络**：KCP ARQ、SMUX、UDP 广播发现、组播和 KCP 回退
+- **视频**：屏幕采集、Tile-Delta/Zstd 和平台硬件编码
+- **音频**：Windows WASAPI、Linux PipeWire/PulseAudio、macOS CoreAudio
+- **数据**：SQLite
+- **录课**：`.nxlr` 课堂录制格式
+- **平台**：Windows amd64/arm64、Linux amd64/arm64/loong64、macOS amd64/arm64
+
+## 本地开发
+
+以下命令均在 `repo` 目录执行。需要 Go `1.27.3` 或兼容版本；Windows 构建 NSIS 安装包需要 `makensis.exe`。
+
+### 测试
+
+```powershell
+go test -tags mygo_nowebview -count=1 ./...
+```
+
+Linux CI 没有真实桌面、音频设备或 PipeWire/PulseAudio 时，测试会根据环境能力跳过硬件依赖部分，但仍执行协议、编码、传输和业务逻辑测试。
+
+### Windows 构建和演示
+
+```powershell
+New-Item -ItemType Directory -Force dist | Out-Null
+go build -tags mygo_nowebview -ldflags "-H windowsgui" -o dist\matrixclass-teacher.exe .\cmd\teacher
+go build -tags mygo_nowebview -ldflags "-H windowsgui" -o dist\matrixclass-student.exe .\cmd\student
+
+dist\matrixclass-teacher.exe --demo
+dist\matrixclass-student.exe --demo
+```
+
+### Linux 构建
 
 ```powershell
 .\scripts\build-linux.ps1
-# 生成三架构目录包和 tar.gz
 .\scripts\build-linux-package.ps1
 ```
 
-Linux 端当前已支持基础窗口启动、KCP/SMUX 网络、文件传输、课堂消息、Linux Shell 远程命令、XDG `.desktop` 应用列表解析、X11 屏幕采集、X11 远程输入和桌面锁定。X11 与 PipeWire/PulseAudio 能力仍需在对应发行版与桌面环境上进行实机验证；Wayland 会明确返回需要桌面授权的状态，当前不伪造为可用屏幕采集。
+默认生成 Linux `amd64`、`arm64` 和 `loong64` 二进制及 tar.gz 包。发行版包可在 Linux 主机或已配置 WSL 的 Windows 主机中生成：
+
+```powershell
+.\scripts\build-linux-distro-packages.ps1 -OutputDir dist\linux -Architecture amd64
+```
+
+### macOS 构建
+
+```powershell
+.\scripts\build-darwin.ps1
+.\scripts\build-darwin-package.ps1
+```
+
+构建脚本会生成 Intel、Apple Silicon 和 Universal 2 二进制。未签名版本需要在 macOS 上处理系统安全提示和隐私权限。
+
+### 全平台发行构建
+
+```powershell
+.\scripts\build-all.ps1 -Version 0.1.0
+```
+
+发行结果位于 `dist/release`，同时生成 `SHA256SUMS.txt`。Windows 发行包包含教师端和学生端独立 NSIS 安装程序；学生端安装成功后自动启动。`-IncludeCompileOnly` 可额外生成仅编译验证目标，这些目标不属于正式发布平台。
+
+## 平台能力说明
+
+Linux 支持 KCP/SMUX 网络、文件传输、课堂消息、Linux Shell 远程命令、XDG `.desktop` 应用列表、X11 屏幕采集、X11 远程输入和桌面锁定。
+
+- X11 屏幕采集和远程输入需要 `DISPLAY`、`libX11.so.6` 和 `libXtst.so.6`。
+- Wayland 会明确提示需要桌面授权，不伪造为无授权屏幕采集。
+- 音频功能需要 PipeWire 或 PulseAudio 命令及对应设备。
+- 局域网发现可能需要开放 UDP 广播/组播和 KCP 监听端口。
+- LoongArch64 已纳入构建目标，但仍应在真实龙芯 Linux 桌面环境验证 UI、屏幕采集和音频能力。
+
+macOS Intel 和 Apple Silicon 均提供构建目标，Universal 2 包同时包含 `amd64` 与 `arm64`。屏幕录制、麦克风、辅助功能和远程输入必须在系统设置中授权。没有 Apple Developer 证书时生成的应用和 DMG 不带 Apple 签名与公证。
+
+## CI 与 Pull Request
+
+GitHub Actions 在 push 到 `main` 和创建或更新 Pull Request 时运行：
+
+- Go 全量测试
+- Linux `amd64`、`arm64`、`loong64` 构建
+- Windows `amd64`、`arm64` 构建
+- macOS `amd64`、`arm64` 构建
+
+汇总检查名称为 `CI / test-and-build`。仓库管理员应在 GitHub 分支保护规则中将该检查设置为必需，并禁止未通过检查的 Pull Request 合并。
+
+## 发布目录
+
+源码仓库只提交源代码、构建脚本和必要资源。发行包放在工作区根目录的 `release/`，适配计划和测试矩阵放在 `doc/`，临时构建产物放在 `other/`，避免把大体积二进制和本地验证文件提交到 Git。
