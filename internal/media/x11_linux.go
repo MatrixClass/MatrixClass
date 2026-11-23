@@ -95,7 +95,7 @@ func newNativeScreenCapture(opts CaptureOptions) nativeScreenCapture {
 	}
 	if os.Getenv("DISPLAY") == "" {
 		if os.Getenv("WAYLAND_DISPLAY") != "" {
-			return &waylandCapture{}
+			return newWaylandCapture(opts)
 		}
 		return nil
 	}
@@ -315,13 +315,3 @@ func (x *x11Capture) Close() error {
 	}
 	return purego.Dlclose(handle)
 }
-
-type waylandCapture struct{}
-
-func (w *waylandCapture) Backend() CaptureBackend { return CaptureBackendWayland }
-
-func (w *waylandCapture) Capture(int, int, bool) (*core.VideoFrame, bool, error) {
-	return nil, false, fmt.Errorf("%w: Wayland portal capture is not configured", ErrScreenCaptureUnavailable)
-}
-
-func (w *waylandCapture) Close() error { return nil }

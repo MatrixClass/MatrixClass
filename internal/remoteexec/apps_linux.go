@@ -91,21 +91,36 @@ func parseDesktopFile(path, source string) (Application, bool) {
 }
 
 func parseDesktopExec(line string) (string, string) {
-	parts := strings.Fields(line)
+	parts := splitCommandLine(line, true)
 	if len(parts) == 0 {
 		return "", ""
 	}
 	args := make([]string, 0, len(parts)-1)
-	for _, part := range parts {
+	for index, part := range parts {
 		if strings.HasPrefix(part, "%") && len(part) == 2 {
 			continue
 		}
-		if len(args) == 0 && len(parts) > 0 {
-			if part == parts[0] {
-				continue
-			}
+		if index == 0 {
+			continue
 		}
 		args = append(args, part)
 	}
-	return parts[0], strings.Join(args, " ")
+	return parts[0], joinCommandLine(args)
+}
+
+func joinCommandLine(args []string) string {
+	var b strings.Builder
+	for index, arg := range args {
+		if index > 0 {
+			b.WriteByte(' ')
+		}
+		if strings.ContainsAny(arg, " \t\n\r'\"") {
+			b.WriteByte('\'')
+			b.WriteString(strings.ReplaceAll(arg, "'", "'\\''"))
+			b.WriteByte('\'')
+			continue
+		}
+		b.WriteString(arg)
+	}
+	return b.String()
 }

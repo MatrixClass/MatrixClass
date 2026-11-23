@@ -1,7 +1,7 @@
 #!/usr/bin/env sh
 # Cross-builds MatrixClass Linux binaries (CGO_ENABLED=0).
 # Usage: scripts/build-linux.sh [output-dir] [arch...]
-#   default arches: amd64 arm64 (native mygo UI backend)
+#   default arches: amd64 arm64 loong64 (native mygo UI backend)
 #   compile-only:   riscv64 386 arm (GOARM=7)
 set -eu
 . "$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)/lib/common.sh"

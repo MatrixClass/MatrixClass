@@ -31,3 +31,16 @@ func TestParseDesktopFileRejectsNoDisplay(t *testing.T) {
 		t.Fatal("expected NoDisplay application to be filtered")
 	}
 }
+
+func TestParseDesktopFilePreservesQuotedExecutableAndArguments(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "quoted.desktop")
+	content := "[Desktop Entry]\nType=Application\nName=Quoted\nExec='/opt/My Apps/demo' --profile 'student mode' %U\n"
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+	app, ok := parseDesktopFile(path, "test")
+	if !ok || app.Executable != "/opt/My Apps/demo" || app.Arguments != "--profile 'student mode'" {
+		t.Fatalf("unexpected quoted desktop app: %+v, %v", app, ok)
+	}
+}

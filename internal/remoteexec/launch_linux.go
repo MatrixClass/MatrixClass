@@ -19,6 +19,7 @@ func launchApplication(ctx context.Context, req AppLaunchRequest, executable str
 		return CommandResult{Status: "failed", Error: err.Error(), ExitCode: -1, StartedAt: started, FinishedAt: time.Now()}
 	}
 	if !req.Wait {
+		go func() { _ = cmd.Wait() }()
 		return CommandResult{Status: "completed", ExitCode: 0, StartedAt: started, FinishedAt: time.Now()}
 	}
 	err := cmd.Wait()
