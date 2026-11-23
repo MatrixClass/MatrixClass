@@ -38,7 +38,3 @@ macOS Finder 直接删除 `.app` 没有可拦截的卸载回调。发布包提�
 ```sh
 ./uninstall-student.sh "/Applications/MatrixClass Student.app"
 ```
-
-## 许可证
-
-本项目继续使用现有 Go + MyGo 依赖，未新增 GPL、LGPL 或 AGPL 传染性依赖。发布前请运行仓库中的许可证检查脚本。

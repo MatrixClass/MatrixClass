@@ -32,7 +32,3 @@ Windows release 还提供教师端和学生端独立的 NSIS 安装程序：
 - 程序未做 Authenticode 代码签名，SmartScreen 可能提示“已保护你的电脑”，点击“更多信息 → 仍要运行”。
 - 首次启动时 Windows 防火墙会询问网络访问权限，请允许“专用网络”，否则局域网发现（UDP 广播/组播）和 KCP 连接会失败。
 - 命令行参数（如 `--demo`、`--channel`、`--listen`、`--teacher`）可在快捷方式“目标”中追加。
-
-## 许可证
-
-全部依赖为 MIT/BSD/Apache 等宽松许可证，发布前由 `scripts/check_licenses.ps1` 校验无 GPL/LGPL/AGPL 依赖。

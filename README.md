@@ -1,12 +1,11 @@
 # 矩联电子教室 MatrixClass（Go + MyGo Native UI + KCP）
 
-基于 Go 与 `github.com/egoist/mygo` 原生 GPU UI（零 WebView、零 GPL/LGPL/AGPL 传染性依赖）打造的模块化局域网电子教室系统，包含教师端（`cmd/teacher`）与学生端（`cmd/student`）。
+基于 Go 与 `github.com/egoist/mygo` 原生 GPU UI（零 WebView）打造的模块化局域网电子教室系统，包含教师端（`cmd/teacher`）与学生端（`cmd/student`）。
 
-## 技术栈与许可证合规
+## 技术栈
 - **原生 UI**：`github.com/egoist/mygo`（MIT）+ Direct3D 11 / OpenGL / Metal 渲染，构建启用 `-tags mygo_nowebview`。
 - **局域网传输**：纯 Go 自研 MIT KCP ARQ 引擎 + `github.com/xtaci/smux`（MIT）+ `github.com/klauspost/reedsolomon`（MIT）FEC + AES-GCM + UDP 广播自动发现与组播降级。
 - **音视频采集与编码**：Windows DXGI Desktop Duplication / GDI 回退、Tile-Delta Zstd 与 Windows Media Foundation H.264、WASAPI 语音与 `.nxlr` 录课。
-- **严格开源合规**：运行 `scripts/check_licenses.ps1` 自动校验所有依赖，0 GPL/LGPL/AGPL 传染库。
 
 ## 快速构建与测试
 ```powershell
