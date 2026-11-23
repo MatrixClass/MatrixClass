@@ -21,6 +21,10 @@ go build -tags mygo_nowebview -ldflags "-H windowsgui" -o dist/nexlab-student.ex
 .\dist\nexlab-student.exe --demo
 ```
 
+### Pull Request 检查
+
+所有 Pull Request 必须通过 GitHub Actions 的 `CI / test-and-build` 检查后再合并。仓库管理员需要在 GitHub 的分支保护规则中将 `CI / test-and-build` 设置为必需状态检查，并启用“分支必须为最新后才能合并”。
+
 ### Linux 多架构构建
 
 当前提供 `linux/amd64`、`linux/arm64` 和 `linux/loong64` 的 `CGO_ENABLED=0` 交叉构建与 tar.gz 发布包：

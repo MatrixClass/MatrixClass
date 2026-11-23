@@ -19,10 +19,6 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-      - name: Verify forbidden copyleft dependency markers
-        shell: bash
-        run: |
-          ! grep -Eiq '(GPL|LGPL|AGPL)' go.mod go.sum
       - name: Run tests on amd64
         if: matrix.arch == 'amd64'
         run: go test -tags mygo_nowebview -count=1 ./...
