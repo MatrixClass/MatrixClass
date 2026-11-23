@@ -1028,9 +1028,9 @@ func (s *Service) receiveOffer(ctx context.Context, stream io.ReadWriter, offer 
 				s.updateTask(task, 0, "failed", err.Error())
 				return cloneTask(task), err
 			}
-			s.sendFinalComplete(stream, offer.TaskID, offer.TotalBytes, existingHash, destPath, true, "")
 			s.updateTask(task, offer.TotalBytes, "completed", "")
 			s.triggerAutoOpen(offer.AutoOpen, destPath)
+			s.sendFinalComplete(stream, offer.TaskID, offer.TotalBytes, existingHash, destPath, true, "")
 			return cloneTask(task), nil
 		}
 	}
@@ -1169,9 +1169,9 @@ func (s *Service) receiveOffer(ctx context.Context, stream io.ReadWriter, offer 
 				return failReceive(err, false, true)
 			}
 			_ = os.Remove(partMetaPath)
-			s.sendFinalComplete(stream, offer.TaskID, actualSize, actualHash, destPath, true, "")
 			s.updateTask(task, actualSize, "completed", "")
 			s.triggerAutoOpen(offer.AutoOpen, destPath)
+			s.sendFinalComplete(stream, offer.TaskID, actualSize, actualHash, destPath, true, "")
 			return cloneTask(task), nil
 
 		default:

@@ -2,6 +2,7 @@ package control
 
 // commonProtectedProcesses are never terminated by policy enforcement on any platform.
 var commonProtectedProcesses = []string{
+	"system",
 	"nexlab",
 	"nexlab.exe",
 	"nexlab-student",

@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -318,27 +319,30 @@ func TestCaptureScreenAndManager(t *testing.T) {
 	}
 
 	gotAudio := make(chan *core.AudioFrame, 4)
-	if err := engine.StartAudioCapture(false, func(af *core.AudioFrame) {
+	audioErr := engine.StartAudioCapture(false, func(af *core.AudioFrame) {
 		select {
 		case gotAudio <- af:
 		default:
 		}
-	}); err != nil {
-		t.Fatalf("StartAudioCapture: %v", err)
+	})
+	if audioErr != nil && !(runtime.GOOS == "linux" && strings.Contains(audioErr.Error(), "no PipeWire or PulseAudio command is available")) {
+		t.Fatalf("StartAudioCapture: %v", audioErr)
 	}
-	select {
-	case af := <-gotAudio:
-		if af == nil || af.SampleRate <= 0 || af.Channels <= 0 {
-			t.Fatalf("invalid captured audio frame: %+v", af)
+	if audioErr == nil {
+		select {
+		case af := <-gotAudio:
+			if af == nil || af.SampleRate <= 0 || af.Channels <= 0 {
+				t.Fatalf("invalid captured audio frame: %+v", af)
+			}
+			if _, err := mgr.EncodeAudioFrame(af); err != nil {
+				t.Fatalf("EncodeAudioFrame: %v", err)
+			}
+			if err := engine.PlayAudioFrame(af); err != nil {
+				t.Fatalf("PlayAudioFrame: %v", err)
+			}
+		case <-time.NewTimer(2 * time.Second).C:
+			t.Fatalf("timed out waiting for audio frame")
 		}
-		if _, err := mgr.EncodeAudioFrame(af); err != nil {
-			t.Fatalf("EncodeAudioFrame: %v", err)
-		}
-		if err := engine.PlayAudioFrame(af); err != nil {
-			t.Fatalf("PlayAudioFrame: %v", err)
-		}
-	case <-time.NewTimer(2 * time.Second).C:
-		t.Fatalf("timed out waiting for audio frame")
 	}
 	if err := engine.StopAudioCapture(); err != nil {
 		t.Fatalf("StopAudioCapture: %v", err)
