@@ -40,9 +40,6 @@ RequestExecutionLevel admin
 
 !define MUI_ABORTWARNING
 !if "${APP_ROLE}" == "student"
-  !define MUI_FINISHPAGE_RUN
-  !define MUI_FINISHPAGE_RUN_TEXT "启动学生端"
-  !define MUI_FINISHPAGE_RUN_FUNCTION LaunchStudent
 !endif
 !insertmacro MUI_PAGE_WELCOME
 !insertmacro MUI_PAGE_DIRECTORY
@@ -68,7 +65,7 @@ VIAddVersionKey "FileVersion" "${APP_VERSION}"
 VIAddVersionKey "ProductVersion" "${APP_VERSION}"
 
 !if "${APP_ROLE}" == "student"
-Function LaunchStudent
+Function .onInstSuccess
   Exec '"$INSTDIR\matrixclass-student.exe"'
 FunctionEnd
 

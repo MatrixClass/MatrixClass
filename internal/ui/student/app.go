@@ -42,6 +42,9 @@ type Options struct {
 	Channel          string
 	Dark             bool
 	ExitPasswordPath string
+	ChannelPath      string
+	InitialSetup     bool
+	OnSetupComplete  func(string)
 	Services         Services
 }
 
@@ -104,12 +107,18 @@ type App struct {
 	homeworkSubmitNote  string
 	fileReceiveWin      *mygo.Window
 	exitPasswordWin     *mygo.Window
+	settingsWin         *mygo.Window
 	exitPasswordPath    string
+	channelPath         string
 	exitPasswordHash    string
 	exitPasswordInput   string
 	exitPasswordConfirm string
 	exitPasswordError   string
 	exitPasswordSetup   bool
+	passwordMode        string
+	channelInput        string
+	settingsError       string
+	onSetupComplete     func(string)
 	exitAuthorized      bool
 	fileReceiveItems    []receiveFileItem
 	fileReceiveNote     string
@@ -159,7 +168,7 @@ func New(opts Options) *App {
 		opts.MachineName = "LAB-PC01"
 	}
 	if opts.Channel == "" {
-		opts.Channel = "301机房"
+		opts.Channel = "1"
 	}
 	app := &App{
 		opts:             opts.Services,
@@ -169,6 +178,8 @@ func New(opts Options) *App {
 		channel:          opts.Channel,
 		dark:             opts.Dark,
 		exitPasswordPath: opts.ExitPasswordPath,
+		channelPath:      opts.ChannelPath,
+		onSetupComplete:  opts.OnSetupComplete,
 		mode:             ModeBar,
 		broadcastWindow:  true,
 		connected:        true,
@@ -184,6 +195,15 @@ func New(opts Options) *App {
 		lastWinMode:      -1,
 	}
 	app.exitPasswordHash = app.loadExitPasswordHash()
+	app.channelInput = app.channel
+	if configured := app.loadChannel(); configured != "" {
+		app.channel = configured
+	}
+	if opts.InitialSetup || app.exitPasswordHash == "" || app.loadChannel() == "" {
+		app.passwordMode = "setup"
+	} else {
+		app.passwordMode = "exit"
+	}
 	_ = app.Start(context.Background())
 	return app
 }
@@ -220,11 +240,13 @@ func (a *App) Close() error {
 	fileWin := a.fileReceiveWin
 	homeworkWin := a.homeworkSubmitWin
 	exitWin := a.exitPasswordWin
+	settingsWin := a.settingsWin
 	a.toastWin = nil
 	a.connectionNoticeWin = nil
 	a.fileReceiveWin = nil
 	a.homeworkSubmitWin = nil
 	a.exitPasswordWin = nil
+	a.settingsWin = nil
 	a.win = nil
 	a.mu.Unlock()
 	if cancel != nil {
@@ -234,6 +256,9 @@ func (a *App) Close() error {
 		if w != nil {
 			w.Destroy()
 		}
+	}
+	if settingsWin != nil {
+		settingsWin.Destroy()
 	}
 	return nil
 }
@@ -476,6 +501,7 @@ func (a *App) InstallTray() {
 		{Label: "作业提交", Click: func(_ *mygo.MenuItem, _ *mygo.Window) { a.OpenMode(ModeHomeworkSubmit) }},
 		{Label: "课堂消息", Click: func(_ *mygo.MenuItem, _ *mygo.Window) { a.OpenMode(ModeChat) }},
 		{Label: "文件接收队列", Click: func(_ *mygo.MenuItem, _ *mygo.Window) { a.OpenFileReceiveWindow() }},
+		{Label: "参数设置", Click: func(_ *mygo.MenuItem, _ *mygo.Window) { a.OpenParameterSettings() }},
 		mygo.Separator(),
 		{Label: "退出学生端", Click: func(_ *mygo.MenuItem, _ *mygo.Window) { a.RequestExit() }},
 	})
@@ -509,6 +535,60 @@ func (a *App) loadExitPasswordHash() string {
 	return strings.TrimSpace(string(b))
 }
 
+func (a *App) loadChannel() string {
+	if a.channelPath == "" {
+		return ""
+	}
+	b, err := os.ReadFile(a.channelPath)
+	if err != nil {
+		return ""
+	}
+	channel := strings.TrimSpace(string(b))
+	if channel == "" {
+		return ""
+	}
+	for _, r := range channel {
+		if r < '0' || r > '9' {
+			return ""
+		}
+	}
+	return channel
+}
+
+func (a *App) saveChannel(raw string) error {
+	channel := strings.TrimSpace(raw)
+	if channel == "" {
+		return errors.New("频道 ID 不能为空")
+	}
+	for _, r := range channel {
+		if r < '0' || r > '9' {
+			return errors.New("频道 ID 必须是数字")
+		}
+	}
+	if a.channelPath != "" {
+		if err := os.MkdirAll(filepath.Dir(a.channelPath), 0o755); err != nil {
+			return err
+		}
+		if err := os.WriteFile(a.channelPath, []byte(channel+"\n"), 0o600); err != nil {
+			return err
+		}
+	}
+	a.channel = channel
+	return nil
+}
+
+func (a *App) InitialSetupRequired() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.passwordMode == "setup"
+}
+
+func (a *App) Channel() string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.channel
+}
+
 func (a *App) saveExitPassword(raw string) error {
 	hash := hashExitPassword(raw)
 	if a.exitPasswordPath != "" {
@@ -531,7 +611,7 @@ func (a *App) clearExitPassword() {
 }
 
 func (a *App) EnsureExitPasswordConfigured() {
-	if a.exitPasswordPath != "" && a.exitPasswordHash == "" {
+	if a.InitialSetupRequired() {
 		a.showExitPasswordWindow(true)
 	}
 }
@@ -559,11 +639,25 @@ func (a *App) RequestExit() {
 	a.showExitPasswordWindow(false)
 }
 
+func (a *App) OpenParameterSettings() {
+	a.mu.Lock()
+	a.passwordMode = "settings-auth"
+	a.exitPasswordInput = ""
+	a.exitPasswordError = ""
+	a.mu.Unlock()
+	a.showExitPasswordWindow(false)
+}
+
 func (a *App) showExitPasswordWindow(setup bool) {
 	a.mu.Lock()
 	mainWin := a.win
 	w := a.exitPasswordWin
 	a.exitPasswordSetup = setup
+	if setup {
+		a.passwordMode = "setup"
+	} else if a.passwordMode != "settings-auth" {
+		a.passwordMode = "exit"
+	}
 	a.exitPasswordInput = ""
 	a.exitPasswordConfirm = ""
 	a.exitPasswordError = ""
@@ -605,21 +699,41 @@ func (a *App) showExitPasswordWindow(setup bool) {
 func (a *App) ExitPasswordView(c *ui.Context) {
 	a.mu.Lock()
 	setup := a.exitPasswordSetup
+	mode := a.passwordMode
 	errText := a.exitPasswordError
 	a.mu.Unlock()
 	ui.Column(c).Fill().Padding(20).Gap(12).Background(theme.GetPalette(false).Canvas).Children(func() {
 		if setup {
-			ui.Text(c, "首次启动：设置学生端退出密码").FontSize(17).Bold()
-			ui.Text(c, "退出学生端前必须输入此密码，教师端可以远程重置。").FontSize(12).TextColor(theme.GetPalette(false).TextMuted)
+			ui.Text(c, "首次启动：设置学生端参数").FontSize(17).Bold()
+			ui.Text(c, "设置频道 ID 和学生端退出密码后才会连接教师端。").FontSize(12).TextColor(theme.GetPalette(false).TextMuted)
+			ui.TextInput(c, &a.channelInput).Placeholder("频道 ID（仅数字）").FillWidth().AutoFocus()
 			ui.TextInput(c, &a.exitPasswordInput).Password().Placeholder("设置退出密码").FillWidth().AutoFocus()
 			ui.TextInput(c, &a.exitPasswordConfirm).Password().Placeholder("再次输入退出密码").FillWidth()
 			if ui.PrimaryButton(c, "保存密码").Clicked() {
 				if strings.TrimSpace(a.exitPasswordInput) == "" || a.exitPasswordInput != a.exitPasswordConfirm {
 					a.exitPasswordError = "两次输入的密码不一致或为空"
+				} else if err := a.saveChannel(a.channelInput); err != nil {
+					a.exitPasswordError = err.Error()
 				} else if err := a.saveExitPassword(a.exitPasswordInput); err != nil {
 					a.exitPasswordError = "保存失败: " + err.Error()
 				} else {
+					a.passwordMode = "exit"
+					if a.onSetupComplete != nil {
+						a.onSetupComplete(a.channel)
+					}
 					a.closeExitPasswordWindow()
+				}
+			}
+		} else if mode == "settings-auth" {
+			ui.Text(c, "参数设置需要密码").FontSize(17).Bold()
+			ui.Text(c, "请输入退出密码后修改连接频道。").FontSize(12).TextColor(theme.GetPalette(false).TextMuted)
+			ui.TextInput(c, &a.exitPasswordInput).Password().Placeholder("退出密码").FillWidth().AutoFocus()
+			if ui.PrimaryButton(c, "验证并继续").Clicked() {
+				if hashExitPassword(a.exitPasswordInput) != a.exitPasswordHash {
+					a.exitPasswordError = "退出密码错误"
+				} else {
+					a.closeExitPasswordWindow()
+					a.showSettingsWindow()
 				}
 			}
 		} else {
@@ -635,6 +749,64 @@ func (a *App) ExitPasswordView(c *ui.Context) {
 					a.mu.Unlock()
 					a.closeExitPasswordWindow()
 					mygo.App.Quit()
+				}
+			}
+		}
+		if errText != "" {
+			ui.Text(c, errText).FontSize(12).TextColor(ui.Hex("#B42318"))
+		}
+	})
+}
+
+func (a *App) showSettingsWindow() {
+	a.mu.Lock()
+	mainWin := a.win
+	a.channelInput = a.channel
+	a.settingsError = ""
+	w := a.settingsWin
+	a.mu.Unlock()
+	if mainWin == nil {
+		return
+	}
+	mainWin.Update(func() {
+		if w == nil {
+			w = mygo.NewWindow(mygo.WindowOptions{Title: "学生端参数设置", Width: 420, Height: 220, MinWidth: 380, MinHeight: 200, AlwaysOnTop: true, Frameless: false, Content: ui.View(a.SettingsView)})
+			w.OnClosed(func() {
+				a.mu.Lock()
+				if a.settingsWin == w {
+					a.settingsWin = nil
+				}
+				a.mu.Unlock()
+			})
+			a.mu.Lock()
+			a.settingsWin = w
+			a.mu.Unlock()
+		}
+		w.SetAlwaysOnTop(true)
+		w.Show()
+		w.Focus()
+		w.Invalidate()
+	})
+}
+
+func (a *App) SettingsView(c *ui.Context) {
+	a.mu.Lock()
+	errText := a.settingsError
+	a.mu.Unlock()
+	ui.Column(c).Fill().Padding(20).Gap(12).Background(theme.GetPalette(false).Canvas).Children(func() {
+		ui.Text(c, "学生端参数设置").FontSize(17).Bold()
+		ui.Text(c, "修改频道后将按新频道重新连接。").FontSize(12).TextColor(theme.GetPalette(false).TextMuted)
+		ui.TextInput(c, &a.channelInput).Placeholder("频道 ID（仅数字）").FillWidth().AutoFocus()
+		if ui.PrimaryButton(c, "保存并重连").Clicked() {
+			if err := a.saveChannel(a.channelInput); err != nil {
+				a.settingsError = err.Error()
+			} else {
+				a.statusNote = "正在切换频道 ID: " + a.channel
+				if a.onSetupComplete != nil {
+					a.onSetupComplete(a.channel)
+				}
+				if a.settingsWin != nil {
+					a.settingsWin.Hide()
 				}
 			}
 		}

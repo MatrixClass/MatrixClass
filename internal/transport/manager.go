@@ -592,6 +592,40 @@ func (m *Manager) StartStudent(ctx context.Context, channel string) error {
 	return nil
 }
 
+// ReconnectStudent replaces the current student session and starts discovery
+// again on the supplied channel without discarding the manager configuration.
+func (m *Manager) ReconnectStudent(ctx context.Context, channel string) error {
+	m.mu.Lock()
+	if m.closed {
+		m.mu.Unlock()
+		return ErrConnClosed
+	}
+	if m.role != core.RoleStudent || !m.started {
+		m.mu.Unlock()
+		return m.StartStudent(ctx, channel)
+	}
+	m.started = false
+	m.starting = false
+	oldCancel := m.cancel
+	m.cancel = nil
+	sessions := make([]*SmuxSession, 0, len(m.sessions))
+	for _, sess := range m.sessions {
+		sessions = append(sessions, sess)
+	}
+	m.sessions = make(map[string]*SmuxSession)
+	m.aliases = make(map[string]*SmuxSession)
+	m.studentChannel = channel
+	m.invalidateConnectionGeneration()
+	m.mu.Unlock()
+	if oldCancel != nil {
+		oldCancel()
+	}
+	for _, sess := range sessions {
+		_ = sess.Close()
+	}
+	return m.StartStudent(ctx, channel)
+}
+
 // studentConnectionSupervisor keeps the reconnect path alive even when a
 // network transition removes a session without immediately running its close
 // callback. It exits only when the manager is closed or its start context is

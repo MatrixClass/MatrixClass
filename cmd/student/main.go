@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/egoist/mygo"
@@ -65,6 +66,7 @@ type Runtime struct {
 	lifecycleClosed bool
 	closeOnce       sync.Once
 	closeErr        error
+	started         atomic.Bool
 }
 
 type monitorStreamConfig struct {
@@ -80,6 +82,7 @@ type videoStreamPacket struct {
 }
 
 func NewRuntime(channel, studentID, studentNo, teacherAddr, recvDir string) (*Runtime, error) {
+	var runtimeRef *Runtime
 	host, _ := os.Hostname()
 	if host == "" {
 		host = "LAB-PC"
@@ -142,6 +145,19 @@ func NewRuntime(channel, studentID, studentNo, teacherAddr, recvDir string) (*Ru
 		MachineName:      host,
 		Channel:          channel,
 		ExitPasswordPath: filepath.Join(apppaths.Resolve("").DataDir, "student-exit-password.sha256"),
+		ChannelPath:      filepath.Join(apppaths.Resolve("").DataDir, "student-channel-id"),
+		OnSetupComplete: func(newChannel string) {
+			if runtimeRef != nil {
+				runtimeRef.streamMu.Lock()
+				runtimeRef.channel = newChannel
+				runtimeRef.streamMu.Unlock()
+				go func() {
+					if err := runtimeRef.Start(context.Background()); err != nil {
+						runtimeRef.App.SetStatusNote("连接频道失败: " + err.Error())
+					}
+				}()
+			}
+		},
 		Services: student.Services{
 			Transport: tr,
 			Media:     md,
@@ -152,6 +168,7 @@ func NewRuntime(channel, studentID, studentNo, teacherAddr, recvDir string) (*Ru
 		},
 	})
 	appRef = app
+	channel = app.Channel()
 	tr.OnConnectionState(func(connected bool, reason string) {
 		if connected {
 			app.SetConnectionState(true, "")
@@ -186,6 +203,7 @@ func NewRuntime(channel, studentID, studentNo, teacherAddr, recvDir string) (*Ru
 		bcastDecodeCh: make(chan []byte, 16),
 		remoteTasks:   make(map[string]remoteexec.CommandTask),
 	}
+	runtimeRef = rt
 	rt.lifecycleCtx, rt.lifecycleStop = context.WithCancel(context.Background())
 	rt.wireHandlers()
 	rt.lifecycleWG.Add(1)
@@ -724,11 +742,19 @@ func (rt *Runtime) Start(ctx context.Context) error {
 	rt.streamMu.Lock()
 	rt.ctx = ctx
 	startCtx := ctx
+	channel := rt.channel
 	rt.streamMu.Unlock()
+	if rt.started.Load() {
+		return rt.Transport.ReconnectStudent(startCtx, channel)
+	}
 	if _, err := rt.Control.Start(startCtx); err != nil {
 		return err
 	}
-	return rt.Transport.StartStudent(startCtx, rt.channel)
+	if err := rt.Transport.StartStudent(startCtx, channel); err != nil {
+		return err
+	}
+	rt.started.Store(true)
+	return nil
 }
 
 func joinRuntimeCloseErrors(errs ...error) error {
@@ -737,6 +763,7 @@ func joinRuntimeCloseErrors(errs ...error) error {
 
 func (rt *Runtime) Close() error {
 	rt.closeOnce.Do(func() {
+		rt.started.Store(false)
 		rt.lifecycleMu.Lock()
 		rt.lifecycleClosed = true
 		rt.lifecycleMu.Unlock()
@@ -838,21 +865,26 @@ func main() {
 		if err != nil {
 			log.Fatalf("init student runtime: %v", err)
 		}
-		rt.App.SetStatusNote("正在搜索频道 ID: " + *channel + " ...")
-		go func() {
-			for ctx.Err() == nil {
-				if err := rt.Start(ctx); err == nil {
-					return
+		startStudent := func() {
+			rt.App.SetStatusNote("正在搜索频道 ID: " + rt.App.Channel() + " ...")
+			go func() {
+				for ctx.Err() == nil {
+					if err := rt.Start(ctx); err == nil {
+						return
+					}
+					timer := time.NewTimer(1 * time.Second)
+					select {
+					case <-ctx.Done():
+						timer.Stop()
+						return
+					case <-timer.C:
+					}
 				}
-				timer := time.NewTimer(1 * time.Second)
-				select {
-				case <-ctx.Done():
-					timer.Stop()
-					return
-				case <-timer.C:
-				}
-			}
-		}()
+			}()
+		}
+		if !rt.App.InitialSetupRequired() {
+			startStudent()
+		}
 		app = rt.App
 		cleanup = func() { _ = rt.Close() }
 	}

@@ -89,6 +89,28 @@ func TestStudentExitPasswordPersistsOnlyHash(t *testing.T) {
 	}
 }
 
+func TestStudentChannelPersistsAndRejectsNonNumericValues(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "student-channel-id")
+	app := New(Options{ChannelPath: path})
+	if err := app.saveChannel("42"); err != nil {
+		t.Fatalf("save channel: %v", err)
+	}
+	loaded := New(Options{ChannelPath: path})
+	if loaded.Channel() != "42" {
+		t.Fatalf("loaded channel = %q, want 42", loaded.Channel())
+	}
+	if err := app.saveChannel("room-42"); err == nil {
+		t.Fatal("expected non-numeric channel to be rejected")
+	}
+	if err := os.WriteFile(path, []byte("room-42\n"), 0o600); err != nil {
+		t.Fatalf("write invalid channel: %v", err)
+	}
+	invalid := New(Options{ChannelPath: path})
+	if invalid.Channel() != "1" || !invalid.InitialSetupRequired() {
+		t.Fatalf("invalid persisted channel should require setup, got channel=%q setup=%v", invalid.Channel(), invalid.InitialSetupRequired())
+	}
+}
+
 func TestStudentExitPasswordResetClearsStoredPassword(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "student-exit-password.sha256")
 	app := New(Options{ExitPasswordPath: path})
