@@ -3,11 +3,13 @@
 package media
 
 import (
+	"errors"
 	"sync"
-	"time"
 
 	"nexlab/internal/core"
 )
+
+var ErrAudioUnsupportedPlatform = errors.New("media: audio is unsupported on this platform")
 
 type AudioEngine struct {
 	mu     sync.Mutex
@@ -22,45 +24,7 @@ func NewAudioEngine() *AudioEngine {
 }
 
 func (a *AudioEngine) StartCapture(_ bool, onFrame func(*core.AudioFrame)) error {
-	if onFrame == nil {
-		return nil
-	}
-	_ = a.StopCapture()
-
-	a.mu.Lock()
-	stopCh := make(chan struct{})
-	doneCh := make(chan struct{})
-	a.stopCh = stopCh
-	a.doneCh = doneCh
-	a.mu.Unlock()
-
-	go func() {
-		defer close(doneCh)
-		ticker := time.NewTicker(20 * time.Millisecond)
-		defer ticker.Stop()
-		pcm := make([]byte, 960*2*2)
-		for {
-			select {
-			case <-stopCh:
-				return
-			case <-ticker.C:
-				a.mu.Lock()
-				a.seq++
-				seq := a.seq
-				a.mu.Unlock()
-				cp := make([]byte, len(pcm))
-				copy(cp, pcm)
-				onFrame(&core.AudioFrame{
-					Seq:        seq,
-					SampleRate: 48000,
-					Channels:   2,
-					Timestamp:  time.Now().UnixMilli(),
-					Data:       cp,
-				})
-			}
-		}
-	}()
-	return nil
+	return ErrAudioUnsupportedPlatform
 }
 
 func (a *AudioEngine) StopCapture() error {
@@ -81,7 +45,7 @@ func (a *AudioEngine) StopCapture() error {
 }
 
 func (a *AudioEngine) PlayFrame(_ *core.AudioFrame) error {
-	return nil
+	return ErrAudioUnsupportedPlatform
 }
 
 func (a *AudioEngine) SetVolume(vol float32) {

@@ -2,6 +2,10 @@
 
 package control
 
+import "errors"
+
+var ErrLockUnsupportedPlatform = errors.New("control: screen lock is unsupported on this platform")
+
 type noopLockBackend struct {
 	overlays OverlayHooks
 }
@@ -11,22 +15,13 @@ func newPlatformLockBackend(overlays OverlayHooks) LockBackend {
 }
 
 func (n *noopLockBackend) EnableLock(message string) error {
-	if n.overlays.OnShow != nil {
-		n.overlays.OnShow(message)
-	}
-	return nil
+	return ErrLockUnsupportedPlatform
 }
 
 func (n *noopLockBackend) DisableLock() error {
-	if n.overlays.OnHide != nil {
-		n.overlays.OnHide()
-	}
-	return nil
+	return ErrLockUnsupportedPlatform
 }
 
 func (n *noopLockBackend) UpdateMessage(message string) error {
-	if n.overlays.OnUpdate != nil {
-		n.overlays.OnUpdate(message)
-	}
-	return nil
+	return ErrLockUnsupportedPlatform
 }

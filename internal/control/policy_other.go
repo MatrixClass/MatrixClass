@@ -2,6 +2,10 @@
 
 package control
 
+import "errors"
+
+var ErrProcessControlUnsupportedPlatform = errors.New("control: process control is unsupported on this platform")
+
 type noopProcessInspector struct{}
 
 func newPlatformProcessInspector() ProcessInspector {
@@ -9,11 +13,11 @@ func newPlatformProcessInspector() ProcessInspector {
 }
 
 func (n *noopProcessInspector) ListProcesses() ([]ProcessInfo, error) {
-	return nil, nil
+	return nil, ErrProcessControlUnsupportedPlatform
 }
 
 func (n *noopProcessInspector) TerminateProcess(pid uint32) error {
-	return nil
+	return ErrProcessControlUnsupportedPlatform
 }
 
 var platformProtectedProcesses = []string{"init", "launchd"}

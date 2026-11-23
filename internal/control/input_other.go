@@ -4,7 +4,7 @@ package control
 
 import "errors"
 
-var ErrInputUnsupportedPlatform = errors.New("control: SendInput is only supported on Windows")
+var ErrInputUnsupportedPlatform = errors.New("control: remote input is unsupported on this platform")
 
 type noopInputBackend struct{}
 
