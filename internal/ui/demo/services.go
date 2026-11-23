@@ -6,6 +6,7 @@ import (
 	"image"
 	"image/color"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -375,7 +376,7 @@ func NewFileTransfer() *FileTransfer {
 func (f *FileTransfer) DistributeFile(_ context.Context, localPath, remoteDir string, _ []string, autoOpen bool) (*core.TransferTask, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	name := filepath.Base(localPath)
+	name := filepath.Base(strings.ReplaceAll(localPath, "\\", "/"))
 	if name == "." || name == "" {
 		name = "教学资料.zip"
 	}

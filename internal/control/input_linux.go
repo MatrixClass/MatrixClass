@@ -352,7 +352,11 @@ func clampLinuxCoordinate(value int32, extent int) int {
 	if value >= 65535 {
 		return extent - 1
 	}
-	return int((int64(value) * int64(extent-1)) / 65535)
+	coordinate := int((int64(value) * int64(extent)) / 65535)
+	if coordinate >= extent {
+		return extent - 1
+	}
+	return coordinate
 }
 
 func linuxMouseButton(flags, data uint32) (uint32, bool, bool) {

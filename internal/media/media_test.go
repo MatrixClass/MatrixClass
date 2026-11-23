@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"encoding/binary"
 	"math"
+	"os"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"testing"
 	"time"
@@ -298,14 +300,16 @@ func TestCaptureScreenAndManager(t *testing.T) {
 	}
 
 	// Exercise live capture path (DXGI -> GDI -> synthetic fallback) without ForceSynthetic.
-	liveCap := NewScreenCapturer(CaptureOptions{Width: 160, Height: 90})
-	defer liveCap.Close()
-	liveFrame, err := liveCap.CaptureScreen()
-	if err != nil {
-		t.Fatalf("live CaptureScreen: %v", err)
-	}
-	if liveFrame.Width <= 0 || liveFrame.Height <= 0 || len(liveFrame.Data) != liveFrame.Width*liveFrame.Height*4 {
-		t.Fatalf("unexpected live captured frame: %dx%d len=%d", liveFrame.Width, liveFrame.Height, len(liveFrame.Data))
+	if runtime.GOOS != "linux" || os.Getenv("DISPLAY") != "" || os.Getenv("WAYLAND_DISPLAY") != "" {
+		liveCap := NewScreenCapturer(CaptureOptions{Width: 160, Height: 90})
+		defer liveCap.Close()
+		liveFrame, err := liveCap.CaptureScreen()
+		if err != nil {
+			t.Fatalf("live CaptureScreen: %v", err)
+		}
+		if liveFrame.Width <= 0 || liveFrame.Height <= 0 || len(liveFrame.Data) != liveFrame.Width*liveFrame.Height*4 {
+			t.Fatalf("unexpected live captured frame: %dx%d len=%d", liveFrame.Width, liveFrame.Height, len(liveFrame.Data))
+		}
 	}
 
 	engine.SetVolume(0.5)

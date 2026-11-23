@@ -8,6 +8,7 @@ var commonProtectedProcesses = []string{
 	"nexlab-student.exe",
 	"nexlab-teacher",
 	"nexlab-teacher.exe",
+	"explorer.exe",
 }
 
 // maxProcessTreeDepth guards parent-chain walks against cycles or corrupt data.

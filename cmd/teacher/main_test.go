@@ -9,6 +9,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
@@ -21,6 +22,13 @@ import (
 	"nexlab/internal/transport"
 	"nexlab/internal/ui/student"
 )
+
+func requireDesktopCapture(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS == "linux" && os.Getenv("DISPLAY") == "" && os.Getenv("WAYLAND_DISPLAY") == "" {
+		t.Skip("desktop capture integration test requires a Linux display session")
+	}
+}
 
 func freeUDPAddr(t *testing.T) string {
 	t.Helper()
@@ -50,6 +58,7 @@ func waitForTeacherCondition(t *testing.T, timeout time.Duration, condition func
 }
 
 func TestEndToEndTeacherStudentKCPIntegration(t *testing.T) {
+	requireDesktopCapture(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
@@ -258,6 +267,7 @@ func TestEndToEndTeacherStudentKCPIntegration(t *testing.T) {
 }
 
 func TestEndToEndScreenBroadcastOverKCPFallback(t *testing.T) {
+	requireDesktopCapture(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
@@ -345,6 +355,7 @@ func TestEndToEndScreenBroadcastOverKCPFallback(t *testing.T) {
 }
 
 func TestEndToEndBroadcastBurstLatestFrameOverKCP(t *testing.T) {
+	requireDesktopCapture(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
