@@ -10,8 +10,8 @@ permissions:
   contents: read
 
 jobs:
-  test-and-build:
-    name: test-and-build
+  build-targets:
+    name: build-targets
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -56,4 +56,18 @@ jobs:
           if [ "$GOOS" = "windows" ]; then suffix=".exe"; fi
           go build -tags mygo_nowebview -o "ci-out/${GOOS}-${GOARCH}/matrixclass-teacher${suffix}" ./cmd/teacher
           go build -tags mygo_nowebview -o "ci-out/${GOOS}-${GOARCH}/matrixclass-student${suffix}" ./cmd/student
+
+  test-and-build:
+    name: test-and-build
+    if: always()
+    needs: build-targets
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require all CI targets to pass
+        if: needs.build-targets.result != 'success'
+        run: |
+          echo "build-targets result: ${{ needs.build-targets.result }}"
+          exit 1
+      - name: CI passed
+        run: echo "All CI tests and builds passed."
 
