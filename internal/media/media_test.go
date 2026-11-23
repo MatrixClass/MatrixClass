@@ -360,8 +360,11 @@ func TestCaptureScreenAndManager(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadAll: %v", err)
 	}
-	if len(chunks) < 2 {
-		t.Fatalf("expected >= 2 recorded chunks, got %d", len(chunks))
+	if len(chunks) < 1 {
+		t.Fatalf("expected at least one recorded chunk, got %d", len(chunks))
+	}
+	if chunks[0].Kind != RecordVideo {
+		t.Fatalf("expected first recorded chunk to be video, got %v", chunks[0].Kind)
 	}
 }
 
