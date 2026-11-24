@@ -169,7 +169,7 @@ func main() {
 
 func runUninstallPasswordVerification(passwordPath string) int {
 	app := student.New(student.Options{ExitPasswordPath: passwordPath})
-	if app.ExitPasswordConfigured() == false {
+	if !app.ExitPasswordConfigured() {
 		return 2
 	}
 	mygo.App.SetName("矩联电子教室 MatrixClass - 卸载验证")

@@ -31,8 +31,12 @@ func (rt *Runtime) wireHandlers() {
 		}
 		// Once a session has registered, its identity is fixed: ignore a
 		// different SenderID claimed in later envelopes.
-		if bound, ok := rt.studentForSession(sess.ID()); ok {
+		bound, registered := rt.studentForSession(sess.ID())
+		if registered {
 			senderID = bound
+		}
+		if !registered && requiresRegisteredStudent(env.Type) {
+			return
 		}
 		switch env.Type {
 		case protocol.MsgPong:
@@ -122,14 +126,12 @@ func (rt *Runtime) wireHandlers() {
 				StudentNo string `json:"student_no"`
 			}
 			if err := json.Unmarshal(env.Payload, &req); err == nil {
-				if req.StudentID == "" {
-					req.StudentID = senderID
-				}
+				req.StudentID = senderID
 				rt.Classroom.SubmitCheckIn(req.StudentID, req.Name, req.StudentNo)
-				if rt.Store != nil {
-					if st, ok := rt.Classroom.GetStudent(req.StudentID); ok {
-						st.ClassName = req.ClassName
-						rt.Classroom.UpsertStudent(st)
+				if st, ok := rt.Classroom.GetStudent(req.StudentID); ok {
+					st.ClassName = req.ClassName
+					rt.Classroom.UpsertStudent(st)
+					if rt.Store != nil {
 						_ = rt.Store.UpsertStudent(st)
 					}
 				}
@@ -140,14 +142,12 @@ func (rt *Runtime) wireHandlers() {
 				Raised    bool   `json:"raised"`
 			}
 			if err := json.Unmarshal(env.Payload, &req); err == nil {
-				if req.StudentID == "" {
-					req.StudentID = senderID
-				}
-				rt.Classroom.RaiseHand(req.StudentID, req.Raised)
+				rt.Classroom.RaiseHand(senderID, req.Raised)
 			}
 		case protocol.MsgChat:
 			var msg core.ChatMessage
 			if err := json.Unmarshal(env.Payload, &msg); err == nil {
+				msg.SenderID = senderID
 				if msg.CreatedAt.IsZero() {
 					msg.CreatedAt = time.Now()
 				}
@@ -244,6 +244,17 @@ func (rt *Runtime) wireHandlers() {
 		}
 		rt.App.Invalidate()
 	})
+}
+
+func requiresRegisteredStudent(msgType protocol.MsgType) bool {
+	switch msgType {
+	case protocol.MsgCheckInSubmit, protocol.MsgHandRaise, protocol.MsgChat,
+		protocol.MsgExamAnswer, protocol.MsgFileRetryReq, protocol.MsgVideoFrame,
+		protocol.MsgRemoteAppListResp, protocol.MsgRemoteAppResult,
+		protocol.MsgRemoteCommandOutput, protocol.MsgRemoteCommandResult:
+		return true
+	}
+	return false
 }
 
 func (rt *Runtime) nextFreeSeat() core.SeatPos {

@@ -53,19 +53,7 @@ func (a *App) buildFilesTab(c *ui.Context, pal theme.Palette) {
 				if tk.TotalBytes > 0 {
 					ratio = float64(tk.DoneBytes) / float64(tk.TotalBytes)
 				}
-				statusLabel := tk.Status
-				switch tk.Status {
-				case "completed":
-					statusLabel = "已完成"
-				case "running":
-					statusLabel = "传输中"
-				case "failed":
-					statusLabel = "失败"
-				case "pending":
-					statusLabel = "等待中"
-				case "cancelled":
-					statusLabel = "已取消"
-				}
+				statusLabel := transferStatusLabel(tk.Status)
 				dirLabel := "发送"
 				if tk.Direction == core.TransferSubmit {
 					dirLabel = "提交"

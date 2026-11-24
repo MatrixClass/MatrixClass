@@ -34,7 +34,7 @@ func transferStatusLabel(status string) string {
 	switch status {
 	case "completed":
 		return "已完成"
-	case "running":
+	case "running", "transferring":
 		return "传输中"
 	case "pending":
 		return "等待中"

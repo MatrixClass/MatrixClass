@@ -116,7 +116,7 @@ func (a *App) handleRemoteEnvelope(env protocol.Envelope) {
 				return
 			}
 			a.remoteResult = &result
-			a.statusNote = "远程操作" + result.Status
+			a.statusNote = "远程操作" + remoteStatusLabel(result.Status)
 		}
 	}
 }
@@ -238,7 +238,7 @@ func (a *App) buildRemoteCommandPanel(c *ui.Context, pal theme.Palette) {
 		ui.Text(c, a.remoteOutput).FontSize(11).TextColor(pal.Text)
 		if a.remoteResult != nil {
 			ui.Divider(c)
-			ui.Text(c, fmt.Sprintf("状态：%s  退出码：%d  %s", a.remoteResult.Status, a.remoteResult.ExitCode, a.remoteResult.Error)).FontSize(11).TextColor(pal.TextMuted)
+			ui.Text(c, fmt.Sprintf("状态：%s  退出码：%d  %s", remoteStatusLabel(a.remoteResult.Status), a.remoteResult.ExitCode, a.remoteResult.Error)).FontSize(11).TextColor(pal.TextMuted)
 		}
 	})
 }
