@@ -1,5 +1,7 @@
 # 矩联电子教室 MatrixClass
 
+官网：<https://matrix.nexrin.cc> · 文档：[MatrixClass-Docs](https://github.com/MatrixClass/MatrixClass-Docs) · 下载：[Releases](https://github.com/MatrixClass/MatrixClass/releases)
+
 矩联电子教室 MatrixClass 是一套面向局域网教室环境的教师端与学生端软件，使用 Go 和 MyGo 原生 UI 开发，采用 KCP/SMUX 进行局域网通信，提供屏幕广播、屏幕监控、课堂消息、文件分发、作业收取、随堂测验、点名签到、远程控制和管控策略等功能。
 
 ![教师端设备视图](docs/images/teacher-device-view.png)
@@ -206,4 +208,10 @@ GitHub Actions 在 push 到 `main` 和创建或更新 Pull Request 时运行：
 
 ## 许可证
 
-本项目基于 [GNU General Public License v3.0](LICENSE) 开源。你可以自由使用、修改和分发本软件；分发修改后的版本时，必须同样以 GPLv3 协议公开源代码。
+本项目基于 [GNU General Public License v3.0](LICENSE) 开源，并附加 [附加许可条款](LICENSE-ADDITIONAL.md)：
+
+- ✅ **非商业行为可随意分发使用**：个人、学校、培训机构内部教学使用，免费复制、分发和修改均无需授权。分发修改版本时须保留版权声明与附加条款，并按 GPLv3 公开源代码。
+- ❌ **未经授权禁止商用出售**：不得将本软件或其修改版本作为商品出售，或以收费下载、付费激活等方式变相出售。
+- ❌ **未经授权禁止夹带在投标项目内**：不得将本软件捆绑在投标、招标、政府采购或集成项目中作为交付内容或报价组成部分。
+
+如需商业授权，请访问官网 <https://matrix.nexrin.cc> 或联系 2025226181@qq.com。
