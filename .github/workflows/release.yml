@@ -1,0 +1,194 @@
+name: Release
+
+# 仅支持手动触发：在 GitHub 仓库 Actions -> Release -> Run workflow 中点击运行。
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "发布版本号，例如 1.2.0（自动创建 tag v1.2.0）"
+        required: true
+        type: string
+      prerelease:
+        description: "标记为预发布版本"
+        required: false
+        default: false
+        type: boolean
+      draft:
+        description: "先创建为草稿，不立即公开"
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    name: prepare
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.check.outputs.version }}
+      tag: ${{ steps.check.outputs.tag }}
+    steps:
+      - name: Validate version and tag
+        id: check
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          version="${INPUT_VERSION#v}"
+          if ! printf '%s' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$'; then
+            echo "版本号格式不正确: $INPUT_VERSION（示例: 1.2.0 或 1.2.0-beta.1）" >&2
+            exit 1
+          fi
+          tag="v$version"
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release $tag 已存在，请换一个版本号。" >&2
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+  test:
+    name: test
+    needs: prepare
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Run unit tests
+        run: go test -tags nexlab_nowebview -count=1 ./...
+
+  windows:
+    name: build-windows
+    needs: [prepare, test]
+    runs-on: windows-latest
+    env:
+      MATRIXCLASS_VERSION: ${{ needs.prepare.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Install NSIS
+        shell: pwsh
+        run: |
+          $nsisDir = "${env:ProgramFiles(x86)}\NSIS"
+          if (-not (Test-Path "$nsisDir\makensis.exe")) { choco install nsis -y --no-progress }
+          if (-not (Test-Path "$nsisDir\makensis.exe")) { throw "NSIS install failed" }
+          "NSIS_EXE=$nsisDir\makensis.exe" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+      - name: Build Windows packages
+        shell: pwsh
+        run: ./scripts/build-windows.ps1 -OutputDir dist/windows -Architectures amd64,arm64 -Version $env:MATRIXCLASS_VERSION -NsisPath $env:NSIS_EXE
+      - name: Collect artifacts
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path out | Out-Null
+          Copy-Item dist/windows/matrixclass-windows-*.zip out/
+          Copy-Item dist/windows/*-setup.exe out/
+          Get-ChildItem out
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-windows
+          path: out/*
+          if-no-files-found: error
+
+  linux:
+    name: build-linux
+    needs: [prepare, test]
+    runs-on: ubuntu-latest
+    env:
+      MATRIXCLASS_VERSION: ${{ needs.prepare.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Install packaging tools
+        run: sudo apt-get update && sudo apt-get install -y rpm
+      - name: Build Linux packages
+        shell: bash
+        run: |
+          sh scripts/build-linux-package.sh dist/linux amd64 arm64 loong64
+          for arch in amd64 arm64 loong64; do
+            sh scripts/build-linux-distro-packages.sh dist/linux "$arch" \
+              || echo "::warning::$arch 的 deb/rpm 打包失败，已跳过（tar.gz 不受影响）"
+          done
+      - name: Collect artifacts
+        shell: bash
+        run: |
+          mkdir -p out
+          cp dist/linux/matrixclass-linux-*.tar.gz out/
+          find dist/linux -maxdepth 1 -type f \( -name '*.deb' -o -name '*.rpm' \) -exec cp {} out/ \;
+          ls -l out
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-linux
+          path: out/*
+          if-no-files-found: error
+
+  macos:
+    name: build-macos
+    needs: [prepare, test]
+    runs-on: macos-latest
+    env:
+      MATRIXCLASS_VERSION: ${{ needs.prepare.outputs.version }}
+      SIGN_ADHOC: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Build macOS packages
+        shell: bash
+        run: sh scripts/build-darwin-package.sh dist/darwin
+      - name: Collect artifacts
+        shell: bash
+        run: |
+          mkdir -p out
+          cp dist/darwin/matrixclass-macos-*.zip out/
+          cp dist/darwin/matrixclass-macos-universal.dmg out/
+          ls -l out
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-macos
+          path: out/*
+          if-no-files-found: error
+
+  publish:
+    name: publish-release
+    needs: [prepare, windows, linux, macos]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          path: release
+          merge-multiple: true
+      - name: Generate checksums
+        shell: bash
+        run: |
+          cd release
+          sha256sum * | sort -k2 > SHA256SUMS
+          cat SHA256SUMS
+      - name: Create GitHub release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+          PRERELEASE: ${{ inputs.prerelease }}
+          DRAFT: ${{ inputs.draft }}
+        run: |
+          args=(--repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "MatrixClass $TAG" --generate-notes)
+          if [ "$PRERELEASE" = "true" ]; then args+=(--prerelease); fi
+          if [ "$DRAFT" = "true" ]; then args+=(--draft); fi
+          gh release create "$TAG" "${args[@]}" release/*
