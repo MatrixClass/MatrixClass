@@ -207,6 +207,7 @@ type App struct {
 	// Widget states
 	settingsOpen          bool
 	settingsTab           string
+	lastChatCount         int
 	networkConfigOpen     bool
 	networkModeInput      string
 	networkInterfaceInput string
@@ -994,6 +995,11 @@ func (a *App) View(c *ui.Context) {
 		ui.Column(c).Width(520).Height(560).Background(pal.Canvas).Border(1, pal.CardBorder).Radius(6).Padding(16).Gap(10).Children(func() {
 			ui.Row(c).FillWidth().AlignItems(ui.Center).Children(func() {
 				ui.Text(c, "管控策略编排").FontSize(16).Bold()
+				if a.policyActive {
+					ui.Badge(c, "已生效").Background(pal.Selection).TextColor(pal.Accent)
+				} else {
+					ui.Badge(c, "未生效")
+				}
 				ui.Spacer(c)
 				if ui.Button(c, "关闭").Padding(4, 10).Clicked() {
 					a.policyModal = false
@@ -1080,6 +1086,7 @@ func (a *App) buildToolbar(c *ui.Context, pal theme.Palette) {
 			}
 			if ui.Button(c, "").Label("管控策略").Tooltip("编排并下发课堂管控策略").Children(func() {
 				ui.Row(c).Gap(4).AlignItems(ui.Center).Children(func() {
+					ui.Image(c, theme.IconPolicy).Size(16, 16)
 					ui.Text(c, "管控策略").FontSize(12)
 				})
 			}).Clicked() {
@@ -1108,7 +1115,7 @@ func (a *App) buildToolbar(c *ui.Context, pal theme.Palette) {
 			a.toolbarButton(c, pal, "远程控制", theme.IconRemoteControl, a.remoteControlID != "", func() {
 				a.StartRemoteControl(a.selectedID)
 			})
-			a.toolbarButton(c, pal, "远程操作", theme.IconSettings, a.remoteExecOpen, func() {
+			a.toolbarButton(c, pal, "远程操作", theme.IconRemoteExec, a.remoteExecOpen, func() {
 				a.remoteExecOpen = true
 				a.remoteResult = nil
 				a.remoteOutput = ""
@@ -1355,19 +1362,23 @@ func (a *App) buildMonitorWallTab(c *ui.Context, pal theme.Palette, students []c
 				})
 				return
 			}
-			ui.Row(c).Wrap().Gap(12).Children(func() {
+			ui.Grid(c).Columns(monitorGridColumns(scroll.Bounds().W)).Gap(12).FillWidth().Children(func() {
 				for _, st := range students {
 					a.mu.Lock()
 					bmp := a.ensureTileBitmap(st.ID, 240, 135)
 					a.mu.Unlock()
+					offline := st.Status == core.StatusOffline
 					border := pal.CardBorder
 					bg := pal.Card
 					if a.isSelected(st.ID) {
 						border = pal.Accent
 						bg = pal.Selection
 					}
-					tile := ui.Column(c).Key("mon-"+st.ID).Width(256).Padding(8).Gap(6).Radius(3).
+					tile := ui.Column(c).Key("mon-"+st.ID).FillWidth().Padding(8).Gap(6).Radius(3).
 						Background(bg).Border(1.5, border).Focusable()
+					if offline {
+						tile.Opacity(0.5)
+					}
 					if b := tile.Bounds(); b.W > 0 && b.H > 0 {
 						a.itemBounds = ensureBoundsMap(a.itemBounds)
 						a.itemBounds[st.ID] = b
@@ -1375,12 +1386,20 @@ func (a *App) buildMonitorWallTab(c *ui.Context, pal theme.Palette, students []c
 					a.attachMarqueeElement(tile, st.ID, students)
 					a.attachStudentContextMenu(tile, st)
 					tile.Children(func() {
-						ui.Image(c, bmp).Size(240, 135).Fit(ui.Contain).Radius(2)
+						ui.Box(c).FillWidth().AspectRatio(16.0 / 9.0).Background(pal.TheatreBg).Radius(2).Clip().Center().Children(func() {
+							if offline {
+								ui.Text(c, "离线").FontSize(13).Bold().TextColor(ui.Hex("#D4D4D4"))
+							} else {
+								ui.Image(c, bmp).Fill().Fit(ui.Contain)
+							}
+						})
 						ui.Row(c).AlignItems(ui.Center).Gap(6).Children(func() {
 							ui.Text(c, st.MachineName).FontSize(12).Bold().Grow(1).SingleLine()
-							remoteBtn := ui.Button(c, "远控").Padding(2, 6).HandleInput(func(ui.InputEvent) bool { return false })
-							if remoteBtn.Clicked() {
-								a.StartRemoteControl(st.ID)
+							if !offline {
+								remoteBtn := ui.Button(c, "远控").Padding(2, 6).HandleInput(func(ui.InputEvent) bool { return false })
+								if remoteBtn.Clicked() {
+									a.StartRemoteControl(st.ID)
+								}
 							}
 						})
 					})
@@ -1502,7 +1521,10 @@ func (a *App) buildExamStatsTab(c *ui.Context, pal theme.Palette) {
 				ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
 					ui.Column(c).Width(130).Gap(4).Children(func() {
 						ui.Text(c, "题型").FontSize(12).TextColor(pal.TextMuted)
-						ui.Select(c, &a.examKindInput, []string{"single", "multi", "bool", "essay"})
+						kindLabel := examKindDisplay(a.examKindInput)
+						if ui.Select(c, &kindLabel, []string{"单选题", "多选题", "判断题", "简答题"}).Changed() {
+							a.examKindInput = examKindValue(kindLabel)
+						}
 					})
 					ui.Column(c).Width(110).Gap(4).Children(func() {
 						ui.Text(c, "分值").FontSize(12).TextColor(pal.TextMuted)
@@ -1515,10 +1537,20 @@ func (a *App) buildExamStatsTab(c *ui.Context, pal theme.Palette) {
 				})
 				ui.Text(c, "题目内容").FontSize(12).TextColor(pal.TextMuted)
 				ui.TextInput(c, &a.examPromptInput).Placeholder("输入题干内容")
-				ui.Text(c, "选项 (逗号分隔)").FontSize(12).TextColor(pal.TextMuted)
-				ui.TextInput(c, &a.examOptionsInput).Placeholder("例如：A,B,C,D")
-				ui.Text(c, "参考答案 (多选用逗号分隔)").FontSize(12).TextColor(pal.TextMuted)
-				ui.TextInput(c, &a.examAnswerInput)
+				switch core.QuestionKind(a.examKindInput) {
+				case core.QuestionEssay:
+					ui.Text(c, "简答题无需选项，提交后由教师评分").FontSize(11).TextColor(pal.TextMuted)
+				case core.QuestionBool:
+					ui.Text(c, "选项 (留空默认为：对,错)").FontSize(12).TextColor(pal.TextMuted)
+					ui.TextInput(c, &a.examOptionsInput).Placeholder("对,错")
+				default:
+					ui.Text(c, "选项 (逗号分隔)").FontSize(12).TextColor(pal.TextMuted)
+					ui.TextInput(c, &a.examOptionsInput).Placeholder("例如：A,B,C,D")
+				}
+				if core.QuestionKind(a.examKindInput) != core.QuestionEssay {
+					ui.Text(c, "参考答案 (多选用逗号分隔)").FontSize(12).TextColor(pal.TextMuted)
+					ui.TextInput(c, &a.examAnswerInput).Placeholder("必须与选项文字一致")
+				}
 				ui.Row(c).Gap(8).Children(func() {
 					if ui.Button(c, "添加到试卷").Clicked() {
 						a.addDraftQuestion()
@@ -1649,6 +1681,10 @@ func (a *App) buildFilesTab(c *ui.Context, pal theme.Palette) {
 					statusLabel = "传输中"
 				case "failed":
 					statusLabel = "失败"
+				case "pending":
+					statusLabel = "等待中"
+				case "cancelled":
+					statusLabel = "已取消"
 				}
 				dirLabel := "发送"
 				if tk.Direction == core.TransferSubmit {
@@ -1772,19 +1808,28 @@ func (a *App) buildSideChatQueue(c *ui.Context, pal theme.Palette, students []co
 		chats = a.opts.Classroom.ListChats()
 	}
 
+	chatGrew := len(chats) != a.lastChatCount
+	a.lastChatCount = len(chats)
 	ui.Scroll(c).Grow(1).Gap(6).ScrollbarAxes(false, true).Scrollbars(true).KeepScrollbars(true).Children(func() {
-		for _, msg := range chats {
+		if len(chats) == 0 {
+			ui.Text(c, "暂无课堂消息").FontSize(11).TextColor(pal.TextMuted)
+		}
+		for i, msg := range chats {
 			chatKey := msg.ID
 			if chatKey == "" {
 				chatKey = fmt.Sprintf("chat-%s-%d", msg.SenderID, msg.CreatedAt.UnixMilli())
 			}
-			ui.Column(c).Key(chatKey).Background(pal.Card).Border(1, pal.CardBorder).Radius(3).Padding(8).Gap(2).Children(func() {
+			bubble := ui.Column(c).Key(chatKey).FillWidth().Background(pal.Card).Border(1, pal.CardBorder).Radius(3).Padding(8).Gap(2)
+			if chatGrew && i == len(chats)-1 {
+				bubble.ScrollIntoView()
+			}
+			bubble.Children(func() {
 				ui.Row(c).AlignItems(ui.Center).Children(func() {
 					ui.Text(c, msg.Sender).FontSize(11).Bold().TextColor(pal.Accent)
 					ui.Spacer(c)
 					ui.Text(c, msg.CreatedAt.Format("15:04")).FontSize(10).TextColor(pal.TextMuted)
 				})
-				ui.Text(c, msg.Text).FontSize(12)
+				ui.Text(c, msg.Text).FontSize(12).FillWidth()
 			})
 		}
 	})
@@ -1800,15 +1845,7 @@ func (a *App) buildSideChatQueue(c *ui.Context, pal theme.Palette, students []co
 func (a *App) buildSidePolicy(c *ui.Context, pal theme.Palette) {
 	ui.Column(c).Grow(1).FillWidth().Gap(8).Children(func() {
 		ui.Scroll(c).Grow(1).FillWidth().Gap(8).ScrollbarAxes(false, true).Scrollbars(true).KeepScrollbars(true).Children(func() {
-			ui.Row(c).AlignItems(ui.Center).Gap(6).Children(func() {
-				ui.Text(c, "课堂管控策略").FontSize(13).Bold()
-				ui.Spacer(c)
-				if a.policyActive {
-					ui.Badge(c, "已生效").Background(pal.Selection).TextColor(pal.Accent)
-				} else {
-					ui.Badge(c, "未生效")
-				}
-			})
+			ui.Text(c, "管控模式").FontSize(11).TextColor(pal.TextMuted)
 			policyDisplay := "黑名单模式"
 			if a.policyMode == "whitelist" {
 				policyDisplay = "白名单模式"
@@ -1820,14 +1857,17 @@ func (a *App) buildSidePolicy(c *ui.Context, pal theme.Palette) {
 					a.policyMode = "blacklist"
 				}
 			}
-			ui.Text(c, "禁止运行进程 (逗号分隔)").FontSize(11).TextColor(pal.TextMuted)
-			ui.TextInput(c, &a.blockedAppsInput).Placeholder("例如：game.exe, game2.exe")
-			ui.Text(c, "允许运行进程 (白名单模式)").FontSize(11).TextColor(pal.TextMuted)
-			ui.TextInput(c, &a.allowedAppsInput).Placeholder("例如：notepad.exe, editor.exe")
-			ui.Text(c, "禁用网址域名").FontSize(11).TextColor(pal.TextMuted)
-			ui.TextInput(c, &a.blockedSitesInput).Placeholder("例如：example.com, video.example.com")
-			ui.Text(c, "允许网址域名").FontSize(11).TextColor(pal.TextMuted)
-			ui.TextInput(c, &a.allowedSitesInput).Placeholder("例如：school.edu.cn, docs.example.com")
+			if a.policyMode == "whitelist" {
+				ui.Text(c, "只允许运行的进程 (逗号分隔)").FontSize(11).TextColor(pal.TextMuted)
+				ui.TextInput(c, &a.allowedAppsInput).Placeholder("例如：notepad.exe, editor.exe")
+				ui.Text(c, "只允许访问的网址域名").FontSize(11).TextColor(pal.TextMuted)
+				ui.TextInput(c, &a.allowedSitesInput).Placeholder("例如：school.edu.cn, docs.example.com")
+			} else {
+				ui.Text(c, "禁止运行的进程 (逗号分隔)").FontSize(11).TextColor(pal.TextMuted)
+				ui.TextInput(c, &a.blockedAppsInput).Placeholder("例如：game.exe, game2.exe")
+				ui.Text(c, "禁止访问的网址域名").FontSize(11).TextColor(pal.TextMuted)
+				ui.TextInput(c, &a.blockedSitesInput).Placeholder("例如：example.com, video.example.com")
+			}
 			ui.Text(c, "黑屏锁定提示语").FontSize(11).TextColor(pal.TextMuted)
 			ui.TextInput(c, &a.lockMessage)
 		})
@@ -2032,7 +2072,17 @@ func (a *App) buildNetworkConfigModal(c *ui.Context, pal theme.Palette) {
 		ui.Text(c, "批量设置学生端网络参数").FontSize(16).Bold()
 		ui.Text(c, "当前选中的学生端将保存配置并自动重连。未选择设备时不会下发。").FontSize(12).TextColor(pal.TextMuted)
 		ui.Text(c, "网络模式").FontSize(12).Bold()
-		ui.Select(c, &a.networkModeInput, []string{string(transport.NetworkModeMulti), string(transport.NetworkModeSingle)})
+		modeLabel := "多网卡（自动）"
+		if a.networkModeInput == string(transport.NetworkModeSingle) {
+			modeLabel = "单网卡（手动指定）"
+		}
+		if ui.Select(c, &modeLabel, []string{"多网卡（自动）", "单网卡（手动指定）"}).Changed() {
+			if modeLabel == "单网卡（手动指定）" {
+				a.networkModeInput = string(transport.NetworkModeSingle)
+			} else {
+				a.networkModeInput = string(transport.NetworkModeMulti)
+			}
+		}
 		if a.networkModeInput == string(transport.NetworkModeSingle) {
 			ui.TextInput(c, &a.networkInterfaceInput).Placeholder("网卡名称，例如 Ethernet 或 eth0").FillWidth()
 		} else {
@@ -4175,6 +4225,48 @@ func seatGridColumns(viewportW float32) int {
 		cols = 1
 	}
 	return cols
+}
+
+// monitorTileMinWidth keeps each monitor thumbnail readable while the grid
+// stretches tiles to fill the available width.
+const monitorTileMinWidth = 240
+
+func monitorGridColumns(viewportW float32) int {
+	usable := viewportW - 14
+	if usable <= 0 {
+		return 4
+	}
+	cols := int((usable + seatGridGap) / (monitorTileMinWidth + seatGridGap))
+	if cols < 1 {
+		cols = 1
+	}
+	return cols
+}
+
+func examKindDisplay(kind string) string {
+	switch core.QuestionKind(kind) {
+	case core.QuestionMulti:
+		return "多选题"
+	case core.QuestionBool:
+		return "判断题"
+	case core.QuestionEssay:
+		return "简答题"
+	default:
+		return "单选题"
+	}
+}
+
+func examKindValue(label string) string {
+	switch label {
+	case "多选题":
+		return string(core.QuestionMulti)
+	case "判断题":
+		return string(core.QuestionBool)
+	case "简答题":
+		return string(core.QuestionEssay)
+	default:
+		return string(core.QuestionSingle)
+	}
 }
 
 // seatStatusPill renders the student state in strict monochrome, using fill,

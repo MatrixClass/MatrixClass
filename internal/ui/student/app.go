@@ -156,6 +156,7 @@ type App struct {
 
 	activePaper   *core.ExamPaper
 	examAnswers   map[string]string
+	lastChatCount int
 	examResult    *core.ExamSubmission
 	recentNotices []string
 
@@ -1516,7 +1517,11 @@ func (a *App) buildFloatingBarView(c *ui.Context, pal theme.Palette) {
 		// Top draggable floating bar
 		ui.Row(c).FillWidth().Gap(6).AlignItems(ui.Center).DragWindow().Children(func() {
 			ui.Badge(c, a.channel).Background(pal.Selection).TextColor(pal.Text)
-			ui.Text(c, fmt.Sprintf("%s (%s)", a.machineName, a.studentNo)).FontSize(12).Bold().TextColor(pal.Text)
+			barTitle := a.machineName
+			if strings.TrimSpace(a.studentNo) != "" {
+				barTitle = fmt.Sprintf("%s (%s)", a.machineName, a.studentNo)
+			}
+			ui.Text(c, barTitle).FontSize(12).Bold().TextColor(pal.Text).SingleLine()
 			if a.handRaised {
 				ui.Badge(c, "已举手").Background(pal.Accent).TextColor(pal.AccentText)
 			}
@@ -1811,15 +1816,32 @@ func (a *App) buildChatView(c *ui.Context, pal theme.Palette) {
 			}
 		})
 
+		var chats []core.ChatMessage
+		if a.opts.Classroom != nil {
+			chats = a.opts.Classroom.ListChats()
+		}
+		chatGrew := len(chats) != a.lastChatCount
+		a.lastChatCount = len(chats)
 		ui.Scroll(c.Key("student-chat-scroll")).Grow(1).FillWidth().ScrollbarAxes(false, true).Scrollbars(true).KeepScrollbars(true).Children(func() {
-			ui.Column(c).FillWidth().Gap(4).Children(func() {
-				if a.opts.Classroom != nil {
-					for _, msg := range a.opts.Classroom.ListChats() {
-						ui.Row(c).FillWidth().Padding(6, 8).Radius(2).Background(pal.Card).Gap(6).Children(func() {
-							ui.Text(c, msg.Sender+":").FontSize(11).Bold().TextColor(pal.Accent)
-							ui.Text(c, msg.Text).FontSize(11).TextColor(pal.Text)
-						})
+			ui.Column(c).FillWidth().Gap(6).Children(func() {
+				if len(chats) == 0 {
+					ui.Text(c, "暂无课堂消息").FontSize(12).TextColor(pal.TextMuted)
+				}
+				for i, msg := range chats {
+					bubble := ui.Column(c).Key(fmt.Sprintf("st-chat-%d", i)).FillWidth().Padding(6, 8).Radius(3).Background(pal.Card).Border(1, pal.CardBorder).Gap(2)
+					if chatGrew && i == len(chats)-1 {
+						bubble.ScrollIntoView()
 					}
+					bubble.Children(func() {
+						ui.Row(c).FillWidth().AlignItems(ui.Center).Children(func() {
+							ui.Text(c, msg.Sender).FontSize(11).Bold().TextColor(pal.Accent)
+							ui.Spacer(c)
+							if !msg.CreatedAt.IsZero() {
+								ui.Text(c, msg.CreatedAt.Format("15:04")).FontSize(10).TextColor(pal.TextMuted)
+							}
+						})
+						ui.Text(c, msg.Text).FontSize(12).TextColor(pal.Text).FillWidth()
+					})
 				}
 			})
 		})
@@ -1868,9 +1890,9 @@ func (a *App) buildHomeworkView(c *ui.Context, pal theme.Palette) {
 					for i := len(fileTasks) - 1; i >= 0; i-- {
 						tk := fileTasks[i]
 						ui.Row(c).Key("st-file-" + tk.ID).FillWidth().AlignItems(ui.Center).Gap(6).Children(func() {
-							ui.Badge(c, string(tk.Direction))
+							ui.Badge(c, transferDirectionLabel(tk.Direction))
 							ui.Text(c, tk.FileName).FontSize(11).Grow(1).SingleLine()
-							ui.Text(c, tk.Status).FontSize(10).TextColor(pal.TextMuted)
+							ui.Text(c, transferStatusLabel(tk.Status)).FontSize(10).TextColor(pal.TextMuted)
 							if tk.Status == "completed" && tk.LocalPath != "" {
 								if ui.Button(c, "打开").Padding(2, 8).Clicked() {
 									_ = mygo.Shell.OpenPath(tk.LocalPath)
@@ -1983,6 +2005,38 @@ func examKindLabel(kind core.QuestionKind) string {
 		return "简答"
 	default:
 		return "单选"
+	}
+}
+
+func transferDirectionLabel(dir core.TransferDirection) string {
+	switch dir {
+	case core.TransferSend:
+		return "接收"
+	case core.TransferSubmit:
+		return "提交"
+	case core.TransferCollect:
+		return "收取"
+	default:
+		return string(dir)
+	}
+}
+
+func transferStatusLabel(status string) string {
+	switch status {
+	case "completed":
+		return "已完成"
+	case "running":
+		return "传输中"
+	case "pending":
+		return "等待中"
+	case "failed":
+		return "失败"
+	case "cancelled":
+		return "已取消"
+	case "retrying":
+		return "重试中"
+	default:
+		return status
 	}
 }
 

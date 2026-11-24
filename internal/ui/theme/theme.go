@@ -263,6 +263,16 @@ var (
   <path d="M9 16v3h6v-3M7.5 19.5h9" fill="none" stroke="#262626" stroke-width="1.6" stroke-linecap="round"/>
 </svg>`)
 
+	IconRemoteExec = MustSVG(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24">
+  <rect x="3" y="4.5" width="18" height="15" rx="1.6" fill="#FFFFFF" stroke="#262626" stroke-width="1.7"/>
+  <path d="M7 10l3 2.5L7 15M12 15.5h5" fill="none" stroke="#262626" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>`)
+
+	IconPolicy = MustSVG(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24">
+  <path d="M12 3.5l7 2.8v5.2c0 4.3-2.9 7.6-7 9-4.1-1.4-7-4.7-7-9V6.3z" fill="#E5E5E5" stroke="#262626" stroke-width="1.7" stroke-linejoin="round"/>
+  <path d="M8.8 12l2.2 2.2 4.3-4.4" fill="none" stroke="#262626" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>`)
+
 	IconPower = MustSVG(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24">
   <circle cx="12" cy="12" r="9" fill="#FFFFFF" stroke="#262626" stroke-width="1.7"/>
   <path d="M12 6.5v5.5M8.6 8.8a4.8 4.8 0 1 0 6.8 0" fill="none" stroke="#262626" stroke-width="1.8" stroke-linecap="round"/>

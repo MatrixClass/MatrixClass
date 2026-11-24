@@ -10,6 +10,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -718,6 +719,20 @@ func localPrimaryMAC() string {
 	return ""
 }
 
+// defaultStudentID returns an ID that is unique per machine and stable across
+// restarts, so several students never collide on the teacher side.
+func defaultStudentID() string {
+	if mac := localPrimaryMAC(); mac != "" {
+		return "stu-" + strings.ToLower(strings.ReplaceAll(mac, ":", ""))
+	}
+	host, _ := os.Hostname()
+	host = strings.TrimSpace(host)
+	if host == "" {
+		host = "pc"
+	}
+	return "stu-" + strings.ToLower(host)
+}
+
 func (rt *Runtime) goLifecycle(task func(context.Context)) bool {
 	rt.lifecycleMu.Lock()
 	if rt.lifecycleClosed || rt.lifecycleCtx == nil {
@@ -829,10 +844,17 @@ func main() {
 	verifyUninstall := flag.Bool("verify-uninstall", false, "verify the student exit password for uninstall")
 	channel := flag.String("channel", "1", "classroom numeric channel ID")
 	teacherAddr := flag.String("teacher", "", "optional explicit teacher KCP address (host:port)")
-	studentID := flag.String("id", "stu-01", "student ID")
-	studentNo := flag.String("no", "202601", "student number")
+	studentID := flag.String("id", "", "student ID (defaults to a stable ID derived from this machine)")
+	studentNo := flag.String("no", "", "student number (optional)")
 	recvDir := flag.String("recv", "", "received files directory (defaults to Desktop)")
 	flag.Parse()
+	if *studentID == "" {
+		if *demoMode {
+			*studentID = "stu-01"
+		} else {
+			*studentID = defaultStudentID()
+		}
+	}
 	paths := apppaths.Resolve("")
 	if *verifyUninstall {
 		os.Exit(runUninstallPasswordVerification(filepath.Join(paths.DataDir, "student-exit-password.sha256")))
