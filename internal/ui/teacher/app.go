@@ -29,6 +29,7 @@ import (
 	"nexlab/internal/protocol"
 	"nexlab/internal/remoteexec"
 	"nexlab/internal/store"
+	"nexlab/internal/transport"
 	"nexlab/internal/ui/theme"
 )
 
@@ -204,20 +205,26 @@ type App struct {
 	allowedSitesInput string
 
 	// Widget states
-	settingsOpen      bool
-	policyModal       bool
-	channelModal      bool
-	channelInput      string
-	pendingChannel    string
-	channelNum        float64
-	authUsername      string
-	authPasswordHash  string
-	loginUserInput    string
-	loginPassInput    string
-	loginError        string
-	recentChannels    []string
-	store             *store.Store
-	onChannelSelected func(string)
+	settingsOpen          bool
+	settingsTab           string
+	networkConfigOpen     bool
+	networkModeInput      string
+	networkInterfaceInput string
+	networkIgnoreVirtual  bool
+	networkIgnoreVPN      bool
+	policyModal           bool
+	channelModal          bool
+	channelInput          string
+	pendingChannel        string
+	channelNum            float64
+	authUsername          string
+	authPasswordHash      string
+	loginUserInput        string
+	loginPassInput        string
+	loginError            string
+	recentChannels        []string
+	store                 *store.Store
+	onChannelSelected     func(string)
 
 	// Lock-free snapshots for background media/transport goroutines
 	broadcastFlag         atomic.Bool
@@ -513,6 +520,7 @@ func (a *App) persistedChannel() string {
 // openSettings shows the settings modal with the channel draft reset.
 func (a *App) openSettings() {
 	a.channelInput = a.persistedChannel()
+	a.settingsTab = settingsTabClassroom
 	a.settingsOpen = true
 }
 
@@ -977,6 +985,9 @@ func (a *App) View(c *ui.Context) {
 
 	ui.Modal(c, &a.settingsOpen, func() {
 		a.buildSettingsModal(c, pal)
+	})
+	ui.Modal(c, &a.networkConfigOpen, func() {
+		a.buildNetworkConfigModal(c, pal)
 	})
 
 	ui.Modal(c, &a.policyModal, func() {
@@ -1861,57 +1872,181 @@ func (a *App) buildStatusBar(c *ui.Context, pal theme.Palette) {
 	})
 }
 
+// Settings modal navigation pages.
+const (
+	settingsTabClassroom = "课堂"
+	settingsTabNetwork   = "网络"
+	settingsTabMonitor   = "监控"
+	settingsTabAbout     = "关于"
+)
+
+// AppVersion is the human-readable teacher build version shown on the about page.
+const AppVersion = "0.1.0"
+
+var settingsTabs = []string{settingsTabClassroom, settingsTabNetwork, settingsTabMonitor, settingsTabAbout}
+
 func (a *App) buildSettingsModal(c *ui.Context, pal theme.Palette) {
-	ui.Column(c).Width(460).Background(pal.Canvas).Border(1, pal.CardBorder).Radius(4).Padding(16).Gap(10).Children(func() {
-		ui.Text(c, "教师端课堂设置").FontSize(16).Bold()
-		ui.Text(c, "频道 ID (数字)").FontSize(12).TextColor(pal.TextMuted)
-		// Edit a draft: the running transport and discovery beacon keep the
-		// channel chosen at startup, so a change only applies after restart.
-		ui.Select(c, &a.channelInput, numericChannelOptions())
-		ui.Text(c, "默认作业存放目录").FontSize(12).TextColor(pal.TextMuted)
-		ui.Row(c).FillWidth().Gap(8).AlignItems(ui.Center).Children(func() {
-			ui.TextInput(c, &a.collectSaveDir).Placeholder("默认: 系统下载目录 (Downloads)").Grow(1)
-			if ui.Button(c, "浏览...").Padding(4, 10).Clicked() {
-				a.openCollectDirPicker()
-			}
-		})
-		ui.Checkbox(c, &a.useMulticast, "优先使用 UDP 组播 + FEC 广播画面")
-		ui.Divider(c)
-		ui.Row(c).AlignItems(ui.Center).Children(func() {
-			ui.Text(c, "监控画质").FontSize(12).Bold()
-			ui.Spacer(c)
-			ui.Text(c, fmt.Sprintf("%d%%", int(a.monitorQual))).FontSize(12).TextColor(pal.Accent)
-		})
-		if ui.Slider(c, &a.monitorQual, 30, 95).Label("监控画质滑块").Changed() && a.monitoring {
-			a.sendMonitorConfig()
-		}
-		ui.Row(c).AlignItems(ui.Center).Children(func() {
-			ui.Text(c, "监控帧率").FontSize(12).Bold()
-			ui.Spacer(c)
-			ui.Text(c, fmt.Sprintf("%d FPS", int(a.monitorFPS))).FontSize(12).TextColor(pal.Accent)
-		})
-		if ui.Slider(c, &a.monitorFPS, 5, 30).Label("监控帧率滑块").Changed() && a.monitoring {
-			a.sendMonitorConfig()
-		}
-		ui.Row(c).Gap(8).Justify(ui.End).Children(func() {
-			if ui.Button(c, "关闭").Clicked() {
-				a.settingsOpen = false
-			}
-			if ui.PrimaryButton(c, "保存并应用").Clicked() {
-				a.settingsOpen = false
-				a.syncRuntimeFlags()
-				a.applyArchiveDir(a.collectSaveDir)
-				if a.monitoring {
-					a.sendMonitorConfig()
+	if a.settingsTab == "" {
+		a.settingsTab = settingsTabClassroom
+	}
+	ui.Column(c).Width(680).Height(440).Background(pal.Canvas).Border(1, pal.CardBorder).Radius(4).Clip().Children(func() {
+		ui.Row(c).Grow(1).FillWidth().Children(func() {
+			ui.Column(c).Width(150).FillHeight().Background(pal.ChromeRail).Padding(12, 8).Gap(4).Children(func() {
+				ui.Text(c, "设置").FontSize(15).Bold().Padding(4, 8)
+				for _, id := range settingsTabs {
+					id := id
+					btn := ui.Button(c, id).Label("设置-"+id).FillWidth().Padding(7, 10).Radius(4).Justify(ui.Start)
+					if a.settingsTab == id {
+						btn.Background(pal.Selection).Border(1, pal.CardBorder)
+					}
+					if btn.Clicked() {
+						a.settingsTab = id
+					}
 				}
-				if draft := normalizeChannelID(a.channelInput); draft != a.channel {
-					a.pendingChannel = draft
-					a.statusNote = fmt.Sprintf("频道已改为 %s，重启教师端后生效（当前仍为 %s）", draft, a.channel)
-				} else {
-					a.pendingChannel = ""
-					a.statusNote = "课堂设置已保存"
+			})
+			ui.Column(c).Grow(1).FillHeight().Padding(16).Gap(10).Children(func() {
+				switch a.settingsTab {
+				case settingsTabNetwork:
+					a.buildSettingsNetworkPage(c, pal)
+				case settingsTabMonitor:
+					a.buildSettingsMonitorPage(c, pal)
+				case settingsTabAbout:
+					a.buildSettingsAboutPage(c, pal)
+				default:
+					a.buildSettingsClassroomPage(c, pal)
 				}
-				a.savePersistedSettings()
+				ui.Spacer(c)
+				ui.Row(c).Gap(8).Justify(ui.End).Children(func() {
+					if ui.Button(c, "关闭").Clicked() {
+						a.settingsOpen = false
+					}
+					if a.settingsTab != settingsTabAbout {
+						if ui.PrimaryButton(c, "保存并应用").Clicked() {
+							a.applySettings()
+						}
+					}
+				})
+			})
+		})
+	})
+}
+
+// applySettings commits the settings drafts and closes the modal.
+func (a *App) applySettings() {
+	a.settingsOpen = false
+	a.syncRuntimeFlags()
+	a.applyArchiveDir(a.collectSaveDir)
+	if a.monitoring {
+		a.sendMonitorConfig()
+	}
+	if draft := normalizeChannelID(a.channelInput); draft != a.channel {
+		a.pendingChannel = draft
+		a.statusNote = fmt.Sprintf("频道已改为 %s，重启教师端后生效（当前仍为 %s）", draft, a.channel)
+	} else {
+		a.pendingChannel = ""
+		a.statusNote = "课堂设置已保存"
+	}
+	a.savePersistedSettings()
+}
+
+func (a *App) buildSettingsClassroomPage(c *ui.Context, pal theme.Palette) {
+	ui.Text(c, "课堂设置").FontSize(16).Bold()
+	ui.Text(c, "频道 ID (数字)").FontSize(12).TextColor(pal.TextMuted)
+	// Edit a draft: the running transport and discovery beacon keep the
+	// channel chosen at startup, so a change only applies after restart.
+	ui.Select(c, &a.channelInput, numericChannelOptions())
+	ui.Text(c, "频道修改后需重启教师端生效，学生端按频道 ID 自动加入。").FontSize(11).TextColor(pal.TextMuted)
+	ui.Text(c, "默认作业存放目录").FontSize(12).TextColor(pal.TextMuted)
+	ui.Row(c).FillWidth().Gap(8).AlignItems(ui.Center).Children(func() {
+		ui.TextInput(c, &a.collectSaveDir).Placeholder("默认: 系统下载目录 (Downloads)").Grow(1)
+		if ui.Button(c, "浏览...").Padding(4, 10).Clicked() {
+			a.openCollectDirPicker()
+		}
+	})
+}
+
+func (a *App) buildSettingsNetworkPage(c *ui.Context, pal theme.Palette) {
+	ui.Text(c, "网络设置").FontSize(16).Bold()
+	ui.Checkbox(c, &a.useMulticast, "优先使用 UDP 组播 + FEC 广播画面")
+	ui.Text(c, "组播不可用时自动回退到 KCP 单播。").FontSize(11).TextColor(pal.TextMuted)
+	ui.Divider(c)
+	ui.Text(c, "学生端网络参数").FontSize(12).Bold()
+	ui.Text(c, "向当前选中的学生端批量下发监听网卡模式，学生端保存后自动重连。").FontSize(11).TextColor(pal.TextMuted)
+	if ui.Button(c, "批量设置学生端网络参数").Clicked() {
+		a.settingsOpen = false
+		a.networkModeInput = string(transport.NetworkModeMulti)
+		a.networkInterfaceInput = ""
+		a.networkIgnoreVirtual = true
+		a.networkIgnoreVPN = true
+		a.networkConfigOpen = true
+	}
+}
+
+func (a *App) buildSettingsMonitorPage(c *ui.Context, pal theme.Palette) {
+	ui.Text(c, "监控设置").FontSize(16).Bold()
+	ui.Row(c).AlignItems(ui.Center).Children(func() {
+		ui.Text(c, "监控画质").FontSize(12).Bold()
+		ui.Spacer(c)
+		ui.Text(c, fmt.Sprintf("%d%%", int(a.monitorQual))).FontSize(12).TextColor(pal.Accent)
+	})
+	if ui.Slider(c, &a.monitorQual, 30, 95).Label("监控画质滑块").Changed() && a.monitoring {
+		a.sendMonitorConfig()
+	}
+	ui.Row(c).AlignItems(ui.Center).Children(func() {
+		ui.Text(c, "监控帧率").FontSize(12).Bold()
+		ui.Spacer(c)
+		ui.Text(c, fmt.Sprintf("%d FPS", int(a.monitorFPS))).FontSize(12).TextColor(pal.Accent)
+	})
+	if ui.Slider(c, &a.monitorFPS, 5, 30).Label("监控帧率滑块").Changed() && a.monitoring {
+		a.sendMonitorConfig()
+	}
+	ui.Text(c, "监控进行中调整会立即下发到学生端。").FontSize(11).TextColor(pal.TextMuted)
+}
+
+func (a *App) buildSettingsAboutPage(c *ui.Context, pal theme.Palette) {
+	ui.Text(c, "关于").FontSize(16).Bold()
+	ui.Row(c).AlignItems(ui.Center).Gap(12).Children(func() {
+		ui.Image(c, theme.IconMonitor).Size(40, 40)
+		ui.Column(c).Gap(2).Children(func() {
+			ui.Text(c, "矩联电子教室 MatrixClass").FontSize(15).Bold()
+			ui.Text(c, "教师端 · 版本 "+AppVersion).FontSize(12).TextColor(pal.TextMuted)
+		})
+	})
+	ui.Divider(c)
+	aboutRow := func(key, val string) {
+		ui.Row(c).Gap(8).AlignItems(ui.Start).Children(func() {
+			ui.Text(c, key).FontSize(12).TextColor(pal.TextMuted).Width(80)
+			ui.Text(c, val).FontSize(12).Grow(1)
+		})
+	}
+	aboutRow("技术栈", "Go + MyGo 原生 UI + KCP 局域网传输")
+	aboutRow("支持平台", "Windows / Linux (x64, arm64, loong64) / macOS")
+	aboutRow("项目主页", "https://github.com/MatrixClass/MatrixClass")
+	aboutRow("开源许可", "仅使用宽松许可证依赖，不含 GPL / LGPL / AGPL 组件")
+	ui.Text(c, "局域网课堂管理：屏幕广播、屏幕监控、远程控制、文件分发、作业收取、随堂测验、网络影院、远程命令。").FontSize(11).TextColor(pal.TextMuted)
+}
+
+func (a *App) buildNetworkConfigModal(c *ui.Context, pal theme.Palette) {
+	ui.Column(c).Width(500).Background(pal.Canvas).Border(1, pal.CardBorder).Radius(4).Padding(16).Gap(10).Children(func() {
+		ui.Text(c, "批量设置学生端网络参数").FontSize(16).Bold()
+		ui.Text(c, "当前选中的学生端将保存配置并自动重连。未选择设备时不会下发。").FontSize(12).TextColor(pal.TextMuted)
+		ui.Text(c, "网络模式").FontSize(12).Bold()
+		ui.Select(c, &a.networkModeInput, []string{string(transport.NetworkModeMulti), string(transport.NetworkModeSingle)})
+		if a.networkModeInput == string(transport.NetworkModeSingle) {
+			ui.TextInput(c, &a.networkInterfaceInput).Placeholder("网卡名称，例如 Ethernet 或 eth0").FillWidth()
+		} else {
+			ui.Checkbox(c, &a.networkIgnoreVirtual, "忽略虚拟机网卡")
+			ui.Checkbox(c, &a.networkIgnoreVPN, "忽略 VPN 虚拟网卡")
+		}
+		ui.Row(c).Justify(ui.End).Gap(8).Children(func() {
+			if ui.Button(c, "取消").Clicked() {
+				a.networkConfigOpen = false
+			}
+			if ui.PrimaryButton(c, "下发到选中学生").Clicked() {
+				cfg := transport.NetworkConfig{Mode: transport.NetworkMode(a.networkModeInput), InterfaceName: a.networkInterfaceInput, IgnoreVirtual: a.networkIgnoreVirtual, IgnoreVPN: a.networkIgnoreVPN}
+				a.sendControlEnvelope(protocol.MsgStudentNetworkConfig, cfg, a.remoteTargetIDs())
+				a.networkConfigOpen = false
+				a.statusNote = "已下发学生端网络参数"
 			}
 		})
 	})

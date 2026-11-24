@@ -585,9 +585,23 @@ func TestTeacherMicVolumeAndSettingsMonitorSliders(t *testing.T) {
 	}
 
 	app.settingsOpen = true
+	app.settingsTab = settingsTabMonitor
 	tester.Frame()
 	if !tester.HasText("监控画质") || !tester.HasText("监控帧率") {
 		t.Fatalf("expected 监控画质 and 监控帧率 inside settings modal")
+	}
+	tester.Click("设置-关于")
+	tester.Frame()
+	if !tester.HasText("矩联电子教室 MatrixClass") || !tester.HasText("版本 "+AppVersion) {
+		t.Fatalf("expected about page inside settings modal")
+	}
+	if tester.HasText("监控画质") {
+		t.Fatalf("expected monitor page hidden while about tab is active")
+	}
+	tester.Click("设置-课堂")
+	tester.Frame()
+	if !tester.HasText("频道 ID (数字)") || !tester.HasText("默认作业存放目录") {
+		t.Fatalf("expected classroom page after switching back")
 	}
 }
 
