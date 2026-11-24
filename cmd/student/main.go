@@ -306,7 +306,7 @@ func (rt *Runtime) wireHandlers() {
 			_ = json.Unmarshal(env.Payload, &cfg)
 			rt.App.StartBroadcast(cfg.Mode == core.BroadcastWindowed)
 		case protocol.MsgBroadcastStop:
-			rt.App.ShowFloatingBar()
+			rt.App.StopBroadcast()
 		case protocol.MsgVoiceControl:
 			var req struct {
 				Enabled bool `json:"enabled"`

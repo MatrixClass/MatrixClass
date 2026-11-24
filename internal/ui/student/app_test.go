@@ -228,7 +228,9 @@ func TestStudentBarCheckInExamAndLockViews(t *testing.T) {
 	if !app.CheckInSubmitted() {
 		t.Fatalf("expected checkInSubmitted=true")
 	}
-	_ = tester.Click("返回")
+	if err := tester.Click("完成"); err != nil {
+		t.Fatalf("expected 完成 button after check-in: %v", err)
+	}
 	tester.Frame()
 
 	// Exam entry must be hidden on floating bar and only pop up when teacher publishes exam

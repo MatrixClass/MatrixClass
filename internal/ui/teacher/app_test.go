@@ -125,7 +125,7 @@ func TestTeacherConsoleViewsAndTabs(t *testing.T) {
 	if !tester.HasText("矩联电子教室 MatrixClass") {
 		t.Fatalf("expected teacher title in view")
 	}
-	if !tester.HasText("设备视图") || !tester.HasText("屏幕广播") || !tester.HasText("网络影院") || !tester.HasText("默认分组") {
+	if !tester.HasText("设备视图") || !tester.HasText("屏幕广播") || !tester.HasText("网络影院") || !tester.HasText("全部设备") {
 		t.Fatalf("expected primary navigation/toolbar items")
 	}
 	if tester.HasText("学生列表") || tester.HasText("分组与媒体库") || tester.HasText("座位视图") {
@@ -491,7 +491,7 @@ func TestTeacherFileDistributeQueueWindow(t *testing.T) {
 	}
 
 	tester.Frame()
-	if !tester.HasText("上传到学生机进度") {
+	if !tester.HasText("本次分发进度") {
 		t.Fatalf("expected upload progress section in file distribution view")
 	}
 
@@ -1087,5 +1087,48 @@ func TestUIBugfixesGuardEmptyTargets(t *testing.T) {
 	app.publishExam()
 	if app.examPublished {
 		t.Fatalf("exam with empty prompt must not be published")
+	}
+}
+
+func TestSettingsCancelRevertsAndGroupManagement(t *testing.T) {
+	app, _, _, _ := newTestTeacherApp()
+	app.monitorQual = 60
+	app.useMulticast = false
+	app.openSettings()
+	app.monitorQual = 90
+	app.useMulticast = true
+	app.cancelSettings()
+	if app.settingsOpen || app.monitorQual != 60 || app.useMulticast {
+		t.Fatalf("cancel must close settings and revert edits, got qual=%v mcast=%v", app.monitorQual, app.useMulticast)
+	}
+
+	app.createGroup("第一组")
+	var id string
+	for _, g := range app.listGroups() {
+		if g.Name == "第一组" {
+			id = g.ID
+		}
+	}
+	if id == "" {
+		t.Fatalf("expected created group")
+	}
+	app.renameGroup(id, "实验组")
+	found := false
+	for _, g := range app.listGroups() {
+		if g.ID == id && g.Name == "实验组" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected group renamed")
+	}
+	app.deleteGroup(id)
+	for _, g := range app.listGroups() {
+		if g.ID == id {
+			t.Fatalf("expected group deleted")
+		}
+	}
+	if app.selectedGroup != "all" {
+		t.Fatalf("deleting the selected group must fall back to all devices")
 	}
 }

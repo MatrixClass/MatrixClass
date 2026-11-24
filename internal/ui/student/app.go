@@ -110,6 +110,7 @@ type App struct {
 	homeworkQueue       []string
 	homeworkSubmitWin   *mygo.Window
 	homeworkCollecting  bool
+	homeworkQueueBusy   bool
 	homeworkSubmitNote  string
 	fileReceiveWin      *mygo.Window
 	exitPasswordWin     *mygo.Window
@@ -146,6 +147,7 @@ type App struct {
 	winSyncedOnce    bool
 
 	videoBitmap      *ui.Bitmap
+	broadcastActive  bool
 	theatrePlayer    *ui.VideoPlayer
 	theatreMedia     string
 	theatreStreamURL string
@@ -819,9 +821,9 @@ func (a *App) ExitPasswordView(c *ui.Context) {
 			ui.Text(c, "首次启动：设置学生端参数").FontSize(17).Bold()
 			ui.Text(c, "设置频道 ID 和学生端退出密码后才会连接教师端。").FontSize(12).TextColor(theme.GetPalette(false).TextMuted)
 			ui.TextInput(c, &a.channelInput).Placeholder("频道 ID（仅数字）").FillWidth().AutoFocus()
-			ui.TextInput(c, &a.exitPasswordInput).Password().Placeholder("设置退出密码").FillWidth().AutoFocus()
+			ui.TextInput(c, &a.exitPasswordInput).Password().Placeholder("设置退出密码").FillWidth()
 			ui.TextInput(c, &a.exitPasswordConfirm).Password().Placeholder("再次输入退出密码").FillWidth()
-			if ui.PrimaryButton(c, "保存密码").Clicked() {
+			if ui.PrimaryButton(c, "保存并连接").Clicked() {
 				if strings.TrimSpace(a.exitPasswordInput) == "" || a.exitPasswordInput != a.exitPasswordConfirm {
 					a.exitPasswordError = "两次输入的密码不一致或为空"
 				} else if err := a.saveChannel(a.channelInput); err != nil {
@@ -924,22 +926,30 @@ func (a *App) SettingsView(c *ui.Context) {
 			ui.Checkbox(c, &a.ignoreVirtual, "忽略虚拟机网卡")
 			ui.Checkbox(c, &a.ignoreVPN, "忽略 VPN 虚拟网卡")
 		}
-		if ui.PrimaryButton(c, "保存并重连").Clicked() {
-			cfg := transport.NetworkConfig{Mode: networkModeValue(a.networkMode), InterfaceName: a.networkInterface, IgnoreVirtual: a.ignoreVirtual, IgnoreVPN: a.ignoreVPN}
-			if err := a.saveChannel(a.channelInput); err != nil {
-				a.settingsError = err.Error()
-			} else if err := a.ApplyNetworkConfig(cfg); err != nil {
-				a.settingsError = err.Error()
-			} else {
-				a.statusNote = "正在切换频道 ID: " + a.channel
-				if a.onSetupComplete != nil {
-					a.onSetupComplete(a.channel)
-				}
+		ui.Spacer(c)
+		ui.Row(c).FillWidth().Justify(ui.End).Gap(8).Children(func() {
+			if ui.Button(c, "取消").Clicked() {
 				if a.settingsWin != nil {
 					a.settingsWin.Hide()
 				}
 			}
-		}
+			if ui.PrimaryButton(c, "保存并重连").Clicked() {
+				cfg := transport.NetworkConfig{Mode: networkModeValue(a.networkMode), InterfaceName: a.networkInterface, IgnoreVirtual: a.ignoreVirtual, IgnoreVPN: a.ignoreVPN}
+				if err := a.saveChannel(a.channelInput); err != nil {
+					a.settingsError = err.Error()
+				} else if err := a.ApplyNetworkConfig(cfg); err != nil {
+					a.settingsError = err.Error()
+				} else {
+					a.statusNote = "正在切换频道 ID: " + a.channel
+					if a.onSetupComplete != nil {
+						a.onSetupComplete(a.channel)
+					}
+					if a.settingsWin != nil {
+						a.settingsWin.Hide()
+					}
+				}
+			}
+		})
 		if errText != "" {
 			ui.Text(c, errText).FontSize(12).TextColor(ui.Hex("#B42318"))
 		}
@@ -1032,6 +1042,14 @@ func (a *App) applyVideoFrameLocked(frame *core.VideoFrame) {
 	}
 }
 
+// StopBroadcast ends the teacher broadcast and returns to the floating bar.
+func (a *App) StopBroadcast() {
+	a.mu.Lock()
+	a.broadcastActive = false
+	a.mu.Unlock()
+	a.ShowFloatingBar()
+}
+
 func (a *App) ShowFloatingBar() {
 	a.mu.Lock()
 	a.mode = ModeBar
@@ -1068,6 +1086,7 @@ func (a *App) OpenMode(m int) {
 func (a *App) StartBroadcast(windowed bool) {
 	a.mu.Lock()
 	a.broadcastWindow = windowed
+	a.broadcastActive = true
 	a.mode = ModeBroadcast
 	a.statusNote = "正在接收教师端屏幕广播"
 	w := a.win
@@ -1540,18 +1559,24 @@ func (a *App) buildFloatingBarView(c *ui.Context, pal theme.Palette) {
 			a.barIconButton(c, pal, handLabel, theme.IconHandRaise, a.handRaised, func() {
 				a.ToggleHandRaise()
 			})
-			a.barIconButton(c, pal, "作业", theme.IconCollectHomework, false, func() {
+			a.barIconButton(c, pal, "作业", theme.IconCollectHomework, a.homeworkCollecting, func() {
+				if a.homeworkCollecting {
+					a.OpenHomeworkSubmitWindow()
+					return
+				}
 				a.OpenMode(ModeHomeworkSubmit)
 			})
 			a.barIconButton(c, pal, "消息", theme.IconChat, false, func() {
 				a.OpenMode(ModeChat)
 			})
-			a.barIconButton(c, pal, "广播", theme.IconBroadcast, false, func() {
-				a.mu.Lock()
-				a.mode = ModeBroadcast
-				a.mu.Unlock()
-				a.syncWindow()
-			})
+			if a.videoBitmap != nil && a.broadcastActive {
+				a.barIconButton(c, pal, "广播", theme.IconBroadcast, false, func() {
+					a.mu.Lock()
+					a.mode = ModeBroadcast
+					a.mu.Unlock()
+					a.syncWindow()
+				})
+			}
 			collapseLabel := "收起"
 			collapseIcon := theme.IconChevronUp
 			if a.barCollapsed {
@@ -1630,7 +1655,11 @@ func (a *App) buildBroadcastView(c *ui.Context, pal theme.Palette) {
 				a.mu.Unlock()
 				a.syncWindow()
 			}
-			if ui.Button(c, "举手").Padding(3, 8).Clicked() {
+			handLabel := "举手"
+			if a.handRaised {
+				handLabel = "取消举手"
+			}
+			if ui.Button(c, handLabel).Padding(3, 8).Clicked() {
 				a.ToggleHandRaise()
 			}
 			if ui.Button(c, "返回悬浮条").Padding(3, 8).Clicked() {
@@ -2771,7 +2800,10 @@ func (a *App) buildHomeworkSubmitContent(c *ui.Context, pal theme.Palette) {
 		ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(8).Children(func() {
 			ui.Text(c, a.homeworkSubmitNote).FontSize(11).TextColor(pal.TextMuted).Grow(1).SingleLine()
 			submitLabel := fmt.Sprintf("提交 (%d)", len(a.homeworkQueue))
-			if ui.PrimaryButton(c, submitLabel).Padding(5, 16).Clicked() {
+			if a.homeworkQueueBusy {
+				submitLabel = "正在提交..."
+			}
+			if ui.PrimaryButton(c, submitLabel).Disabled(a.homeworkQueueBusy || len(a.homeworkQueue) == 0).Padding(5, 16).Clicked() {
 				a.SubmitHomeworkQueue()
 			}
 		})
@@ -2827,6 +2859,9 @@ func (a *App) openHomeworkQueuePicker() {
 }
 
 func (a *App) SubmitHomeworkQueue() {
+	if a.homeworkQueueBusy {
+		return
+	}
 	if a.opts.Files == nil || len(a.homeworkQueue) == 0 {
 		a.homeworkSubmitNote = "请先添加作业文件"
 		return
@@ -2837,12 +2872,16 @@ func (a *App) SubmitHomeworkQueue() {
 	if !ok {
 		return
 	}
+	a.homeworkQueueBusy = true
 	go func() {
 		sent := 0
 		var lastErr error
 		for _, p := range queue {
 			if _, err := a.opts.Files.SubmitHomework(ctx, a.studentID, p); err != nil {
 				if ctx.Err() != nil {
+					a.mu.Lock()
+					a.homeworkQueueBusy = false
+					a.mu.Unlock()
 					return
 				}
 				lastErr = err
@@ -2851,6 +2890,7 @@ func (a *App) SubmitHomeworkQueue() {
 			}
 		}
 		a.mu.Lock()
+		a.homeworkQueueBusy = false
 		if a.lifecycleClosed {
 			a.mu.Unlock()
 			return

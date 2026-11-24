@@ -208,6 +208,12 @@ type App struct {
 	settingsOpen          bool
 	settingsTab           string
 	lastChatCount         int
+	settingsSnapshot      settingsDraft
+	fileDistHidden        map[string]bool
+	renamingGroupID       string
+	renameGroupInput      string
+	remoteCmdWorkDir      string
+	remoteAppPicked       string
 	networkConfigOpen     bool
 	networkModeInput      string
 	networkInterfaceInput string
@@ -522,7 +528,37 @@ func (a *App) persistedChannel() string {
 func (a *App) openSettings() {
 	a.channelInput = a.persistedChannel()
 	a.settingsTab = settingsTabClassroom
+	a.settingsSnapshot = settingsDraft{
+		collectSaveDir: a.collectSaveDir,
+		useMulticast:   a.useMulticast,
+		monitorQual:    a.monitorQual,
+		monitorFPS:     a.monitorFPS,
+	}
 	a.settingsOpen = true
+}
+
+// settingsDraft holds the values the settings modal can change, so closing it
+// without saving restores them.
+type settingsDraft struct {
+	collectSaveDir string
+	useMulticast   bool
+	monitorQual    float64
+	monitorFPS     float64
+}
+
+// cancelSettings closes the settings modal and reverts unsaved edits.
+func (a *App) cancelSettings() {
+	snap := a.settingsSnapshot
+	monitorChanged := snap.monitorQual != a.monitorQual || snap.monitorFPS != a.monitorFPS
+	a.collectSaveDir = snap.collectSaveDir
+	a.useMulticast = snap.useMulticast
+	a.monitorQual = snap.monitorQual
+	a.monitorFPS = snap.monitorFPS
+	a.settingsOpen = false
+	a.syncRuntimeFlags()
+	if monitorChanged && a.monitoring {
+		a.sendMonitorConfig()
+	}
 }
 
 func hashPassword(raw string) string {
@@ -984,9 +1020,12 @@ func (a *App) View(c *ui.Context) {
 		a.buildStatusBar(c, pal)
 	})
 
-	ui.Modal(c, &a.settingsOpen, func() {
+	settingsDialog := ui.Modal(c, &a.settingsOpen, func() {
 		a.buildSettingsModal(c, pal)
 	})
+	if settingsDialog.Dismissed() {
+		a.cancelSettings()
+	}
 	ui.Modal(c, &a.networkConfigOpen, func() {
 		a.buildNetworkConfigModal(c, pal)
 	})
@@ -1106,8 +1145,7 @@ func (a *App) buildToolbar(c *ui.Context, pal theme.Palette) {
 			})
 			a.toolbarButton(c, pal, "网络影院", theme.IconMyTheatre, a.mainTab == TabMyTheatre, func() {
 				a.mainTab = TabMyTheatre
-				a.activeModeLabel = "网络影院"
-				a.statusNote = "已切换至网络影院"
+				a.statusNote = "已打开网络影院，选择视频后点击播放"
 			})
 			a.toolbarToggle(c, pal, "屏幕监控", theme.IconMonitor, &a.monitoring, func() {
 				a.applyMonitorState()
@@ -1958,13 +1996,11 @@ func (a *App) buildSettingsModal(c *ui.Context, pal theme.Palette) {
 				}
 				ui.Spacer(c)
 				ui.Row(c).Gap(8).Justify(ui.End).Children(func() {
-					if ui.Button(c, "关闭").Clicked() {
-						a.settingsOpen = false
+					if ui.Button(c, "取消").Clicked() {
+						a.cancelSettings()
 					}
-					if a.settingsTab != settingsTabAbout {
-						if ui.PrimaryButton(c, "保存并应用").Clicked() {
-							a.applySettings()
-						}
+					if ui.PrimaryButton(c, "保存并应用").Clicked() {
+						a.applySettings()
 					}
 				})
 			})
@@ -2760,7 +2796,7 @@ func (a *App) buildFileDistributeProgress(c *ui.Context, pal theme.Palette) {
 	var totalBytes, doneBytes int64
 	var completedCount int
 	for _, tk := range a.opts.Files.ListTasks() {
-		if tk.Direction != core.TransferSend {
+		if tk.Direction != core.TransferSend || a.fileDistHidden[tk.ID] {
 			continue
 		}
 		sendTasks = append(sendTasks, tk)
@@ -2784,7 +2820,7 @@ func (a *App) buildFileDistributeProgress(c *ui.Context, pal theme.Palette) {
 	}
 	ui.Column(c).FillWidth().Padding(10).Radius(3).Background(pal.Card).Border(1, pal.CardBorder).Gap(6).Children(func() {
 		ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(8).Children(func() {
-			ui.Text(c, "上传到学生机进度").FontSize(12).Bold()
+			ui.Text(c, "本次分发进度").FontSize(12).Bold()
 			ui.Spacer(c)
 			ui.Text(c, fmt.Sprintf("已完成 %d/%d · %.0f%%", completedCount, len(sendTasks), overallRatio*100)).FontSize(11).TextColor(pal.TextMuted)
 		})
@@ -2793,7 +2829,18 @@ func (a *App) buildFileDistributeProgress(c *ui.Context, pal theme.Palette) {
 		if maxShow > 4 {
 			maxShow = 4
 		}
-		for _, tk := range sendTasks[:maxShow] {
+		active := make([]*core.TransferTask, 0, len(sendTasks))
+		for _, tk := range sendTasks {
+			if tk.Status != "completed" {
+				active = append(active, tk)
+			}
+		}
+		for _, tk := range sendTasks {
+			if tk.Status == "completed" {
+				active = append(active, tk)
+			}
+		}
+		for _, tk := range active[:maxShow] {
 			ratio := 0.0
 			if tk.TotalBytes > 0 {
 				ratio = float64(tk.DoneBytes) / float64(tk.TotalBytes)
@@ -2824,6 +2871,9 @@ func (a *App) buildFileDistributeProgress(c *ui.Context, pal theme.Palette) {
 				})
 				ui.Progress(c, ratio).Height(4)
 			})
+		}
+		if hidden := len(sendTasks) - maxShow; hidden > 0 {
+			ui.Text(c, fmt.Sprintf("还有 %d 个文件未显示", hidden)).FontSize(11).TextColor(pal.TextMuted)
 		}
 	})
 }
@@ -2994,6 +3044,12 @@ func (a *App) DistributeQueue() {
 	a.fileSending = true
 	a.statusNote = fmt.Sprintf("正在向 %d 台学生分发 %d 个文件...", len(targets), len(items))
 	a.mu.Unlock()
+	a.fileDistHidden = make(map[string]bool)
+	for _, tk := range a.opts.Files.ListTasks() {
+		if tk.Direction == core.TransferSend {
+			a.fileDistHidden[tk.ID] = true
+		}
+	}
 	ctx, ok := a.lifecycleContext()
 	if !ok {
 		a.mu.Lock()
@@ -3232,7 +3288,7 @@ func (a *App) buildGroupBottomBar(c *ui.Context, pal theme.Palette) {
 	groups := a.listGroups()
 	ui.Row(c).FillWidth().Padding(6, 12).Gap(6).Background(pal.ChromeBar).
 		BorderWidth(1, 0, 0, 0).BorderColor(pal.CardBorder).AlignItems(ui.Center).Children(func() {
-		defBtn := ui.Button(c, "默认分组").Padding(4, 12).Radius(3)
+		defBtn := ui.Button(c, "全部设备").Padding(4, 12).Radius(3)
 		if a.selectedGroup == "" || a.selectedGroup == "all" {
 			defBtn.Background(pal.Selection).Border(1, pal.Accent)
 		}
@@ -3242,10 +3298,30 @@ func (a *App) buildGroupBottomBar(c *ui.Context, pal theme.Palette) {
 
 		for _, g := range groups {
 			g := g
+			if a.renamingGroupID == g.ID {
+				inp := ui.TextInput(c, &a.renameGroupInput).Key("grp-rename-" + g.ID).Width(130).AutoFocus()
+				if inp.Submitted() || ui.PrimaryButton(c, "确定").Key("grp-rename-ok-"+g.ID).Padding(4, 10).Clicked() {
+					a.renameGroup(g.ID, a.renameGroupInput)
+				}
+				if ui.Button(c, "取消").Key("grp-rename-cancel-"+g.ID).Padding(4, 8).Clicked() {
+					a.renamingGroupID = ""
+				}
+				continue
+			}
 			btn := ui.Button(c, g.Name).Key("grp-"+g.ID).Padding(4, 12).Radius(3)
 			if a.selectedGroup == g.ID {
 				btn.Background(pal.Selection).Border(1, pal.Accent)
 			}
+			btn.Tooltip("右键可重命名或删除分组")
+			btn.ContextMenu(func(m *ui.Menu) {
+				if m.Item("重命名分组").Chosen() {
+					a.renamingGroupID = g.ID
+					a.renameGroupInput = g.Name
+				}
+				if m.Item("删除分组").Chosen() {
+					a.deleteGroup(g.ID)
+				}
+			})
 			if btn.Clicked() {
 				a.selectedGroup = g.ID
 			}
@@ -3271,6 +3347,54 @@ func (a *App) buildGroupBottomBar(c *ui.Context, pal theme.Palette) {
 }
 
 func (a *App) createGroup(name string) {
+	a.createGroupNamed(name)
+}
+
+// saveGroupList pushes a group list into the classroom and persists it.
+func (a *App) saveGroupList(groups []core.GroupInfo) {
+	if a.opts.Classroom != nil {
+		a.opts.Classroom.SetGroups(groups)
+	}
+	if a.store != nil {
+		_ = a.store.SaveGroups(groups)
+	}
+}
+
+func (a *App) renameGroup(id, name string) {
+	name = strings.TrimSpace(name)
+	a.renamingGroupID = ""
+	if name == "" {
+		return
+	}
+	groups := a.listGroups()
+	for i := range groups {
+		if groups[i].ID == id {
+			groups[i].Name = name
+		}
+	}
+	a.saveGroupList(groups)
+	a.statusNote = "已重命名分组: " + name
+}
+
+func (a *App) deleteGroup(id string) {
+	groups := a.listGroups()
+	kept := groups[:0]
+	name := ""
+	for _, g := range groups {
+		if g.ID == id {
+			name = g.Name
+			continue
+		}
+		kept = append(kept, g)
+	}
+	a.saveGroupList(kept)
+	if a.selectedGroup == id {
+		a.selectedGroup = "all"
+	}
+	a.statusNote = "已删除分组: " + name + "（组内设备回到全部设备）"
+}
+
+func (a *App) createGroupNamed(name string) {
 	name = strings.TrimSpace(name)
 	groups := a.listGroups()
 	if name == "" {
@@ -3961,7 +4085,7 @@ func (a *App) launchRemoteApp() {
 		RequestID:  a.remoteRequestID,
 		Executable: strings.TrimSpace(a.remoteExecutable),
 		Arguments:  a.remoteArguments,
-		WorkingDir: a.remoteWorkDir,
+		WorkingDir: strings.TrimSpace(a.remoteWorkDir),
 		Wait:       false,
 	}, targets)
 	a.statusNote = "已发送远程启动请求"
@@ -3984,7 +4108,7 @@ func (a *App) runRemoteCommand() {
 		RequestID:  a.remoteRequestID,
 		Shell:      shell,
 		Command:    command,
-		WorkingDir: a.remoteWorkDir,
+		WorkingDir: strings.TrimSpace(a.remoteCmdWorkDir),
 		TimeoutSec: int(a.remoteTimeout),
 	}, targets)
 	a.remoteResult = &remoteexec.CommandResult{RequestID: a.remoteRequestID, Status: "running"}
@@ -4061,10 +4185,6 @@ func (a *App) buildRemoteExecModal(c *ui.Context, pal theme.Palette) {
 				if commandButton.Clicked() {
 					a.remoteExecPanel = remoteExecPanelCommand
 				}
-				ui.Divider(c)
-				if ui.Button(c, "刷新应用").FillWidth().Padding(5, 8).Clicked() {
-					a.requestRemoteApps()
-				}
 			})
 			ui.Column(c).Grow(1).FillHeight().Gap(8).Children(func() {
 				if a.remoteExecPanel == remoteExecPanelLaunch {
@@ -4078,17 +4198,39 @@ func (a *App) buildRemoteExecModal(c *ui.Context, pal theme.Palette) {
 }
 
 func (a *App) buildRemoteLaunchPanel(c *ui.Context, pal theme.Palette) {
-	ui.Text(c, "启动程序").FontSize(14).Bold()
-	ui.Text(c, "应用列表来自学生端控制面板中的“程序和功能”").FontSize(11).TextColor(pal.TextMuted)
+	ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(8).Children(func() {
+		ui.Text(c, "启动程序").FontSize(14).Bold()
+		ui.Spacer(c)
+		if ui.Button(c, "获取应用列表").Padding(3, 10).Clicked() {
+			a.requestRemoteApps()
+		}
+	})
+	ui.Text(c, "应用列表来自选中学生机控制面板中的“程序和功能”，也可直接填写程序路径").FontSize(11).TextColor(pal.TextMuted)
 	ui.Scroll(c).Grow(1).FillWidth().ScrollbarAxes(false, true).Scrollbars(true).KeepScrollbars(true).Background(pal.Card).Border(1, pal.CardBorder).Padding(8).Children(func() {
+		if len(a.remoteApps) == 0 {
+			ui.Box(c).FillWidth().Padding(20).Center().Children(func() {
+				ui.Text(c, "暂无应用，请先选择学生机并点击「获取应用列表」").FontSize(12).TextColor(pal.TextMuted)
+			})
+			return
+		}
 		for _, app := range a.remoteApps {
 			appCopy := app
-			ui.Row(c).Key("remote-app-"+app.ID).FillWidth().AlignItems(ui.Center).Gap(6).Padding(4, 0).Children(func() {
+			row := ui.Row(c).Key("remote-app-"+app.ID).FillWidth().AlignItems(ui.Center).Gap(6).Padding(4, 6).Radius(3)
+			picked := a.remoteAppPicked == app.ID
+			if picked {
+				row.Background(pal.Selection).Border(1, pal.CardBorder)
+			}
+			row.Children(func() {
 				ui.Column(c).Grow(1).Gap(2).Children(func() {
 					ui.Text(c, appCopy.Name).FontSize(12).SingleLine()
 					ui.Text(c, appCopy.Executable).FontSize(10).SingleLine().TextColor(pal.TextMuted)
 				})
-				if ui.Button(c, "选择").Padding(2, 8).Clicked() {
+				label := "选择"
+				if picked {
+					label = "已选择"
+				}
+				if ui.Button(c, label).Padding(2, 8).Clicked() {
+					a.remoteAppPicked = appCopy.ID
 					a.remoteExecutable = appCopy.Executable
 					a.remoteWorkDir = appCopy.WorkingDir
 				}
@@ -4111,8 +4253,8 @@ func (a *App) buildRemoteCommandPanel(c *ui.Context, pal theme.Palette) {
 		ui.Text(c, "超时秒数").FontSize(12).Bold()
 		ui.NumberInput(c, &a.remoteTimeout, 1, 600, 1).Width(90)
 	})
-	ui.TextInput(c, &a.remoteWorkDir).Placeholder("工作目录，可选")
-	ui.TextInput(c, &a.remoteCommand).Placeholder("输入 CMD 或 PowerShell 命令").FillWidth()
+	ui.TextInput(c, &a.remoteCmdWorkDir).Placeholder("工作目录，可选")
+	ui.TextArea(c, &a.remoteCommand).Placeholder("输入 CMD 或 PowerShell 命令，可多行").FillWidth().Lines(3, 6)
 	ui.Row(c).Gap(8).Children(func() {
 		if ui.PrimaryButton(c, "开始执行").Clicked() {
 			a.runRemoteCommand()
