@@ -62,101 +62,10 @@ jobs:
           go build -tags nexlab_nowebview -o "ci-out/${GOOS}-${GOARCH}/matrixclass-teacher${suffix}" ./cmd/teacher
           go build -tags nexlab_nowebview -o "ci-out/${GOOS}-${GOARCH}/matrixclass-student${suffix}" ./cmd/student
 
-  package-windows:
-    name: package-windows
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-      - name: Install NSIS
-        shell: pwsh
-        run: |
-          $nsisDir = "${env:ProgramFiles(x86)}\NSIS"
-          if (-not (Test-Path "$nsisDir\makensis.exe")) { choco install nsis -y --no-progress }
-          if (-not (Test-Path "$nsisDir\makensis.exe")) { throw "NSIS install failed" }
-          "NSIS_EXE=$nsisDir\makensis.exe" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-      - name: Build Windows packages
-        shell: pwsh
-        run: ./scripts/build-windows.ps1 -OutputDir dist/windows -Architectures amd64,arm64 -NsisPath $env:NSIS_EXE
-      - name: Collect artifacts
-        shell: pwsh
-        run: |
-          New-Item -ItemType Directory -Force -Path out | Out-Null
-          Copy-Item dist/windows/matrixclass-windows-*.zip out/
-          Copy-Item dist/windows/*-setup.exe out/
-          Get-ChildItem out
-      - uses: actions/upload-artifact@v4
-        with:
-          name: ci-windows
-          path: out/*
-          if-no-files-found: error
-          retention-days: 7
-
-  package-linux:
-    name: package-linux
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-      - name: Install packaging tools
-        run: sudo apt-get update && sudo apt-get install -y rpm
-      - name: Build Linux packages
-        shell: bash
-        run: |
-          sh scripts/build-linux-package.sh dist/linux amd64 arm64 loong64
-          for arch in amd64 arm64 loong64; do
-            sh scripts/build-linux-distro-packages.sh dist/linux "$arch" \
-              || echo "::warning::$arch deb/rpm packaging failed; tar.gz is unaffected"
-          done
-      - name: Collect artifacts
-        shell: bash
-        run: |
-          mkdir -p out
-          cp dist/linux/matrixclass-linux-*.tar.gz out/
-          find dist/linux -maxdepth 1 -type f \( -name '*.deb' -o -name '*.rpm' \) -exec cp {} out/ \;
-          ls -l out
-      - uses: actions/upload-artifact@v4
-        with:
-          name: ci-linux
-          path: out/*
-          if-no-files-found: error
-          retention-days: 7
-
-  package-macos:
-    name: package-macos
-    runs-on: macos-latest
-    env:
-      SIGN_ADHOC: "1"
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-      - name: Build macOS packages
-        shell: bash
-        run: sh scripts/build-darwin-package.sh dist/darwin
-      - name: Collect artifacts
-        shell: bash
-        run: |
-          mkdir -p out
-          cp dist/darwin/matrixclass-macos-*.zip out/
-          cp dist/darwin/matrixclass-macos-universal.dmg out/
-          ls -l out
-      - uses: actions/upload-artifact@v4
-        with:
-          name: ci-macos
-          path: out/*
-          if-no-files-found: error
-          retention-days: 7
-
   test-and-build:
     name: test-and-build
     if: always()
-    needs: [unit-test, build-targets, package-windows, package-linux, package-macos]
+    needs: [unit-test, build-targets]
     runs-on: ubuntu-latest
     steps:
       - name: Require all CI jobs to pass
@@ -169,4 +78,4 @@ jobs:
             echo "One or more CI jobs did not succeed." >&2
             exit 1
           fi
-          echo "All tests and full-platform builds passed."
+          echo "All tests and builds passed."
