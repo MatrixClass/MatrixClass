@@ -54,6 +54,7 @@ tools              构建辅助工具
 - **语言**：Go
 - **界面**：MyGo 原生 UI，构建标签为 `mygo_nowebview`
 - **网络**：KCP ARQ、SMUX、UDP 广播发现、组播和 KCP 回退
+- **安全**：Ed25519 教师身份签名、X25519 密钥交换、AES-256-GCM 会话加密
 - **视频**：屏幕采集、Tile-Delta/Zstd 和平台硬件编码
 - **音频**：Windows WASAPI、Linux PipeWire/PulseAudio、macOS CoreAudio
 - **数据**：SQLite
@@ -124,6 +125,18 @@ Linux 支持 KCP/SMUX 网络、文件传输、课堂消息、Linux Shell 远程�
 - LoongArch64 已纳入构建目标，但仍应在真实龙芯 Linux 桌面环境验证 UI、屏幕采集和音频能力。
 
 macOS Intel 和 Apple Silicon 均提供构建目标，Universal 2 包同时包含 `amd64` 与 `arm64`。屏幕录制、麦克风、辅助功能和远程输入必须在系统设置中授权。没有 Apple Developer 证书时生成的应用和 DMG 不带 Apple 签名与公证。
+
+## 教师身份与通信安全
+
+同一网段里，任何人都可能运行一个教师端。为防止冒充的教师端控制学生机：
+
+- 教师端首次启动时，在数据目录生成 Ed25519 身份密钥 `teacher-identity.key`。指纹显示在「设置 → 网络」和「关于」页。
+- 教师端对发现广播签名；每个学生连接都要先完成握手，由教师端用身份密钥签名。之后控制、媒体和文件流量全部用 AES-256-GCM 加密。组播画面使用每次启动随机生成的密钥，只通过已认证的通道下发。
+- 学生端默认信任首次连接的教师端（TOFU），并把指纹保存到数据目录的 `trusted-teacher.txt`。之后只接受这个指纹签名的教师端。
+- 在共享网络里，建议预先固定指纹：首次设置界面或「参数设置」里填写教师端指纹，或批量部署时使用 `student -teacher-fingerprint XXXX-...`。
+- 多台教师机共管同一课堂时，把 `teacher-identity.key` 复制到其他教师机。更换密钥后，需在学生端参数设置中清空或更新指纹。
+
+注意：密钥文件等同于课堂控制权，请勿外传。学生端以普通用户身份运行时，仍可能被拥有本机管理员权限的人修改信任文件。
 
 ## CI 与 Pull Request
 
