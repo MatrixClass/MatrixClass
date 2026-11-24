@@ -290,12 +290,12 @@ On Windows its executable still has the code that would load WebView2,
 and that code's strings: `WebView2Loader.dll`, `msedgewebview2.exe`,
 `CreateCoreWebView2EnvironmentWithOptions`, `WEBVIEW2_USER_DATA_FOLDER`.
 For an unsigned executable, antivirus heuristics may take those for a
-signal. The build tag `mygo_nowebview` leaves WebView2 out of the Windows
+signal. The build tag `nexlab_nowebview` leaves WebView2 out of the Windows
 backend, and some 500 KB with it:
 
 ```sh
-GOFLAGS=-tags=mygo_nowebview go tool mygo build -platform windows/amd64
-GOOS=windows go build -tags mygo_nowebview .
+GOFLAGS=-tags=nexlab_nowebview go tool mygo build -platform windows/amd64
+GOOS=windows go build -tags nexlab_nowebview .
 ```
 
 `mygo build` adds the tags of `GOFLAGS` to its own. Built with the tag, the

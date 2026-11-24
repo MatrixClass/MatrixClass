@@ -635,10 +635,10 @@ features GTK 4 lacks become X11-only code beside it.
   User data lives in `%LOCALAPPDATA%\<name>\WebView2`. The direct path applies
   `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS` and `WEBVIEW2_USER_DATA_FOLDER` as
   the loader does; it does not read the channel variables or policy keys.
-- **Without WebView2 (`mygo_nowebview`).** What creates the environment
+- **Without WebView2 (`nexlab_nowebview`).** What creates the environment
   (`startEnvironment`, `createEnvironment`, the loader and the runtime's
   lookup, `WebViewAvailable`) is in `webview2_env.go`, the only file
-  that imports `internal/webview2`. The tag `mygo_nowebview` builds
+  that imports `internal/webview2`. The tag `nexlab_nowebview` builds
   `webview2_env_off.go` instead: `startEnvironment` returns
   `errBuiltWithoutWebView`, so `NewWindow` of a page fails (and
   `mygo.NewWindow` panics with it), as do `NewWebView` and the cookie

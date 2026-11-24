@@ -1,4 +1,4 @@
-//go:build windows && (amd64 || arm64) && !mygo_nowebview
+//go:build windows && (amd64 || arm64) && !nexlab_nowebview
 
 package windows
 
@@ -15,7 +15,7 @@ import (
 )
 
 // webViewBuilt tells that the backend has WebView2: apps built with the tag
-// mygo_nowebview have none (webview2_env_off.go), and the compiler leaves
+// nexlab_nowebview have none (webview2_env_off.go), and the compiler leaves
 // out what creates web views behind it.
 const webViewBuilt = true
 

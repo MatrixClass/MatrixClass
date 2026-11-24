@@ -4,7 +4,7 @@
 $ErrorActionPreference = "Stop"
 # $PSScriptRoot is scripts/lib when this file is dot-sourced.
 $script:RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "../..")).Path
-$script:BuildTags = "mygo_nowebview"
+$script:BuildTags = "nexlab_nowebview"
 $script:OnWindows = ($env:OS -eq "Windows_NT")
 
 # Targets with a native mygo backend (UI starts). Everything else is compile-only.

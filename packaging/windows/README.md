@@ -5,7 +5,7 @@
 - `matrixclass-teacher.exe`：教师端
 - `matrixclass-student.exe`：学生端
 
-两个程序均为 `-H windowsgui` 构建的纯 Go GUI 程序（`CGO_ENABLED=0`，`-tags mygo_nowebview`），启动时不弹出控制台窗口，无需安装运行库，解压即可运行。
+两个程序均为 `-H windowsgui` 构建的纯 Go GUI 程序（`CGO_ENABLED=0`，`-tags nexlab_nowebview`），启动时不弹出控制台窗口，无需安装运行库，解压即可运行。
 
 ## 支持架构
 

@@ -42,7 +42,7 @@ jobs:
 
       - name: Run unit tests
         if: matrix.target.os == 'linux' && matrix.target.arch == 'amd64'
-        run: go test -tags mygo_nowebview -count=1 ./...
+        run: go test -tags nexlab_nowebview -count=1 ./...
 
       - name: Build teacher and student clients
         shell: bash
@@ -54,8 +54,8 @@ jobs:
           mkdir -p "ci-out/${GOOS}-${GOARCH}"
           suffix=""
           if [ "$GOOS" = "windows" ]; then suffix=".exe"; fi
-          go build -tags mygo_nowebview -o "ci-out/${GOOS}-${GOARCH}/matrixclass-teacher${suffix}" ./cmd/teacher
-          go build -tags mygo_nowebview -o "ci-out/${GOOS}-${GOARCH}/matrixclass-student${suffix}" ./cmd/student
+          go build -tags nexlab_nowebview -o "ci-out/${GOOS}-${GOARCH}/matrixclass-teacher${suffix}" ./cmd/teacher
+          go build -tags nexlab_nowebview -o "ci-out/${GOOS}-${GOARCH}/matrixclass-student${suffix}" ./cmd/student
 
   test-and-build:
     name: test-and-build

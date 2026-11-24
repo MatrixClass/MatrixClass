@@ -23,8 +23,8 @@ jobs:
         shell: bash
         run: |
           mkdir -p dist/linux
-          GOOS=linux GOARCH=${{ matrix.arch }} CGO_ENABLED=0 go build -tags mygo_nowebview -o dist/linux/matrixclass-teacher-linux-${{ matrix.arch }} ./cmd/teacher
-          GOOS=linux GOARCH=${{ matrix.arch }} CGO_ENABLED=0 go build -tags mygo_nowebview -o dist/linux/matrixclass-student-linux-${{ matrix.arch }} ./cmd/student
+          GOOS=linux GOARCH=${{ matrix.arch }} CGO_ENABLED=0 go build -tags nexlab_nowebview -o dist/linux/matrixclass-teacher-linux-${{ matrix.arch }} ./cmd/teacher
+          GOOS=linux GOARCH=${{ matrix.arch }} CGO_ENABLED=0 go build -tags nexlab_nowebview -o dist/linux/matrixclass-student-linux-${{ matrix.arch }} ./cmd/student
       - name: Build tar package
         shell: bash
         run: ./scripts/build-linux-package.sh dist/linux ${{ matrix.arch }}

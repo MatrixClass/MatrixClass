@@ -1,4 +1,4 @@
-//go:build windows && (amd64 || arm64) && !mygo_nowebview
+//go:build windows && (amd64 || arm64) && !nexlab_nowebview
 
 package windows
 

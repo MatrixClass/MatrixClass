@@ -2,7 +2,7 @@
 #   . "$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)/lib/common.sh"
 
 repo_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-build_tags=${BUILD_TAGS:-mygo_nowebview}
+build_tags=${BUILD_TAGS:-nexlab_nowebview}
 
 # Targets with a native mygo UI backend. Other targets remain compile-only.
 supported_windows="amd64 arm64"
