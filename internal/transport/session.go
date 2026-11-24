@@ -552,11 +552,35 @@ func (l *KCPListener) Close() error {
 
 // DialKCP opens a KCPConn to the remote UDP address.
 func DialKCP(addr string, cfg KCPConfig) (*KCPConn, error) {
+	return DialKCPWithNetwork(addr, cfg, DefaultNetworkConfig())
+}
+
+func DialKCPWithNetwork(addr string, cfg KCPConfig, network NetworkConfig) (*KCPConn, error) {
 	raddr, err := net.ResolveUDPAddr("udp4", addr)
 	if err != nil {
 		return nil, err
 	}
-	pc, err := net.ListenPacket("udp4", ":0")
+	var localAddr *net.UDPAddr
+	if network.Mode == NetworkModeSingle && network.InterfaceName != "" {
+		iface, err := net.InterfaceByName(network.InterfaceName)
+		if err != nil {
+			return nil, err
+		}
+		addrs, err := iface.Addrs()
+		if err != nil {
+			return nil, err
+		}
+		for _, addr := range addrs {
+			if ipNet, ok := addr.(*net.IPNet); ok && ipNet.IP.To4() != nil {
+				localAddr = &net.UDPAddr{IP: ipNet.IP.To4(), Port: 0}
+				break
+			}
+		}
+		if localAddr == nil {
+			return nil, fmt.Errorf("transport: interface %q has no IPv4 address", network.InterfaceName)
+		}
+	}
+	pc, err := net.ListenUDP("udp4", localAddr)
 	if err != nil {
 		return nil, err
 	}

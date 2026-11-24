@@ -31,6 +31,7 @@ type DiscoveryConfig struct {
 	Port          int
 	BroadcastAddr string
 	Interval      time.Duration
+	Network       NetworkConfig
 }
 
 var (
@@ -39,12 +40,19 @@ var (
 )
 
 func usableInterfaces(interfaces []net.Interface) []net.Interface {
+	return usableInterfacesWithConfig(interfaces, NetworkConfig{Mode: NetworkModeMulti})
+}
+
+func usableInterfacesWithConfig(interfaces []net.Interface, network NetworkConfig) []net.Interface {
 	usable := make([]net.Interface, 0, len(interfaces))
 	for _, iface := range interfaces {
 		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
 			continue
 		}
 		if iface.Flags&(net.FlagBroadcast|net.FlagMulticast) == 0 {
+			continue
+		}
+		if interfaceIgnored(iface, network) {
 			continue
 		}
 		usable = append(usable, iface)
@@ -68,12 +76,17 @@ type BeaconBroadcaster struct {
 	explicit string
 	mu       sync.RWMutex
 	interval time.Duration
+	network  NetworkConfig
 	conn     *net.UDPConn
 	done     chan struct{}
 	once     sync.Once
 }
 
 func collectBroadcastTargets(port int, explicit string) []*net.UDPAddr {
+	return collectBroadcastTargetsWithConfig(port, explicit, DefaultNetworkConfig())
+}
+
+func collectBroadcastTargetsWithConfig(port int, explicit string, network NetworkConfig) []*net.UDPAddr {
 	seen := make(map[string]struct{})
 	var addrs []*net.UDPAddr
 	add := func(host string) {
@@ -100,7 +113,7 @@ func collectBroadcastTargets(port int, explicit string) []*net.UDPAddr {
 
 	add("255.255.255.255")
 	if ifaces, err := interfaceEnumerator(); err == nil {
-		for _, iface := range usableInterfaces(ifaces) {
+		for _, iface := range usableInterfacesWithConfig(ifaces, network) {
 			if iface.Flags&net.FlagBroadcast == 0 {
 				continue
 			}
@@ -139,13 +152,14 @@ func StartBeaconBroadcaster(ctx context.Context, beacon protocol.DiscoveryBeacon
 	if err != nil {
 		return nil, err
 	}
-	targets := collectBroadcastTargets(cfg.Port, cfg.BroadcastAddr)
+	targets := collectBroadcastTargetsWithConfig(cfg.Port, cfg.BroadcastAddr, cfg.Network)
 	b := &BeaconBroadcaster{
 		beacon:   beacon,
 		targets:  targets,
 		port:     cfg.Port,
 		explicit: cfg.BroadcastAddr,
 		interval: cfg.Interval,
+		network:  cfg.Network.normalized(),
 		conn:     conn,
 		done:     make(chan struct{}),
 	}
@@ -184,7 +198,7 @@ func (b *BeaconBroadcaster) loop(ctx context.Context) {
 }
 
 func (b *BeaconBroadcaster) refreshTargets() {
-	targets := collectBroadcastTargets(b.port, b.explicit)
+	targets := collectBroadcastTargetsWithConfig(b.port, b.explicit, b.network)
 	b.mu.Lock()
 	b.targets = targets
 	b.mu.Unlock()

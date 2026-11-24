@@ -69,6 +69,13 @@ func WithDiscoveryConfig(cfg DiscoveryConfig) ManagerOption {
 	}
 }
 
+func WithNetworkConfig(cfg NetworkConfig) ManagerOption {
+	return func(m *Manager) {
+		m.networkConfig = cfg.normalized()
+		m.discoveryCfg.Network = m.networkConfig
+	}
+}
+
 func WithTeacherAddr(addr string) ManagerOption {
 	return func(m *Manager) {
 		m.explicitTeacherAddr = addr
@@ -191,6 +198,7 @@ type Manager struct {
 	networkWatcher   atomic.Bool
 	nackWatcher      atomic.Bool
 	studentChannel   string
+	networkConfig    NetworkConfig
 	connectionGen    atomic.Uint64
 
 	networkMu          sync.RWMutex
@@ -264,6 +272,7 @@ func NewManager(opts ...ManagerOption) *Manager {
 	m := &Manager{
 		kcpCfg:         DefaultKCPConfig(),
 		discoveryCfg:   DefaultDiscoveryConfig(),
+		networkConfig:  DefaultNetworkConfig(),
 		sessions:       make(map[string]*SmuxSession),
 		aliases:        make(map[string]*SmuxSession),
 		mcastConfirmed: make(map[*SmuxSession]bool),
@@ -284,6 +293,7 @@ func NewManager(opts ...ManagerOption) *Manager {
 	for _, opt := range opts {
 		opt(m)
 	}
+	m.discoveryCfg.Network = m.networkConfig
 	m.ring = make([]ringEntry, m.ringSize)
 	if m.fecDataShards > 0 && m.fecParityShards > 0 {
 		if enc, err := NewFECEncoder(m.fecDataShards, m.fecParityShards); err == nil {
@@ -381,6 +391,20 @@ func (m *Manager) NetworkStatus() NetworkStatus {
 		Reconnects:          m.reconnects,
 		LastReconnectReason: m.lastReconnectCause,
 	}
+}
+
+func (m *Manager) NetworkConfig() NetworkConfig {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.networkConfig
+}
+
+func (m *Manager) SetNetworkConfig(cfg NetworkConfig) {
+	cfg = cfg.normalized()
+	m.mu.Lock()
+	m.networkConfig = cfg
+	m.discoveryCfg.Network = cfg
+	m.mu.Unlock()
 }
 
 // StartTeacher starts KCP listener, discovery beacon broadcaster, and optional UDP multicast sender.
@@ -667,11 +691,12 @@ func (m *Manager) connectStudentOnce(channel string) error {
 	teacherAddr := m.explicitTeacherAddr
 	dPort := m.discoveryCfg.Port
 	explicitMcast := m.explicitMcastListen
+	networkConfig := m.networkConfig
 	m.mu.RUnlock()
 
 	var discovered DiscoveredTeacher
 	if teacherAddr == "" {
-		listenAddr := fmt.Sprintf(":%d", dPort)
+		listenAddr := discoveryListenAddr(dPort, networkConfig)
 		if dPort <= 0 {
 			listenAddr = fmt.Sprintf(":%d", DefaultDiscoveryPort)
 		}
@@ -687,7 +712,7 @@ func (m *Manager) connectStudentOnce(channel string) error {
 		teacherAddr = net.JoinHostPort(host, strconv.Itoa(d.Beacon.KCPPort))
 	}
 
-	kcpConn, err := DialKCP(teacherAddr, m.kcpCfg)
+	kcpConn, err := DialKCPWithNetwork(teacherAddr, m.kcpCfg, networkConfig)
 	if err != nil {
 		return err
 	}
@@ -717,7 +742,7 @@ func (m *Manager) connectStudentOnce(channel string) error {
 		mcastAddrStr = net.JoinHostPort(discovered.Beacon.MulticastIP, strconv.Itoa(discovered.Beacon.McastPort))
 	}
 	if mcastAddrStr != "" {
-		if err := m.startMulticastReceiver(mcastAddrStr); err != nil {
+		if err := m.startMulticastReceiverWithNetwork(mcastAddrStr, networkConfig); err != nil {
 			_ = err
 		}
 	}
@@ -786,6 +811,10 @@ func (m *Manager) scheduleStudentReconnect(closedGeneration uint64) {
 }
 
 func (m *Manager) startMulticastReceiver(addrStr string) error {
+	return m.startMulticastReceiverWithNetwork(addrStr, m.NetworkConfig())
+}
+
+func (m *Manager) startMulticastReceiverWithNetwork(addrStr string, network NetworkConfig) error {
 	m.mcastStartMu.Lock()
 	defer m.mcastStartMu.Unlock()
 	m.mu.RLock()
@@ -804,7 +833,7 @@ func (m *Manager) startMulticastReceiver(addrStr string) error {
 	}
 	var pc net.PacketConn
 	if udpAddr.IP != nil && udpAddr.IP.IsMulticast() {
-		mc, err := listenMulticastAllInterfaces(udpAddr)
+		mc, err := listenMulticastAllInterfaces(udpAddr, network)
 		if err != nil {
 			pc, err = net.ListenPacket("udp4", fmt.Sprintf(":%d", udpAddr.Port))
 			if err != nil {
@@ -848,13 +877,13 @@ func (m *Manager) startMulticastReceiver(addrStr string) error {
 	return nil
 }
 
-func listenMulticastAllInterfaces(addr *net.UDPAddr) (net.PacketConn, error) {
+func listenMulticastAllInterfaces(addr *net.UDPAddr, network NetworkConfig) (net.PacketConn, error) {
 	ifaces, err := net.Interfaces()
 	if err != nil {
 		return nil, err
 	}
 	var conns []*net.UDPConn
-	for _, iface := range usableInterfaces(ifaces) {
+	for _, iface := range usableInterfacesWithConfig(ifaces, network) {
 		conn, err := net.ListenMulticastUDP("udp4", &iface, addr)
 		if err != nil {
 			continue

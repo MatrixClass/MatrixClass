@@ -4,12 +4,15 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"image"
 	"math"
+	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -22,6 +25,7 @@ import (
 
 	"nexlab/internal/core"
 	"nexlab/internal/protocol"
+	"nexlab/internal/transport"
 	"nexlab/internal/ui/theme"
 )
 
@@ -35,17 +39,19 @@ type Services struct {
 }
 
 type Options struct {
-	StudentID        string
-	StudentName      string
-	StudentNo        string
-	MachineName      string
-	Channel          string
-	Dark             bool
-	ExitPasswordPath string
-	ChannelPath      string
-	InitialSetup     bool
-	OnSetupComplete  func(string)
-	Services         Services
+	StudentID               string
+	StudentName             string
+	StudentNo               string
+	MachineName             string
+	Channel                 string
+	Dark                    bool
+	ExitPasswordPath        string
+	ChannelPath             string
+	InitialSetup            bool
+	OnSetupComplete         func(string)
+	NetworkConfigPath       string
+	OnNetworkConfigComplete func(transport.NetworkConfig)
+	Services                Services
 }
 
 const (
@@ -118,6 +124,13 @@ type App struct {
 	passwordMode        string
 	channelInput        string
 	settingsError       string
+	networkConfigPath   string
+	networkConfig       transport.NetworkConfig
+	networkInterface    string
+	networkMode         string
+	ignoreVirtual       bool
+	ignoreVPN           bool
+	onNetworkConfig     func(transport.NetworkConfig)
 	onSetupComplete     func(string)
 	exitAuthorized      bool
 	fileReceiveItems    []receiveFileItem
@@ -171,29 +184,33 @@ func New(opts Options) *App {
 		opts.Channel = "1"
 	}
 	app := &App{
-		opts:             opts.Services,
-		studentID:        opts.StudentID,
-		studentNo:        opts.StudentNo,
-		machineName:      opts.MachineName,
-		channel:          opts.Channel,
-		dark:             opts.Dark,
-		exitPasswordPath: opts.ExitPasswordPath,
-		channelPath:      opts.ChannelPath,
-		onSetupComplete:  opts.OnSetupComplete,
-		mode:             ModeBar,
-		broadcastWindow:  true,
-		connected:        true,
-		lockMessage:      "课堂黑屏安静模式：请注意前方黑板或教师讲解。",
-		checkInNo:        opts.StudentNo,
-		checkInClass:     "",
-		checkInName:      "",
-		homeworkPath:     "",
-		statusNote:       "已连接频道: " + opts.Channel,
-		volume:           80,
-		examAnswers:      make(map[string]string),
-		recentNotices:    []string{"欢迎加入 矩联电子教室 MatrixClass"},
-		lastWinMode:      -1,
+		opts:              opts.Services,
+		studentID:         opts.StudentID,
+		studentNo:         opts.StudentNo,
+		machineName:       opts.MachineName,
+		channel:           opts.Channel,
+		dark:              opts.Dark,
+		exitPasswordPath:  opts.ExitPasswordPath,
+		channelPath:       opts.ChannelPath,
+		onSetupComplete:   opts.OnSetupComplete,
+		networkConfigPath: opts.NetworkConfigPath,
+		networkConfig:     transport.DefaultNetworkConfig(),
+		onNetworkConfig:   opts.OnNetworkConfigComplete,
+		mode:              ModeBar,
+		broadcastWindow:   true,
+		connected:         true,
+		lockMessage:       "课堂黑屏安静模式：请注意前方黑板或教师讲解。",
+		checkInNo:         opts.StudentNo,
+		checkInClass:      "",
+		checkInName:       "",
+		homeworkPath:      "",
+		statusNote:        "已连接频道: " + opts.Channel,
+		volume:            80,
+		examAnswers:       make(map[string]string),
+		recentNotices:     []string{"欢迎加入 矩联电子教室 MatrixClass"},
+		lastWinMode:       -1,
 	}
+	app.loadNetworkConfig()
 	app.exitPasswordHash = app.loadExitPasswordHash()
 	app.channelInput = app.channel
 	if configured := app.loadChannel(); configured != "" {
@@ -206,6 +223,82 @@ func New(opts Options) *App {
 	}
 	_ = app.Start(context.Background())
 	return app
+}
+
+func (a *App) loadNetworkConfig() {
+	if a.networkConfigPath != "" {
+		if data, err := os.ReadFile(a.networkConfigPath); err == nil {
+			_ = json.Unmarshal(data, &a.networkConfig)
+		}
+	}
+	a.networkConfig = a.networkConfig
+	a.networkMode = networkModeLabel(a.networkConfig.Mode)
+	a.networkInterface = a.networkConfig.InterfaceName
+	a.ignoreVirtual = a.networkConfig.IgnoreVirtual
+	a.ignoreVPN = a.networkConfig.IgnoreVPN
+}
+
+func (a *App) NetworkConfig() transport.NetworkConfig { return a.networkConfig }
+
+func (a *App) ApplyNetworkConfig(cfg transport.NetworkConfig) error {
+	cfg = cfg
+	if cfg.Mode != transport.NetworkModeSingle && cfg.Mode != transport.NetworkModeMulti {
+		cfg.Mode = transport.NetworkModeMulti
+	}
+	if cfg.Mode == transport.NetworkModeSingle && cfg.InterfaceName == "" {
+		return errors.New("单网卡模式必须选择网卡")
+	}
+	if a.networkConfigPath != "" {
+		if err := os.MkdirAll(filepath.Dir(a.networkConfigPath), 0o755); err != nil {
+			return err
+		}
+		data, err := json.MarshalIndent(cfg, "", "  ")
+		if err != nil {
+			return err
+		}
+		if err := os.WriteFile(a.networkConfigPath, append(data, '\n'), 0o600); err != nil {
+			return err
+		}
+	}
+	a.networkConfig = cfg
+	a.networkMode = networkModeLabel(cfg.Mode)
+	a.networkInterface = cfg.InterfaceName
+	a.ignoreVirtual = cfg.IgnoreVirtual
+	a.ignoreVPN = cfg.IgnoreVPN
+	if a.onNetworkConfig != nil {
+		a.onNetworkConfig(cfg)
+	}
+	a.statusNote = "网络参数已保存，正在重新连接"
+	return nil
+}
+
+func localInterfaceOptions() []string {
+	ifaces, _ := net.Interfaces()
+	options := []string{""}
+	for _, iface := range ifaces {
+		if iface.Flags&net.FlagUp != 0 && iface.Flags&net.FlagLoopback == 0 {
+			options = append(options, iface.Name)
+		}
+	}
+	return options
+}
+
+func networkModeOptions() []string {
+	return []string{"多网卡（自动）", "单网卡（手动选择）"}
+}
+
+func networkModeLabel(mode transport.NetworkMode) string {
+	if mode == transport.NetworkModeSingle {
+		return "单网卡（手动选择）"
+	}
+	return "多网卡（自动）"
+}
+
+func networkModeValue(label string) transport.NetworkMode {
+	if label == "单网卡（手动选择）" {
+		return transport.NetworkModeSingle
+	}
+	return transport.NetworkModeMulti
 }
 
 // Start begins UI-owned background work. Repeated calls are harmless.
@@ -493,9 +586,9 @@ func (a *App) setBarHovered(hovered bool) {
 	}
 }
 
-// InstallTray creates the native system tray icon and menu for the student client.
-func (a *App) InstallTray() {
-	menu := mygo.NewMenu([]*mygo.MenuItem{
+// BuildTrayMenu creates the native context menu for the student tray icon.
+func (a *App) BuildTrayMenu() *mygo.Menu {
+	return mygo.NewMenu([]*mygo.MenuItem{
 		{Label: "显示/隐藏悬浮条", Click: func(_ *mygo.MenuItem, _ *mygo.Window) { a.ShowFloatingBar() }},
 		{Label: "举手提问", Click: func(_ *mygo.MenuItem, _ *mygo.Window) { a.ToggleHandRaise() }},
 		{Label: "作业提交", Click: func(_ *mygo.MenuItem, _ *mygo.Window) { a.OpenMode(ModeHomeworkSubmit) }},
@@ -505,14 +598,28 @@ func (a *App) InstallTray() {
 		mygo.Separator(),
 		{Label: "退出学生端", Click: func(_ *mygo.MenuItem, _ *mygo.Window) { a.RequestExit() }},
 	})
+}
+
+// InstallTray creates the native system tray icon and menu for the student client.
+func (a *App) InstallTray() {
+	menu := a.BuildTrayMenu()
 	tray, err := mygo.NewTray(mygo.TrayOptions{
 		ID:      "nexlab-student",
 		Icon:    theme.AppIconPNG(false),
 		ToolTip: "矩联电子教室 MatrixClass 学生端 - " + a.channel,
-		Menu:    menu,
 	})
 	if err == nil {
-		tray.OnClick(func() { a.ShowFloatingBar() })
+		if runtime.GOOS == "linux" {
+			// AppIndicator primarily exposes a menu on Linux panels.
+			tray.SetMenu(menu)
+		} else {
+			tray.OnClick(func() { a.ShowFloatingBar() })
+			tray.OnRightClick(func() {
+				tray.SetMenu(menu)
+				defer tray.SetMenu(nil)
+				tray.PopUpMenu()
+			})
+		}
 		a.mu.Lock()
 		a.tray = tray
 		a.mu.Unlock()
@@ -667,12 +774,18 @@ func (a *App) showExitPasswordWindow(setup bool) {
 	}
 	mainWin.Update(func() {
 		if w == nil {
+			windowHeight := 250
+			minWindowHeight := 220
+			if setup {
+				windowHeight = 380
+				minWindowHeight = 340
+			}
 			w = mygo.NewWindow(mygo.WindowOptions{
 				Title:       "学生端退出密码",
 				Width:       420,
-				Height:      250,
+				Height:      windowHeight,
 				MinWidth:    380,
-				MinHeight:   220,
+				MinHeight:   minWindowHeight,
 				AlwaysOnTop: true,
 				Frameless:   false,
 				Content:     ui.View(a.ExitPasswordView),
@@ -762,6 +875,10 @@ func (a *App) showSettingsWindow() {
 	a.mu.Lock()
 	mainWin := a.win
 	a.channelInput = a.channel
+	a.networkMode = networkModeLabel(a.networkConfig.Mode)
+	a.networkInterface = a.networkConfig.InterfaceName
+	a.ignoreVirtual = a.networkConfig.IgnoreVirtual
+	a.ignoreVPN = a.networkConfig.IgnoreVPN
 	a.settingsError = ""
 	w := a.settingsWin
 	a.mu.Unlock()
@@ -770,7 +887,7 @@ func (a *App) showSettingsWindow() {
 	}
 	mainWin.Update(func() {
 		if w == nil {
-			w = mygo.NewWindow(mygo.WindowOptions{Title: "学生端参数设置", Width: 420, Height: 220, MinWidth: 380, MinHeight: 200, AlwaysOnTop: true, Frameless: false, Content: ui.View(a.SettingsView)})
+			w = mygo.NewWindow(mygo.WindowOptions{Title: "学生端参数设置", Width: 460, Height: 420, MinWidth: 400, MinHeight: 360, AlwaysOnTop: true, Frameless: false, Content: ui.View(a.SettingsView)})
 			w.OnClosed(func() {
 				a.mu.Lock()
 				if a.settingsWin == w {
@@ -797,8 +914,22 @@ func (a *App) SettingsView(c *ui.Context) {
 		ui.Text(c, "学生端参数设置").FontSize(17).Bold()
 		ui.Text(c, "修改频道后将按新频道重新连接。").FontSize(12).TextColor(theme.GetPalette(false).TextMuted)
 		ui.TextInput(c, &a.channelInput).Placeholder("频道 ID（仅数字）").FillWidth().AutoFocus()
+		ui.Text(c, "网络连接模式").FontSize(12).Bold()
+		if ui.Select(c, &a.networkMode, networkModeOptions()).Changed() {
+			a.Invalidate()
+		}
+		if networkModeValue(a.networkMode) == transport.NetworkModeSingle {
+			ui.Text(c, "手动选择监听网卡").FontSize(12).TextColor(theme.GetPalette(false).TextMuted)
+			ui.Select(c, &a.networkInterface, localInterfaceOptions())
+		} else {
+			ui.Checkbox(c, &a.ignoreVirtual, "忽略虚拟机网卡")
+			ui.Checkbox(c, &a.ignoreVPN, "忽略 VPN 虚拟网卡")
+		}
 		if ui.PrimaryButton(c, "保存并重连").Clicked() {
+			cfg := transport.NetworkConfig{Mode: networkModeValue(a.networkMode), InterfaceName: a.networkInterface, IgnoreVirtual: a.ignoreVirtual, IgnoreVPN: a.ignoreVPN}
 			if err := a.saveChannel(a.channelInput); err != nil {
+				a.settingsError = err.Error()
+			} else if err := a.ApplyNetworkConfig(cfg); err != nil {
 				a.settingsError = err.Error()
 			} else {
 				a.statusNote = "正在切换频道 ID: " + a.channel

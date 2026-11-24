@@ -140,12 +140,23 @@ func NewRuntime(channel, studentID, studentNo, teacherAddr, recvDir string) (*Ru
 	})
 
 	app := student.New(student.Options{
-		StudentID:        studentID,
-		StudentNo:        studentNo,
-		MachineName:      host,
-		Channel:          channel,
-		ExitPasswordPath: filepath.Join(apppaths.Resolve("").DataDir, "student-exit-password.sha256"),
-		ChannelPath:      filepath.Join(apppaths.Resolve("").DataDir, "student-channel-id"),
+		StudentID:         studentID,
+		StudentNo:         studentNo,
+		MachineName:       host,
+		Channel:           channel,
+		ExitPasswordPath:  filepath.Join(apppaths.Resolve("").DataDir, "student-exit-password.sha256"),
+		ChannelPath:       filepath.Join(apppaths.Resolve("").DataDir, "student-channel-id"),
+		NetworkConfigPath: filepath.Join(apppaths.Resolve("").DataDir, "student-network.json"),
+		OnNetworkConfigComplete: func(cfg transport.NetworkConfig) {
+			tr.SetNetworkConfig(cfg)
+			if runtimeRef != nil {
+				go func() {
+					if err := runtimeRef.Transport.ReconnectStudent(context.Background(), runtimeRef.App.Channel()); err != nil {
+						runtimeRef.App.SetStatusNote("网络参数已保存，重连失败: " + err.Error())
+					}
+				}()
+			}
+		},
 		OnSetupComplete: func(newChannel string) {
 			if runtimeRef != nil {
 				runtimeRef.streamMu.Lock()
@@ -168,6 +179,7 @@ func NewRuntime(channel, studentID, studentNo, teacherAddr, recvDir string) (*Ru
 		},
 	})
 	appRef = app
+	tr.SetNetworkConfig(app.NetworkConfig())
 	channel = app.Channel()
 	tr.OnConnectionState(func(connected bool, reason string) {
 		if connected {
@@ -392,6 +404,20 @@ func (rt *Runtime) wireHandlers() {
 			}
 		case protocol.MsgExitPasswordReset:
 			rt.App.ResetExitPassword()
+		case protocol.MsgStudentNetworkConfig:
+			var cfg transport.NetworkConfig
+			if json.Unmarshal(env.Payload, &cfg) == nil {
+				if err := rt.App.ApplyNetworkConfig(cfg); err == nil {
+					rt.Transport.SetNetworkConfig(cfg)
+					go func() {
+						if err := rt.Transport.ReconnectStudent(context.Background(), rt.App.Channel()); err != nil {
+							rt.App.SetStatusNote("网络参数已保存，重连失败: " + err.Error())
+						}
+					}()
+				} else {
+					rt.App.SetStatusNote("网络参数无效: " + err.Error())
+				}
+			}
 		case protocol.MsgPowerCommand:
 			var req struct {
 				Action core.PowerAction `json:"action"`

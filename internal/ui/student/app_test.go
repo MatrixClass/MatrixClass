@@ -89,6 +89,46 @@ func TestStudentExitPasswordPersistsOnlyHash(t *testing.T) {
 	}
 }
 
+func TestStudentParameterSettingsRequiresExitPassword(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "student-exit-password.sha256")
+	app := New(Options{ExitPasswordPath: path})
+	if err := app.saveExitPassword("secret-123"); err != nil {
+		t.Fatalf("save exit password: %v", err)
+	}
+
+	app.OpenParameterSettings()
+	if app.passwordMode != "settings-auth" {
+		t.Fatalf("parameter settings should start in password auth mode, got %q", app.passwordMode)
+	}
+	if app.settingsWin != nil {
+		t.Fatal("parameter settings window must stay closed before password verification")
+	}
+	if hashExitPassword("wrong-password") == app.exitPasswordHash {
+		t.Fatal("wrong password unexpectedly matched the stored password hash")
+	}
+	if hashExitPassword("secret-123") != app.exitPasswordHash {
+		t.Fatal("configured password did not match the stored password hash")
+	}
+}
+
+func TestStudentTrayMenuIncludesParameterSettings(t *testing.T) {
+	app := newTestStudentApp()
+	menu := app.BuildTrayMenu()
+	if menu == nil {
+		t.Fatal("expected non-nil student tray menu")
+	}
+	found := false
+	for _, item := range menu.Items() {
+		if item.Label == "参数设置" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("student tray menu must include parameter settings")
+	}
+}
+
 func TestStudentChannelPersistsAndRejectsNonNumericValues(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "student-channel-id")
 	app := New(Options{ChannelPath: path})
