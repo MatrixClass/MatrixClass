@@ -210,9 +210,9 @@ func New(opts Options) *App {
 		app.channel = configured
 	}
 	if opts.InitialSetup || app.exitPasswordHash == "" || app.loadChannel() == "" {
-		app.passwordMode = "setup"
+		app.passwordMode = passwordModeSetup
 	} else {
-		app.passwordMode = "exit"
+		app.passwordMode = passwordModeExit
 	}
 	_ = app.Start(context.Background())
 	return app

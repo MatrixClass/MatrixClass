@@ -91,6 +91,12 @@ func networkModeValue(label string) transport.NetworkMode {
 	return transport.NetworkModeMulti
 }
 
+const (
+	passwordModeSetup    = "setup"
+	passwordModeExit     = "exit"
+	passwordModeSettings = "settings-auth"
+)
+
 func hashExitPassword(raw string) string {
 	sum := sha256.Sum256([]byte(raw))
 	return hex.EncodeToString(sum[:])
@@ -152,7 +158,7 @@ func (a *App) saveChannel(raw string) error {
 func (a *App) InitialSetupRequired() bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	return a.passwordMode == "setup"
+	return a.passwordMode == passwordModeSetup
 }
 
 func (a *App) Channel() string {
@@ -204,32 +210,53 @@ func (a *App) ExitPasswordConfigured() bool {
 }
 
 func (a *App) RequestExit() {
-	if a.exitPasswordHash == "" {
-		a.showExitPasswordWindow(true)
+	a.mu.Lock()
+	configured := a.exitPasswordHash != ""
+	a.mu.Unlock()
+	if !configured {
+		a.showPasswordWindow(passwordModeSetup)
 		return
 	}
-	a.showExitPasswordWindow(false)
+	a.showPasswordWindow(passwordModeExit)
 }
 
 func (a *App) OpenParameterSettings() {
 	a.mu.Lock()
-	a.passwordMode = "settings-auth"
-	a.exitPasswordInput = ""
-	a.exitPasswordError = ""
+	configured := a.exitPasswordHash != ""
 	a.mu.Unlock()
-	a.showExitPasswordWindow(false)
+	if !configured {
+		a.showPasswordWindow(passwordModeSetup)
+		return
+	}
+	a.showPasswordWindow(passwordModeSettings)
 }
 
 func (a *App) showExitPasswordWindow(setup bool) {
+	if setup {
+		a.showPasswordWindow(passwordModeSetup)
+		return
+	}
+	a.showPasswordWindow(passwordModeExit)
+}
+
+func passwordWindowTitle(mode string) string {
+	switch mode {
+	case passwordModeSetup:
+		return "学生端首次设置"
+	case passwordModeSettings:
+		return "学生端参数设置验证"
+	default:
+		return "退出学生端"
+	}
+}
+
+func (a *App) showPasswordWindow(mode string) {
+	setup := mode == passwordModeSetup
 	a.mu.Lock()
 	mainWin := a.win
 	w := a.exitPasswordWin
 	a.exitPasswordSetup = setup
-	if setup {
-		a.passwordMode = "setup"
-	} else if a.passwordMode != "settings-auth" {
-		a.passwordMode = "exit"
-	}
+	a.passwordMode = mode
 	a.exitPasswordInput = ""
 	a.exitPasswordConfirm = ""
 	a.exitPasswordError = ""
@@ -238,15 +265,15 @@ func (a *App) showExitPasswordWindow(setup bool) {
 		return
 	}
 	mainWin.Update(func() {
+		windowHeight := 250
+		minWindowHeight := 220
+		if setup {
+			windowHeight = 380
+			minWindowHeight = 340
+		}
 		if w == nil {
-			windowHeight := 250
-			minWindowHeight := 220
-			if setup {
-				windowHeight = 380
-				minWindowHeight = 340
-			}
 			w = mygo.NewWindow(mygo.WindowOptions{
-				Title:       "学生端退出密码",
+				Title:       passwordWindowTitle(mode),
 				Width:       420,
 				Height:      windowHeight,
 				MinWidth:    380,
@@ -266,6 +293,10 @@ func (a *App) showExitPasswordWindow(setup bool) {
 			a.mu.Lock()
 			a.exitPasswordWin = w
 			a.mu.Unlock()
+		} else {
+			w.SetTitle(passwordWindowTitle(mode))
+			w.SetMinimumSize(380, minWindowHeight)
+			w.SetSize(420, windowHeight)
 		}
 		w.SetAlwaysOnTop(true)
 		w.Show()
@@ -300,32 +331,41 @@ func (a *App) ExitPasswordView(c *ui.Context) {
 				} else if err := a.saveExitPassword(a.exitPasswordInput); err != nil {
 					a.exitPasswordError = "保存失败: " + err.Error()
 				} else {
-					a.passwordMode = "exit"
+					a.passwordMode = passwordModeExit
 					if a.onSetupComplete != nil {
 						a.onSetupComplete(a.channel)
 					}
 					a.closeExitPasswordWindow()
 				}
 			}
-		} else if mode == "settings-auth" {
+		} else if mode == passwordModeSettings {
 			ui.Text(c, "参数设置需要密码").FontSize(17).Bold()
-			ui.Text(c, "请输入退出密码后修改连接频道。").FontSize(12).TextColor(theme.GetPalette(false).TextMuted)
-			ui.TextInput(c, &a.exitPasswordInput).Password().Placeholder("退出密码").FillWidth().AutoFocus()
+			ui.Text(c, "请输入学生端密码后进入参数设置。").FontSize(12).TextColor(theme.GetPalette(false).TextMuted)
+			ui.TextInput(c, &a.exitPasswordInput).Password().Placeholder("学生端密码").FillWidth().AutoFocus()
 			if ui.PrimaryButton(c, "验证并继续").Clicked() {
 				if hashExitPassword(a.exitPasswordInput) != a.exitPasswordHash {
-					a.exitPasswordError = "退出密码错误"
+					a.exitPasswordError = "密码错误"
 				} else {
+					a.mu.Lock()
+					a.passwordMode = passwordModeExit
+					a.mu.Unlock()
 					a.closeExitPasswordWindow()
 					a.showSettingsWindow()
 				}
 			}
+			if ui.Button(c, "取消").Clicked() {
+				a.mu.Lock()
+				a.passwordMode = passwordModeExit
+				a.mu.Unlock()
+				a.closeExitPasswordWindow()
+			}
 		} else {
 			ui.Text(c, "退出学生端").FontSize(17).Bold()
-			ui.Text(c, "请输入退出密码后关闭学生端。").FontSize(12).TextColor(theme.GetPalette(false).TextMuted)
-			ui.TextInput(c, &a.exitPasswordInput).Password().Placeholder("退出密码").FillWidth().AutoFocus()
+			ui.Text(c, "请输入学生端密码后关闭学生端。").FontSize(12).TextColor(theme.GetPalette(false).TextMuted)
+			ui.TextInput(c, &a.exitPasswordInput).Password().Placeholder("学生端密码").FillWidth().AutoFocus()
 			if ui.PrimaryButton(c, "确认退出").Clicked() {
 				if hashExitPassword(a.exitPasswordInput) != a.exitPasswordHash {
-					a.exitPasswordError = "退出密码错误"
+					a.exitPasswordError = "密码错误"
 				} else {
 					a.mu.Lock()
 					a.exitAuthorized = true
@@ -333,6 +373,9 @@ func (a *App) ExitPasswordView(c *ui.Context) {
 					a.closeExitPasswordWindow()
 					mygo.App.Quit()
 				}
+			}
+			if ui.Button(c, "取消").Clicked() {
+				a.closeExitPasswordWindow()
 			}
 		}
 		if errText != "" {

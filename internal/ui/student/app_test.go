@@ -111,6 +111,27 @@ func TestStudentParameterSettingsRequiresExitPassword(t *testing.T) {
 	}
 }
 
+func TestStudentExitAfterParameterSettingsUsesExitMode(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "student-exit-password.sha256")
+	app := New(Options{ExitPasswordPath: path})
+	if err := app.saveExitPassword("secret-123"); err != nil {
+		t.Fatal(err)
+	}
+	app.OpenParameterSettings()
+	if app.passwordMode != passwordModeSettings {
+		t.Fatalf("got %q, want settings auth", app.passwordMode)
+	}
+	app.RequestExit()
+	if app.passwordMode != passwordModeExit {
+		t.Fatalf("exit request after settings must use exit mode, got %q", app.passwordMode)
+	}
+	tester := ui.NewTester(app.ExitPasswordView, 420, 260)
+	tester.Frame()
+	if !tester.HasText("确认退出") || tester.HasText("验证并继续") {
+		t.Fatal("exit dialog rendered parameter settings content")
+	}
+}
+
 func TestStudentTrayMenuIncludesParameterSettings(t *testing.T) {
 	app := newTestStudentApp()
 	menu := app.BuildTrayMenu()
