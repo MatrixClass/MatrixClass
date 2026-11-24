@@ -40,6 +40,9 @@ type videoStreamPacket struct {
 	Data []byte `json:"data"`
 }
 
+// version is stamped at link time with -X main.version by the build scripts.
+var version = ""
+
 type Runtime struct {
 	// sessionStudents binds a transport session to the student ID it
 	// registered as, so later messages can't claim another identity.
@@ -517,7 +520,7 @@ func (rt *Runtime) Start(ctx context.Context, listenAddr string, teacherName str
 			Channel:     rt.channel,
 			MulticastIP: "239.255.42.10",
 			McastPort:   39102,
-			Version:     "0.1.0",
+			Version:     teacher.AppVersion,
 		}
 		if err := rt.Transport.StartTeacher(ctx, listenAddr, beacon); err != nil {
 			startErr = err
@@ -905,6 +908,9 @@ func main() {
 	teacherLabel := "教师端"
 	archiveDir := flag.String("archive", "", "homework archive directory (defaults to Downloads)")
 	flag.Parse()
+	if version != "" {
+		teacher.AppVersion = version
+	}
 	// Portable folder next to the exe when writable, otherwise per-user
 	// standard dirs (macOS .app bundles, Linux /opt or /usr installs).
 	paths := apppaths.Resolve("nexlab-teacher.db")

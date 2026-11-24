@@ -231,7 +231,6 @@ func (a *App) loadNetworkConfig() {
 			_ = json.Unmarshal(data, &a.networkConfig)
 		}
 	}
-	a.networkConfig = a.networkConfig
 	a.networkMode = networkModeLabel(a.networkConfig.Mode)
 	a.networkInterface = a.networkConfig.InterfaceName
 	a.ignoreVirtual = a.networkConfig.IgnoreVirtual
@@ -241,7 +240,6 @@ func (a *App) loadNetworkConfig() {
 func (a *App) NetworkConfig() transport.NetworkConfig { return a.networkConfig }
 
 func (a *App) ApplyNetworkConfig(cfg transport.NetworkConfig) error {
-	cfg = cfg
 	if cfg.Mode != transport.NetworkModeSingle && cfg.Mode != transport.NetworkModeMulti {
 		cfg.Mode = transport.NetworkModeMulti
 	}
@@ -1667,7 +1665,7 @@ func (a *App) buildLockView(c *ui.Context, pal theme.Palette) {
 		ui.Text(c, "键盘与鼠标已被教师端锁定，断网超时或教师解锁后自动恢复").FontSize(12).TextColor(ui.Hex("#8E8E8E"))
 
 		ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
-			ui.TextInput(c, &a.unlockPassInput).Placeholder("紧急本地解锁口令...").Width(220)
+			ui.TextInput(c, &a.unlockPassInput).Password().Placeholder("紧急本地解锁口令...").Width(220)
 			if ui.Button(c, "验证解锁").Padding(6, 14).Clicked() {
 				a.tryEmergencyUnlock()
 			}
@@ -1683,11 +1681,13 @@ func (a *App) buildCheckInView(c *ui.Context, pal theme.Palette) {
 		ui.Row(c).FillWidth().AlignItems(ui.Center).DragWindow().Children(func() {
 			ui.Text(c, "课堂电子点名签到").FontSize(16).Bold().TextColor(pal.Accent)
 			ui.Spacer(c)
-			if ui.Button(c, "返回").Padding(4, 10).Clicked() {
-				a.mu.Lock()
-				a.mode = ModeBar
-				a.mu.Unlock()
-				a.syncWindow()
+			if a.checkInSubmitted {
+				if ui.Button(c, "完成").Padding(4, 10).Clicked() {
+					a.mu.Lock()
+					a.mode = ModeBar
+					a.mu.Unlock()
+					a.syncWindow()
+				}
 			}
 		})
 		ui.Text(c, fmt.Sprintf("当前机位：%s，请填写班级、姓名和学号后提交签到：", a.machineName)).FontSize(12).TextColor(pal.TextMuted)
@@ -1724,11 +1724,13 @@ func (a *App) buildExamView(c *ui.Context, pal theme.Palette) {
 			}
 			ui.Text(c, title).FontSize(16).Bold().TextColor(pal.Accent)
 			ui.Spacer(c)
-			if ui.Button(c, "返回").Padding(4, 10).Clicked() {
-				a.mu.Lock()
-				a.mode = ModeBar
-				a.mu.Unlock()
-				a.syncWindow()
+			if a.activePaper == nil || a.examResult != nil {
+				if ui.Button(c, "完成").Padding(4, 10).Clicked() {
+					a.mu.Lock()
+					a.mode = ModeBar
+					a.mu.Unlock()
+					a.syncWindow()
+				}
 			}
 		})
 
@@ -1742,26 +1744,38 @@ func (a *App) buildExamView(c *ui.Context, pal theme.Palette) {
 				for idx, q := range a.activePaper.Questions {
 					q := q
 					ui.Column(c).Key(q.ID).FillWidth().Padding(10).Radius(3).Background(pal.Card).Border(1, pal.CardBorder).Gap(6).Children(func() {
-						ui.Text(c, fmt.Sprintf("%d. %s (%d分)", idx+1, q.Prompt, q.Points)).FontSize(13).Bold()
+						kindLabel := examKindLabel(q.Kind)
+						ui.Text(c, fmt.Sprintf("%d. [%s] %s (%d分)", idx+1, kindLabel, q.Prompt, q.Points)).FontSize(13).Bold()
 						cur := a.examAnswers[q.ID]
-						if len(q.Options) > 0 {
-							ui.Row(c).Gap(8).Children(func() {
-								for _, opt := range q.Options {
+						options := q.Options
+						if q.Kind == core.QuestionBool && len(options) == 0 {
+							options = []string{"对", "错"}
+						}
+						if q.Kind != core.QuestionEssay && len(options) > 0 {
+							ui.Row(c).Wrap().Gap(8).Children(func() {
+								for _, opt := range options {
 									opt := opt
-									selected := cur == opt
+									selected := examAnswerHas(cur, opt)
 									lbl := opt
 									if selected {
 										lbl = "✓ " + opt
 									}
 									btn := ui.Button(c, lbl).Padding(4, 10).Radius(2)
 									if selected {
-										btn.Background(pal.Selection)
+										btn.Background(pal.Selection).Border(1, pal.Accent)
 									}
 									if btn.Clicked() {
-										a.examAnswers[q.ID] = opt
+										if q.Kind == core.QuestionMulti {
+											a.examAnswers[q.ID] = toggleExamAnswer(cur, opt)
+										} else {
+											a.examAnswers[q.ID] = opt
+										}
 									}
 								}
 							})
+							if q.Kind == core.QuestionMulti {
+								ui.Text(c, "多选题：可选择多个选项，再次点击取消").FontSize(11).TextColor(pal.TextMuted)
+							}
 						} else {
 							val := cur
 							inp := ui.TextInput(c, &val).FillWidth().Placeholder("请输入作答...")
@@ -1916,6 +1930,63 @@ func (a *App) SubmitCheckIn() {
 }
 
 func (a *App) SubmitExam() {
+	a.submitExamAnswers()
+}
+
+// examAnswerSep joins multi-select answers inside one stored string; it is a
+// control character so it never collides with option text or essay answers.
+const examAnswerSep = "\x1f"
+
+func splitExamAnswer(raw string) []string {
+	var out []string
+	for _, part := range strings.Split(raw, examAnswerSep) {
+		if strings.TrimSpace(part) != "" {
+			out = append(out, part)
+		}
+	}
+	return out
+}
+
+func examAnswerHas(raw, opt string) bool {
+	for _, part := range splitExamAnswer(raw) {
+		if part == opt {
+			return true
+		}
+	}
+	return false
+}
+
+func toggleExamAnswer(raw, opt string) string {
+	parts := splitExamAnswer(raw)
+	out := parts[:0]
+	found := false
+	for _, part := range parts {
+		if part == opt {
+			found = true
+			continue
+		}
+		out = append(out, part)
+	}
+	if !found {
+		out = append(out, opt)
+	}
+	return strings.Join(out, examAnswerSep)
+}
+
+func examKindLabel(kind core.QuestionKind) string {
+	switch kind {
+	case core.QuestionMulti:
+		return "多选"
+	case core.QuestionBool:
+		return "判断"
+	case core.QuestionEssay:
+		return "简答"
+	default:
+		return "单选"
+	}
+}
+
+func (a *App) submitExamAnswers() {
 	a.loadActivePaper()
 	if a.activePaper == nil || a.opts.Exam == nil {
 		return
@@ -1927,8 +1998,8 @@ func (a *App) SubmitExam() {
 	}
 	sort.Strings(keys)
 	for _, k := range keys {
-		if strings.TrimSpace(a.examAnswers[k]) != "" {
-			ans[k] = []string{a.examAnswers[k]}
+		if parts := splitExamAnswer(a.examAnswers[k]); len(parts) > 0 {
+			ans[k] = parts
 		}
 	}
 	sub := a.opts.Exam.SubmitAnswer(core.ExamSubmission{
@@ -2392,10 +2463,6 @@ func (a *App) FileReceiveView(c *ui.Context) {
 						}
 						if tk.Status == "failed" {
 							if ui.PrimaryButton(c, "重试").Padding(3, 10).Clicked() {
-								a.RetryReceiveFile(tk)
-							}
-						} else {
-							if ui.Button(c, "重试").Padding(3, 10).Clicked() {
 								a.RetryReceiveFile(tk)
 							}
 						}

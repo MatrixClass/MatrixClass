@@ -1880,8 +1880,9 @@ const (
 	settingsTabAbout     = "关于"
 )
 
-// AppVersion is the human-readable teacher build version shown on the about page.
-const AppVersion = "0.1.0"
+// AppVersion is the teacher build version shown on the about page; the
+// teacher binary overrides it with the version stamped at link time.
+var AppVersion = "0.1.0"
 
 var settingsTabs = []string{settingsTabClassroom, settingsTabNetwork, settingsTabMonitor, settingsTabAbout}
 
@@ -2043,10 +2044,15 @@ func (a *App) buildNetworkConfigModal(c *ui.Context, pal theme.Palette) {
 				a.networkConfigOpen = false
 			}
 			if ui.PrimaryButton(c, "下发到选中学生").Clicked() {
+				targets := a.remoteTargetIDs()
+				if len(targets) == 0 {
+					a.statusNote = "请先在设备视图中选择要设置的学生机"
+					return
+				}
 				cfg := transport.NetworkConfig{Mode: transport.NetworkMode(a.networkModeInput), InterfaceName: a.networkInterfaceInput, IgnoreVirtual: a.networkIgnoreVirtual, IgnoreVPN: a.networkIgnoreVPN}
-				a.sendControlEnvelope(protocol.MsgStudentNetworkConfig, cfg, a.remoteTargetIDs())
+				a.sendControlEnvelope(protocol.MsgStudentNetworkConfig, cfg, targets)
 				a.networkConfigOpen = false
-				a.statusNote = "已下发学生端网络参数"
+				a.statusNote = fmt.Sprintf("已向 %d 台学生机下发网络参数", len(targets))
 			}
 		})
 	})
@@ -2197,12 +2203,6 @@ func (a *App) applyVoiceState() {
 }
 
 func (a *App) ToggleStudentDemo(studentID string) {
-	if studentID == "" {
-		students := a.listStudents()
-		if len(students) > 0 {
-			studentID = students[0].ID
-		}
-	}
 	if a.studentDemoID != "" {
 		prev := a.studentDemoID
 		a.studentDemoID = ""
@@ -2213,7 +2213,7 @@ func (a *App) ToggleStudentDemo(studentID string) {
 		return
 	}
 	if studentID == "" {
-		a.statusNote = "暂无在线学生可用于学生演示"
+		a.statusNote = "请先选择一台学生机作为演示者"
 		return
 	}
 	a.studentDemoID = studentID
@@ -2486,6 +2486,22 @@ func (a *App) ExecutePower(action core.PowerAction) {
 }
 
 func (a *App) ExecutePowerTargets(action core.PowerAction, targets []string) {
+	if len(targets) == 0 && action == core.PowerWake {
+		woken := 0
+		for _, st := range a.listStudents() {
+			if st.MAC == "" || a.opts.Control == nil {
+				continue
+			}
+			_ = a.opts.Control.ExecutePower(core.PowerWake, st.MAC)
+			woken++
+		}
+		if woken == 0 {
+			a.statusNote = "没有记录到学生机 MAC 地址，无法远程开机"
+		} else {
+			a.statusNote = fmt.Sprintf("已向 %d 台学生机发送网络唤醒包", woken)
+		}
+		return
+	}
 	if len(targets) == 0 {
 		a.sendControlEnvelope(protocol.MsgPowerCommand, map[string]any{"action": action, "mac": ""}, nil)
 		a.statusNote = fmt.Sprintf("已发送全班电源指令: %s", action)
@@ -3604,11 +3620,20 @@ func (a *App) publishExam() {
 	}
 	questions := append([]core.ExamQuestion(nil), a.examDraftQuestions...)
 	if len(questions) == 0 {
-		questions = []core.ExamQuestion{a.buildCurrentDraftQuestion("q1")}
+		q := a.buildCurrentDraftQuestion("q1")
+		if strings.TrimSpace(q.Prompt) == "" {
+			a.statusNote = "请先填写题干或添加题目后再发布"
+			return
+		}
+		questions = []core.ExamQuestion{q}
+	}
+	title := strings.TrimSpace(a.examTitleInput)
+	if title == "" {
+		title = "随堂测验"
 	}
 	paper := core.ExamPaper{
 		ID:          fmt.Sprintf("exam-%d", time.Now().Unix()),
-		Title:       a.examTitleInput,
+		Title:       title,
 		DurationSec: int(a.examDurInput) * 60,
 		Questions:   questions,
 	}
@@ -3634,6 +3659,9 @@ func (a *App) buildCurrentDraftQuestion(id string) core.ExamQuestion {
 	var opts []string
 	if kind != core.QuestionEssay {
 		opts = splitCSV(a.examOptionsInput)
+	}
+	if kind == core.QuestionBool && len(opts) == 0 {
+		opts = []string{"对", "错"}
 	}
 	ans := splitCSV(a.examAnswerInput)
 	return core.ExamQuestion{

@@ -530,3 +530,18 @@ func TestStudentSeparateHomeworkAndChatPages(t *testing.T) {
 		t.Fatalf("expected standalone chat page without homework controls")
 	}
 }
+
+func TestExamMultiSelectAnswers(t *testing.T) {
+	raw := toggleExamAnswer("", "A")
+	raw = toggleExamAnswer(raw, "C")
+	if !examAnswerHas(raw, "A") || !examAnswerHas(raw, "C") || examAnswerHas(raw, "B") {
+		t.Fatalf("unexpected multi answer state %q", raw)
+	}
+	raw = toggleExamAnswer(raw, "A")
+	if got := splitExamAnswer(raw); len(got) != 1 || got[0] != "C" {
+		t.Fatalf("expected only C after toggling A off, got %v", got)
+	}
+	if got := splitExamAnswer("包含, 逗号的简答"); len(got) != 1 {
+		t.Fatalf("essay answers must not be split on commas, got %v", got)
+	}
+}

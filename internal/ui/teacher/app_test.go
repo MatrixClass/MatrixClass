@@ -1050,3 +1050,42 @@ func TestApproveHandRaiseStopsPreviousDemo(t *testing.T) {
 	}
 	waitForTeacherFileTasks(t, 2*time.Second, stoppedA)
 }
+
+func TestUIBugfixesGuardEmptyTargets(t *testing.T) {
+	app, tr, _, ctrl := newTestTeacherApp()
+	app.clearSelection()
+	app.selectedID = ""
+
+	app.networkConfigOpen = true
+	tester := ui.NewTester(app.View, 1280, 800)
+	tester.Frame()
+	if err := tester.Click("下发到选中学生"); err != nil {
+		t.Fatalf("click 下发到选中学生: %v", err)
+	}
+	tester.Frame()
+	if countSent(tr, protocol.MsgStudentNetworkConfig) != 0 {
+		t.Fatalf("network config must not be broadcast without selected students")
+	}
+
+	app.ToggleStudentDemo("")
+	if app.studentDemoID != "" {
+		t.Fatalf("student demo must not pick an arbitrary student, got %s", app.studentDemoID)
+	}
+
+	before := countSent(tr, protocol.MsgPowerCommand)
+	app.ExecutePowerTargets(core.PowerWake, nil)
+	if got := countSent(tr, protocol.MsgPowerCommand); got != before {
+		t.Fatalf("whole-class wake must send magic packets locally, not control messages")
+	}
+	if len(ctrl.PowerCalls) == 0 {
+		t.Fatalf("expected local wake-on-lan calls for known MACs")
+	}
+
+	app.examDraftQuestions = nil
+	app.examPromptInput = ""
+	app.examPublished = false
+	app.publishExam()
+	if app.examPublished {
+		t.Fatalf("exam with empty prompt must not be published")
+	}
+}
