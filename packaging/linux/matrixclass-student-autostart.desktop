@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Name=MatrixClass Student
+Name[zh_CN]=矩联电子教室学生端
+Comment=LAN classroom student client
+Comment[zh_CN]=局域网电子教室学生端
+Exec=/opt/matrixclass/matrixclass-student
+Icon=matrixclass-student
+Terminal=false
+NoDisplay=true
+X-GNOME-Autostart-enabled=true
+X-GNOME-Autostart-Delay=3
+X-KDE-autostart-after=panel

@@ -30,7 +30,7 @@ foreach ($arch in $Architectures) {
         Copy-Item (Join-Path $outputPath "matrixclass-$app-linux-$arch") $stage
     }
     foreach ($f in @("matrixclass-teacher.desktop", "matrixclass-student.desktop", "matrixclass.svg", "matrixclass-student.png", "matrixclass-teacher.png",
-            "matrixclass-teacher.service", "matrixclass-student.service", "install.sh", "uninstall.sh", "README.md")) {
+            "matrixclass-teacher.service", "matrixclass-student.service", "matrixclass-student-helper.sh", "matrixclass-student-autostart.desktop", "install.sh", "uninstall.sh", "README.md")) {
         Copy-Item (Join-Path $packaging $f) $stage
     }
     New-ReleaseArchive -Output (Join-Path $outputPath "$stageName.tar.gz") -BaseDir $outputPath -Entries @($stageName)

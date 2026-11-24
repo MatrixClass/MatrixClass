@@ -24,6 +24,13 @@
 
 发行版包：在 Linux 主机执行 `scripts/build-linux-distro-packages.sh dist/linux amd64`。存在 `dpkg-deb` 时生成 `.deb`，存在 `rpmbuild` 时生成 `.rpm`；工具缺失会清晰跳过，不代表安装包已经生成。Windows PowerShell 脚本仅在检测到 WSL 时调用上述脚本。
 
+发行版包按角色拆分：
+
+- `matrixclass-teacher`：只包含教师端，安装到教师机。
+- `matrixclass-student`：只包含学生端，安装到学生机。安装后会在已登录的桌面会话中立即启动，并写入 `/etc/xdg/autostart` 实现登录自启；卸载前通过 `matrixclass-student-helper verify` 调用学生端退出密码验证，失败则中止卸载；升级不需要密码。
+
+文件名：`matrixclass-<role>_<version>_<debarch>.deb`、`matrixclass-<role>-<version>-1.<rpmarch>.rpm`。两个包都声明替代旧的合并包 `matrixclass`。
+
 图标策略：当前提供可缩放 SVG，桌面环境可直接使用；PNG 多尺寸导出需要 `rsvg-convert` 或 `inkscape`，未安装时不自动伪造 PNG。发布前可生成 `64/128/256/512` PNG 并放入对应 `hicolor/<size>x<size>/apps/` 目录。
 
 X11 屏幕采集与远程输入需要可用的 `DISPLAY`、`libX11.so.6` 和 `libXtst.so.6`；Wayland 当前会明确提示需要桌面授权，尚未宣称支持无授权采集。局域网发现可能需要允许 UDP 广播/组播和 KCP 监听端口。
