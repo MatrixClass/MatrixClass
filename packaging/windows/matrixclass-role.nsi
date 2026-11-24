@@ -82,8 +82,17 @@ FunctionEnd
 
 Section "矩联电子教室 MatrixClass ${APP_LABEL} ${APP_ARCH}"
   SetOutPath "$INSTDIR"
+  DetailPrint "正在关闭正在运行的 ${APP_LABEL}…"
+  nsExec::ExecToLog '"$SYSDIR\taskkill.exe" /F /T /IM "${APP_EXECUTABLE}"'
+  Pop $0
+  Sleep 800
   SetOverwrite on
+  ClearErrors
   File "${STAGE_DIR}\${APP_EXECUTABLE}"
+  ${If} ${Errors}
+    MessageBox MB_ICONSTOP|MB_OK "无法替换 $INSTDIR\${APP_EXECUTABLE}，请关闭 ${APP_LABEL} 后重新运行安装程序。"
+    Abort
+  ${EndIf}
   File "${STAGE_DIR}\${APP_ICON}"
   File "${STAGE_DIR}\matrixclass-${APP_ROLE}.png"
   File "${STAGE_DIR}\README.md"
