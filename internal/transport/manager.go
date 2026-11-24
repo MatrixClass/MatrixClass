@@ -2,6 +2,7 @@ package transport
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
@@ -114,6 +115,22 @@ func WithMulticastRateLimit(bytesPerSec int) ManagerOption {
 	}
 }
 
+// WithTeacherIdentity makes a teacher sign discovery beacons and require the
+// authenticated, encrypted handshake on every student connection.
+func WithTeacherIdentity(id *TeacherIdentity) ManagerOption {
+	return func(m *Manager) {
+		m.identity = id
+	}
+}
+
+// WithTeacherTrust makes a student accept only signed beacons and teachers
+// whose identity matches trust, and encrypts the whole session.
+func WithTeacherTrust(trust TeacherTrust) ManagerOption {
+	return func(m *Manager) {
+		m.trust = trust
+	}
+}
+
 func WithRingBufferSize(size int) ManagerOption {
 	return func(m *Manager) {
 		if size > 0 {
@@ -140,6 +157,7 @@ type mediaFallbackPayload struct {
 type mcastInfoPayload struct {
 	MulticastIP string `json:"multicast_ip"`
 	McastPort   int    `json:"mcast_port"`
+	Key         []byte `json:"key,omitempty"`
 }
 
 type fallbackTask struct {
@@ -171,6 +189,10 @@ type Manager struct {
 	explicitTeacherAddr string
 	explicitMcastListen string
 	cipher              *FrameCipher
+	identity            *TeacherIdentity
+	trust               TeacherTrust
+	mcastKey            []byte
+	mcastCipher         atomic.Pointer[FrameCipher]
 	fecDataShards       int
 	fecParityShards     int
 	fecEncoder          *FECEncoder
@@ -460,6 +482,19 @@ func (m *Manager) StartTeacher(ctx context.Context, listenAddr string, beacon pr
 	if beacon.Role == "" {
 		beacon.Role = string(core.RoleTeacher)
 	}
+	if m.identity != nil {
+		key := make([]byte, 32)
+		if _, err := rand.Read(key); err != nil {
+			return fail(err)
+		}
+		mc, err := NewFrameCipher(key)
+		if err != nil {
+			return fail(err)
+		}
+		m.mcastKey = key
+		m.mcastCipher.Store(mc)
+		beacon = SignBeacon(m.identity, beacon)
+	}
 
 	var mcastTarget *net.UDPAddr
 	if beacon.MulticastIP != "" && beacon.McastPort > 0 {
@@ -533,38 +568,54 @@ func (m *Manager) acceptLoop() {
 		if err != nil {
 			return
 		}
-		sess, err := NewSmuxSession(conn, true, m.handleEnvelope)
-		if err != nil {
-			_ = conn.Close()
+		if m.identity == nil {
+			m.serveAccepted(conn)
 			continue
 		}
-		sess.SetOnClose(func(closed core.Session) {
-			m.removeSession(closed.ID())
-		})
-		if !m.addSessionIfCurrent(sess, 0) {
-			_ = sess.Close()
-			continue
-		}
-		m.mu.RLock()
-		mcastIP := m.beacon.MulticastIP
-		mcastPort := m.beacon.McastPort
-		m.mu.RUnlock()
-		if mcastIP != "" && mcastPort > 0 {
-			if raw, err := json.Marshal(mcastInfoPayload{MulticastIP: mcastIP, McastPort: mcastPort}); err == nil {
-				_ = sess.SendEnvelope(protocol.Envelope{
-					Type:      protocol.MsgHelloAck,
-					RequestID: internalMcastInfoReqID,
-					Timestamp: time.Now().UnixMilli(),
-					Payload:   raw,
-				})
+		// The handshake waits for the peer, so it must not stall Accept.
+		go func(raw net.Conn) {
+			secured, err := ServerHandshake(raw, m.identity)
+			if err != nil {
+				log.Printf("transport: rejected %s: %v", raw.RemoteAddr(), err)
+				_ = raw.Close()
+				return
 			}
+			m.serveAccepted(secured)
+		}(conn)
+	}
+}
+
+func (m *Manager) serveAccepted(conn net.Conn) {
+	sess, err := NewSmuxSession(conn, true, m.handleEnvelope)
+	if err != nil {
+		_ = conn.Close()
+		return
+	}
+	sess.SetOnClose(func(closed core.Session) {
+		m.removeSession(closed.ID())
+	})
+	if !m.addSessionIfCurrent(sess, 0) {
+		_ = sess.Close()
+		return
+	}
+	m.mu.RLock()
+	mcastIP := m.beacon.MulticastIP
+	mcastPort := m.beacon.McastPort
+	mcastKey := m.mcastKey
+	cb := m.onSessionCb
+	m.mu.RUnlock()
+	if mcastIP != "" && mcastPort > 0 {
+		if raw, err := json.Marshal(mcastInfoPayload{MulticastIP: mcastIP, McastPort: mcastPort, Key: mcastKey}); err == nil {
+			_ = sess.SendEnvelope(protocol.Envelope{
+				Type:      protocol.MsgHelloAck,
+				RequestID: internalMcastInfoReqID,
+				Timestamp: time.Now().UnixMilli(),
+				Payload:   raw,
+			})
 		}
-		m.mu.RLock()
-		cb := m.onSessionCb
-		m.mu.RUnlock()
-		if cb != nil {
-			cb(sess)
-		}
+	}
+	if cb != nil {
+		cb(sess)
 	}
 }
 
@@ -692,6 +743,7 @@ func (m *Manager) connectStudentOnce(channel string) error {
 	dPort := m.discoveryCfg.Port
 	explicitMcast := m.explicitMcastListen
 	networkConfig := m.networkConfig
+	trust := m.trust
 	m.mu.RUnlock()
 
 	var discovered DiscoveredTeacher
@@ -700,7 +752,7 @@ func (m *Manager) connectStudentOnce(channel string) error {
 		if dPort <= 0 {
 			listenAddr = fmt.Sprintf(":%d", DefaultDiscoveryPort)
 		}
-		d, err := ListenDiscovery(ctx, listenAddr, channel)
+		d, err := ListenDiscoveryFiltered(ctx, listenAddr, channel, trustedBeaconFilter(trust))
 		if err != nil {
 			return err
 		}
@@ -716,7 +768,16 @@ func (m *Manager) connectStudentOnce(channel string) error {
 	if err != nil {
 		return err
 	}
-	sess, err := NewSmuxSession(kcpConn, false, m.handleEnvelope)
+	var sessConn net.Conn = kcpConn
+	if trust != nil {
+		secured, _, err := ClientHandshake(kcpConn, trust)
+		if err != nil {
+			_ = kcpConn.Close()
+			return err
+		}
+		sessConn = secured
+	}
+	sess, err := NewSmuxSession(sessConn, false, m.handleEnvelope)
 	if err != nil {
 		_ = kcpConn.Close()
 		return err
@@ -755,6 +816,36 @@ func (m *Manager) connectStudentOnce(channel string) error {
 	}
 	m.notifyConnectionState(true, "")
 	return nil
+}
+
+// trustedBeaconFilter skips unsigned beacons and, once a teacher is pinned,
+// beacons signed by any other key. A nil trust accepts every beacon.
+func trustedBeaconFilter(trust TeacherTrust) func(protocol.DiscoveryBeacon) bool {
+	if trust == nil {
+		return nil
+	}
+	return func(b protocol.DiscoveryBeacon) bool {
+		pub, err := VerifyBeacon(b)
+		if err != nil {
+			return false
+		}
+		pinned := trust.Pinned()
+		return pinned == "" || pinned == Fingerprint(pub)
+	}
+}
+
+// secured reports whether this manager runs the authenticated protocol.
+func (m *Manager) secured() bool {
+	return m.identity != nil || m.trust != nil
+}
+
+// multicastFrameCipher returns the cipher for multicast datagrams: the
+// per-session key handed out by an authenticated teacher, else the static key.
+func (m *Manager) multicastFrameCipher() *FrameCipher {
+	if c := m.mcastCipher.Load(); c != nil {
+		return c
+	}
+	return m.cipher
 }
 
 func (m *Manager) scheduleStudentReconnect(closedGeneration uint64) {
@@ -1133,12 +1224,15 @@ func (m *Manager) multicastReadLoop(pc net.PacketConn) {
 		}
 		m.rxBytesTotal.Add(uint64(n))
 		pkt := buf[:n]
-		if m.cipher != nil {
-			dec, err := m.cipher.Decrypt(buf[:n])
+		if c := m.multicastFrameCipher(); c != nil {
+			dec, err := c.Decrypt(buf[:n])
 			if err != nil {
 				continue
 			}
 			pkt = dec
+		} else if m.secured() {
+			// An authenticated student never trusts plaintext multicast.
+			continue
 		}
 		if m.processIncomingMulticastPacket(pkt) && m.role == core.RoleStudent && m.mcastAckSent.CompareAndSwap(false, true) {
 			if err := m.sendMulticastAck(); err != nil {
@@ -1563,8 +1657,8 @@ func (m *Manager) enqueueFallback(targets []*SmuxSession, seq uint64, data []byt
 
 func (m *Manager) writeMulticastPacket(conn *net.UDPConn, target *net.UDPAddr, pkt []byte) error {
 	out := pkt
-	if m.cipher != nil {
-		enc, err := m.cipher.Encrypt(pkt)
+	if c := m.multicastFrameCipher(); c != nil {
+		enc, err := c.Encrypt(pkt)
 		if err != nil {
 			return err
 		}
@@ -1716,6 +1810,11 @@ func (m *Manager) handleEnvelope(sess core.Session, env protocol.Envelope) {
 		var info mcastInfoPayload
 		if err := json.Unmarshal(env.Payload, &info); err == nil && info.MulticastIP != "" && info.McastPort > 0 {
 			if m.role == core.RoleStudent {
+				if len(info.Key) > 0 {
+					if c, err := NewFrameCipher(info.Key); err == nil {
+						m.mcastCipher.Store(c)
+					}
+				}
 				_ = m.startMulticastReceiver(net.JoinHostPort(info.MulticastIP, strconv.Itoa(info.McastPort)))
 			}
 		}

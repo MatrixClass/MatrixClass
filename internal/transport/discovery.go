@@ -217,6 +217,12 @@ func (b *BeaconBroadcaster) Close() error {
 
 // ListenDiscovery listens on a UDP port for DiscoveryBeacon matching channel (empty channel accepts any).
 func ListenDiscovery(ctx context.Context, listenAddr string, channel string) (DiscoveredTeacher, error) {
+	return ListenDiscoveryFiltered(ctx, listenAddr, channel, nil)
+}
+
+// ListenDiscoveryFiltered is ListenDiscovery with an extra acceptance check,
+// used to skip beacons that are unsigned or signed by an untrusted teacher.
+func ListenDiscoveryFiltered(ctx context.Context, listenAddr string, channel string, accept func(protocol.DiscoveryBeacon) bool) (DiscoveredTeacher, error) {
 	if listenAddr == "" {
 		listenAddr = fmt.Sprintf(":%d", DefaultDiscoveryPort)
 	}
@@ -257,6 +263,9 @@ func ListenDiscovery(ctx context.Context, listenAddr string, channel string) (Di
 			continue
 		}
 		if channel != "" && beacon.Channel != channel {
+			continue
+		}
+		if accept != nil && !accept(beacon) {
 			continue
 		}
 		udpAddr, _ := addr.(*net.UDPAddr)

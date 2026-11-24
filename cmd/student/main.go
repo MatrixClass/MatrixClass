@@ -83,6 +83,12 @@ type videoStreamPacket struct {
 }
 
 func NewRuntime(channel, studentID, studentNo, teacherAddr, recvDir string) (*Runtime, error) {
+	return NewRuntimeWithTrust(channel, studentID, studentNo, teacherAddr, recvDir, nil)
+}
+
+// NewRuntimeWithTrust builds a student runtime that only accepts teachers
+// verified by trust; nil keeps the legacy unauthenticated protocol.
+func NewRuntimeWithTrust(channel, studentID, studentNo, teacherAddr, recvDir string, trust *transport.FileTrust) (*Runtime, error) {
 	var runtimeRef *Runtime
 	host, _ := os.Hostname()
 	if host == "" {
@@ -92,6 +98,9 @@ func NewRuntime(channel, studentID, studentNo, teacherAddr, recvDir string) (*Ru
 	var opts []transport.ManagerOption
 	if teacherAddr != "" {
 		opts = append(opts, transport.WithTeacherAddr(teacherAddr))
+	}
+	if trust != nil {
+		opts = append(opts, transport.WithTeacherTrust(trust))
 	}
 	tr := transport.NewManager(opts...)
 	md, err := media.NewManager(media.ManagerOptions{PreferH264MFT: false})
@@ -148,6 +157,7 @@ func NewRuntime(channel, studentID, studentNo, teacherAddr, recvDir string) (*Ru
 		ExitPasswordPath:  filepath.Join(apppaths.Resolve("").DataDir, "student-exit-password.sha256"),
 		ChannelPath:       filepath.Join(apppaths.Resolve("").DataDir, "student-channel-id"),
 		NetworkConfigPath: filepath.Join(apppaths.Resolve("").DataDir, "student-network.json"),
+		Trust:             trust,
 		OnNetworkConfigComplete: func(cfg transport.NetworkConfig) {
 			tr.SetNetworkConfig(cfg)
 			if runtimeRef != nil {
@@ -847,6 +857,7 @@ func main() {
 	studentID := flag.String("id", "", "student ID (defaults to a stable ID derived from this machine)")
 	studentNo := flag.String("no", "", "student number (optional)")
 	recvDir := flag.String("recv", "", "received files directory (defaults to Desktop)")
+	teacherFP := flag.String("teacher-fingerprint", "", "pin the trusted teacher identity fingerprint (for unattended deployment)")
 	flag.Parse()
 	if *studentID == "" {
 		if *demoMode {
@@ -909,7 +920,13 @@ func main() {
 			},
 		})
 	} else {
-		rt, err := NewRuntime(*channel, *studentID, *studentNo, *teacherAddr, *recvDir)
+		trust := transport.NewFileTrust(filepath.Join(paths.DataDir, "trusted-teacher.txt"))
+		if *teacherFP != "" {
+			if err := trust.SetPinned(*teacherFP); err != nil {
+				log.Fatalf("invalid -teacher-fingerprint: %v", err)
+			}
+		}
+		rt, err := NewRuntimeWithTrust(*channel, *studentID, *studentNo, *teacherAddr, *recvDir, trust)
 		if err != nil {
 			log.Fatalf("init student runtime: %v", err)
 		}

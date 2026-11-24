@@ -51,7 +51,9 @@ type Options struct {
 	OnSetupComplete         func(string)
 	NetworkConfigPath       string
 	OnNetworkConfigComplete func(transport.NetworkConfig)
-	Services                Services
+	// Trust stores the pinned teacher fingerprint; nil hides the setting.
+	Trust    *transport.FileTrust
+	Services Services
 }
 
 const (
@@ -125,6 +127,8 @@ type App struct {
 	passwordMode        string
 	channelInput        string
 	settingsError       string
+	trust               *transport.FileTrust
+	trustInput          string
 	networkConfigPath   string
 	networkConfig       transport.NetworkConfig
 	networkInterface    string
@@ -199,6 +203,7 @@ func New(opts Options) *App {
 		networkConfigPath: opts.NetworkConfigPath,
 		networkConfig:     transport.DefaultNetworkConfig(),
 		onNetworkConfig:   opts.OnNetworkConfigComplete,
+		trust:             opts.Trust,
 		mode:              ModeBar,
 		broadcastWindow:   true,
 		connected:         true,
@@ -823,9 +828,14 @@ func (a *App) ExitPasswordView(c *ui.Context) {
 			ui.TextInput(c, &a.channelInput).Placeholder("频道 ID（仅数字）").FillWidth().AutoFocus()
 			ui.TextInput(c, &a.exitPasswordInput).Password().Placeholder("设置退出密码").FillWidth()
 			ui.TextInput(c, &a.exitPasswordConfirm).Password().Placeholder("再次输入退出密码").FillWidth()
+			if a.trust != nil {
+				ui.TextInput(c, &a.trustInput).Placeholder("教师端指纹（可选，留空则信任首次连接的教师端）").FillWidth()
+			}
 			if ui.PrimaryButton(c, "保存并连接").Clicked() {
 				if strings.TrimSpace(a.exitPasswordInput) == "" || a.exitPasswordInput != a.exitPasswordConfirm {
 					a.exitPasswordError = "两次输入的密码不一致或为空"
+				} else if err := a.saveTrustedFingerprint(a.trustInput); err != nil {
+					a.exitPasswordError = err.Error()
 				} else if err := a.saveChannel(a.channelInput); err != nil {
 					a.exitPasswordError = err.Error()
 				} else if err := a.saveExitPassword(a.exitPasswordInput); err != nil {
@@ -881,6 +891,9 @@ func (a *App) showSettingsWindow() {
 	a.ignoreVirtual = a.networkConfig.IgnoreVirtual
 	a.ignoreVPN = a.networkConfig.IgnoreVPN
 	a.settingsError = ""
+	if a.trust != nil {
+		a.trustInput = a.trust.Pinned()
+	}
 	w := a.settingsWin
 	a.mu.Unlock()
 	if mainWin == nil {
@@ -888,7 +901,7 @@ func (a *App) showSettingsWindow() {
 	}
 	mainWin.Update(func() {
 		if w == nil {
-			w = mygo.NewWindow(mygo.WindowOptions{Title: "学生端参数设置", Width: 460, Height: 420, MinWidth: 400, MinHeight: 360, AlwaysOnTop: true, Frameless: false, Content: ui.View(a.SettingsView)})
+			w = mygo.NewWindow(mygo.WindowOptions{Title: "学生端参数设置", Width: 480, Height: 540, MinWidth: 420, MinHeight: 480, AlwaysOnTop: true, Frameless: false, Content: ui.View(a.SettingsView)})
 			w.OnClosed(func() {
 				a.mu.Lock()
 				if a.settingsWin == w {
@@ -926,6 +939,11 @@ func (a *App) SettingsView(c *ui.Context) {
 			ui.Checkbox(c, &a.ignoreVirtual, "忽略虚拟机网卡")
 			ui.Checkbox(c, &a.ignoreVPN, "忽略 VPN 虚拟网卡")
 		}
+		if a.trust != nil {
+			ui.Text(c, "信任的教师端指纹").FontSize(12).Bold()
+			ui.TextInput(c, &a.trustInput).Placeholder("留空则信任下一次连接的教师端").FillWidth()
+			ui.Text(c, "只接受此指纹的教师端控制本机。更换教师机密钥后需在此清空或更新。").FontSize(11).TextColor(theme.GetPalette(false).TextMuted)
+		}
 		ui.Spacer(c)
 		ui.Row(c).FillWidth().Justify(ui.End).Gap(8).Children(func() {
 			if ui.Button(c, "取消").Clicked() {
@@ -935,7 +953,9 @@ func (a *App) SettingsView(c *ui.Context) {
 			}
 			if ui.PrimaryButton(c, "保存并重连").Clicked() {
 				cfg := transport.NetworkConfig{Mode: networkModeValue(a.networkMode), InterfaceName: a.networkInterface, IgnoreVirtual: a.ignoreVirtual, IgnoreVPN: a.ignoreVPN}
-				if err := a.saveChannel(a.channelInput); err != nil {
+				if err := a.saveTrustedFingerprint(a.trustInput); err != nil {
+					a.settingsError = err.Error()
+				} else if err := a.saveChannel(a.channelInput); err != nil {
 					a.settingsError = err.Error()
 				} else if err := a.ApplyNetworkConfig(cfg); err != nil {
 					a.settingsError = err.Error()
@@ -2908,4 +2928,23 @@ func (a *App) SubmitHomeworkQueue() {
 		}
 		a.Invalidate()
 	}()
+}
+
+// saveTrustedFingerprint pins the teacher fingerprint; empty clears the pin
+// so the next authenticated teacher is trusted on first use.
+func (a *App) saveTrustedFingerprint(raw string) error {
+	if a.trust == nil {
+		return nil
+	}
+	if strings.TrimSpace(raw) == a.trust.Pinned() {
+		return nil
+	}
+	if err := a.trust.SetPinned(raw); err != nil {
+		if errors.Is(err, transport.ErrInvalidFingerprnt) {
+			return errors.New("教师端指纹格式不正确，应为 32 位十六进制字符")
+		}
+		return err
+	}
+	a.trustInput = a.trust.Pinned()
+	return nil
 }

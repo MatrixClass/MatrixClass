@@ -953,7 +953,7 @@ func (s *SmuxSession) handleAcceptedStream(stream *smux.Stream) {
 }
 
 func (s *SmuxSession) KCPStats() (KCPStats, bool) {
-	if kc, ok := s.conn.(*KCPConn); ok {
+	if kc, ok := s.conn.(interface{ Stats() KCPStats }); ok {
 		return kc.Stats(), true
 	}
 	return KCPStats{}, false

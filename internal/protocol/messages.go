@@ -186,4 +186,6 @@ type DiscoveryBeacon struct {
 	MulticastIP string `json:"multicast_ip,omitempty"`
 	McastPort   int    `json:"mcast_port,omitempty"`
 	Version     string `json:"version"`
+	PubKey      string `json:"pub_key,omitempty"`
+	Sig         string `json:"sig,omitempty"`
 }

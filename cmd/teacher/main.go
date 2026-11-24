@@ -80,11 +80,17 @@ type Runtime struct {
 }
 
 func NewRuntime(channel, teacherID, teacherName, archiveDir string) (*Runtime, error) {
-	return NewRuntimeWithStore(channel, teacherID, teacherName, archiveDir, nil, false, nil)
+	return NewRuntimeWithStore(channel, teacherID, teacherName, archiveDir, nil, false, nil, nil)
 }
 
-func NewRuntimeWithStore(channel, teacherID, teacherName, archiveDir string, dbStore *store.Store, promptChannel bool, onChannel func(string)) (*Runtime, error) {
-	tr := transport.NewManager()
+func NewRuntimeWithStore(channel, teacherID, teacherName, archiveDir string, dbStore *store.Store, promptChannel bool, onChannel func(string), identity *transport.TeacherIdentity) (*Runtime, error) {
+	var trOpts []transport.ManagerOption
+	fingerprint := ""
+	if identity != nil {
+		trOpts = append(trOpts, transport.WithTeacherIdentity(identity))
+		fingerprint = identity.Fingerprint()
+	}
+	tr := transport.NewManager(trOpts...)
 	md, err := media.NewManager(media.ManagerOptions{PreferH264MFT: false})
 	if err != nil {
 		return nil, err
@@ -147,6 +153,7 @@ func NewRuntimeWithStore(channel, teacherID, teacherName, archiveDir string, dbS
 		Store:             dbStore,
 		PromptChannel:     promptChannel,
 		OnChannelSelected: onChannel,
+		Fingerprint:       fingerprint,
 		Services: teacher.Services{
 			Transport: tr,
 			Media:     md,
@@ -970,6 +977,12 @@ func main() {
 		}
 
 		var err error
+		identityPath := filepath.Join(paths.DataDir, "teacher-identity.key")
+		identity, idErr := transport.LoadOrCreateTeacherIdentity(identityPath)
+		if idErr != nil {
+			log.Fatalf("load teacher identity %s: %v", identityPath, idErr)
+		}
+		log.Printf("teacher identity fingerprint=%s", identity.Fingerprint())
 		rt, err = NewRuntimeWithStore(*channel, "teacher-01", teacherLabel, *archiveDir, dbStore, true, func(chosen string) {
 			rt.SetChannel(chosen)
 			if winRef != nil {
@@ -980,7 +993,7 @@ func main() {
 				rt.App.SetStatusNote("课堂网络启动失败，正在重试：" + startErr.Error())
 				go retryTeacherStart(ctx, rt, *listenAddr, teacherLabel)
 			}
-		})
+		}, identity)
 		if err != nil {
 			log.Fatalf("init teacher runtime: %v", err)
 		}
