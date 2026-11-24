@@ -150,6 +150,8 @@ dist\matrixclass-student.exe --demo
 .\scripts\build-linux-distro-packages.ps1 -OutputDir dist\linux -Architecture amd64
 ```
 
+发行版包按角色拆分：教师机安装 `matrixclass-teacher`，学生机安装 `matrixclass-student`（安装后立即启动、登录自启，卸载需要退出密码）。文件名形如 `matrixclass-student_1.1.0_amd64.deb`、`matrixclass-student-1.1.0-1.x86_64.rpm`。
+
 ### macOS 构建
 
 ```powershell
