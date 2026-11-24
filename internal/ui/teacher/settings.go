@@ -197,10 +197,8 @@ func (a *App) buildSettingsAboutPage(c *ui.Context, pal theme.Palette) {
 			ui.Text(c, val).FontSize(12).Grow(1)
 		})
 	}
-	aboutRow("技术栈", "Go + MyGo 原生 UI + KCP 局域网传输")
 	aboutRow("支持平台", "Windows / Linux (x64, arm64, loong64) / macOS")
 	aboutRow("项目主页", "https://github.com/MatrixClass/MatrixClass")
-	aboutRow("开源许可", "仅使用宽松许可证依赖，不含 GPL / LGPL / AGPL 组件")
 	if a.fingerprint != "" {
 		aboutRow("身份指纹", a.fingerprint)
 	}
