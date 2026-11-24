@@ -112,21 +112,47 @@ jobs:
         with:
           go-version-file: go.mod
       - name: Install packaging tools
-        run: sudo apt-get update && sudo apt-get install -y rpm
+        run: sudo apt-get update && sudo apt-get install -y rpm dpkg-dev
       - name: Build Linux packages
         shell: bash
         run: |
           sh scripts/build-linux-package.sh dist/linux amd64 arm64 loong64
-          for arch in amd64 arm64 loong64; do
-            sh scripts/build-linux-distro-packages.sh dist/linux "$arch" \
-              || echo "::warning::$arch 的 deb/rpm 打包失败，已跳过（tar.gz 不受影响）"
+          for arch in amd64 arm64; do
+            sh scripts/build-linux-distro-packages.sh dist/linux "$arch"
           done
+          sh scripts/build-linux-distro-packages.sh dist/linux loong64 \
+            || echo "::warning::loong64 的 deb/rpm 打包失败，已跳过（tar.gz 不受影响）"
+      - name: Verify teacher/student packages
+        shell: bash
+        run: |
+          v="$MATRIXCLASS_VERSION"
+          missing=0
+          for role in teacher student; do
+            for f in \
+              "matrixclass-${role}_${v}_amd64.deb" "matrixclass-${role}_${v}_arm64.deb" \
+              "matrixclass-${role}-${v}-1.x86_64.rpm" "matrixclass-${role}-${v}-1.aarch64.rpm"; do
+              if [ ! -f "dist/linux/$f" ]; then
+                echo "::error::缺少安装包 $f"
+                missing=1
+              fi
+            done
+          done
+          for f in dist/linux/*.deb; do
+            [ -f "$f" ] || continue
+            echo "== $f"; dpkg-deb -f "$f" Package Architecture Version
+          done
+          for f in dist/linux/*.rpm; do
+            [ -f "$f" ] || continue
+            echo "== $f"; rpm -qp --queryformat '%{NAME} %{ARCH} %{VERSION}\n' "$f"
+          done
+          exit $missing
       - name: Collect artifacts
         shell: bash
         run: |
           mkdir -p out
           cp dist/linux/matrixclass-linux-*.tar.gz out/
-          find dist/linux -maxdepth 1 -type f \( -name '*.deb' -o -name '*.rpm' \) -exec cp {} out/ \;
+          find dist/linux -maxdepth 1 -type f \( -name 'matrixclass-teacher*.deb' -o -name 'matrixclass-student*.deb' \
+            -o -name 'matrixclass-teacher-*.rpm' -o -name 'matrixclass-student-*.rpm' \) -exec cp {} out/ \;
           ls -l out
       - uses: actions/upload-artifact@v4
         with:
@@ -180,6 +206,24 @@ jobs:
           cd release
           sha256sum * | sort -k2 > SHA256SUMS
           cat SHA256SUMS
+      - name: Write release notes
+        shell: bash
+        run: |
+          cat > notes.md <<'EOF'
+          ## 下载说明
+
+          | 系统 | 教师机 | 学生机 |
+          |---|---|---|
+          | Windows | `matrixclass-teacher-windows-<arch>-*-setup.exe` | `matrixclass-student-windows-<arch>-*-setup.exe` |
+          | 统信 UOS / Deepin / 麒麟 / Ubuntu / Debian | `matrixclass-teacher_*_<arch>.deb` | `matrixclass-student_*_<arch>.deb` |
+          | openEuler / 龙蜥 / CentOS / Fedora | `matrixclass-teacher-*.<arch>.rpm` | `matrixclass-student-*.<arch>.rpm` |
+          | macOS | `matrixclass-macos-universal.dmg` | `matrixclass-macos-universal.dmg` |
+
+          - Linux 架构：x86 选 `amd64` / `x86_64`，鲲鹏 / 飞腾选 `arm64` / `aarch64`，龙芯选 `loong64` / `loongarch64`（可用 `uname -m` 查看）。
+          - 其他 Linux 发行版或免安装使用：`matrixclass-linux-<arch>.tar.gz`（同时包含教师端和学生端）。
+          - 学生端安装后会立即启动；卸载学生端需要输入首次启动时设置的退出密码。
+          - 文件校验：`SHA256SUMS`。
+          EOF
       - name: Create GitHub release
         shell: bash
         env:
@@ -188,7 +232,7 @@ jobs:
           PRERELEASE: ${{ inputs.prerelease }}
           DRAFT: ${{ inputs.draft }}
         run: |
-          args=(--repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "MatrixClass $TAG" --generate-notes)
+          args=(--repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "MatrixClass $TAG" --notes-file notes.md --generate-notes)
           if [ "$PRERELEASE" = "true" ]; then args+=(--prerelease); fi
           if [ "$DRAFT" = "true" ]; then args+=(--draft); fi
           gh release create "$TAG" "${args[@]}" release/*
