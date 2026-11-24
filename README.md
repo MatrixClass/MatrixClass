@@ -203,3 +203,7 @@ GitHub Actions 在 push 到 `main` 和创建或更新 Pull Request 时运行：
 ## 发布目录
 
 源码仓库只提交源代码、构建脚本和必要资源。发行包放在工作区根目录的 `release/`，适配计划和测试矩阵放在 `doc/`，临时构建产物放在 `other/`，避免把大体积二进制和本地验证文件提交到 Git。
+
+## 许可证
+
+本项目基于 [GNU General Public License v3.0](LICENSE) 开源。你可以自由使用、修改和分发本软件；分发修改后的版本时，必须同样以 GPLv3 协议公开源代码。
