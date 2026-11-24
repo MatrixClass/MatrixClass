@@ -253,7 +253,30 @@ func TestStudentBarCheckInExamAndLockViews(t *testing.T) {
 	if !app.ScreenLocked() || !tester.HasText("黑屏锁屏中") {
 		t.Fatalf("expected blackout lock overlay")
 	}
-	app.unlockPassInput = "nexlab-unlock"
+	if err := app.saveExitPassword("lock-pass"); err != nil {
+		t.Fatal(err)
+	}
+	if tester.HasText("验证解锁") {
+		t.Fatalf("unlock input must stay hidden until the lock text is tapped five times")
+	}
+	if !tester.HasText("举手") {
+		t.Fatalf("expected raise-hand button on lock screen")
+	}
+	for i := 0; i < 5; i++ {
+		if err := tester.Click("课堂测验锁定中"); err != nil {
+			t.Fatalf("tap lock text failed: %v", err)
+		}
+		tester.Frame()
+	}
+	if !tester.HasText("验证解锁") {
+		t.Fatalf("expected unlock input after five taps")
+	}
+	app.unlockPassInput = "wrong"
+	app.tryEmergencyUnlock()
+	if !app.ScreenLocked() {
+		t.Fatalf("wrong password must keep screen locked")
+	}
+	app.unlockPassInput = "lock-pass"
 	if err := tester.Click("验证解锁"); err != nil {
 		t.Fatalf("click 验证解锁 failed: %v", err)
 	}
@@ -305,22 +328,28 @@ func (testLockBackend) UpdateMessage(string) error { return nil }
 func TestStudentEmergencyUnlockWithRealControlManager(t *testing.T) {
 	ctrl := control.NewManager(control.ManagerOptions{
 		Lock: control.LockOptions{
-			Backend:           testLockBackend{},
-			EmergencyPassword: "secret-pass",
+			Backend: testLockBackend{},
 		},
 	})
 	defer ctrl.Close()
 	app := New(Options{
-		StudentID: "stu-real",
+		StudentID:        "stu-real",
+		ExitPasswordPath: filepath.Join(t.TempDir(), "exit.sha256"),
 		Services: Services{
 			Control: ctrl,
 		},
 	})
+	if err := app.saveExitPassword("secret-pass"); err != nil {
+		t.Fatal(err)
+	}
 	app.SetLocked(true, "locked")
 	app.unlockPassInput = "secret-pass"
 	app.tryEmergencyUnlock()
 	if app.ScreenLocked() {
-		t.Fatalf("expected real control.Manager EmergencyUnlock(bool, error) to unlock")
+		t.Fatalf("expected installed student password to unlock")
+	}
+	if ctrl.LockState().Locked {
+		t.Fatalf("expected control manager lock released")
 	}
 }
 

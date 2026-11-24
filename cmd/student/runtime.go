@@ -105,7 +105,6 @@ func NewRuntimeWithTrust(channel, studentID, studentNo, teacherAddr, recvDir str
 		// student machine is never left locked with no way out.
 		Lock: control.LockOptions{
 			DisconnectTimeout: 60 * time.Second,
-			EmergencyPassword: control.DefaultEmergencyPassword,
 		},
 	})
 	cr := classroom.NewService()

@@ -90,6 +90,9 @@ type App struct {
 	lockMessage         string
 	unlockPassInput     string
 	unlockStatus        string
+	unlockRevealed      bool
+	lockTapCount        int
+	lockTapAt           time.Time
 	checkInNo           string
 	checkInClass        string
 	checkInName         string
