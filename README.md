@@ -2,6 +2,57 @@
 
 矩联电子教室 MatrixClass 是一套面向局域网教室环境的教师端与学生端软件，使用 Go 和 MyGo 原生 UI 开发，采用 KCP/SMUX 进行局域网通信，提供屏幕广播、屏幕监控、课堂消息、文件分发、作业收取、随堂测验、点名签到、远程控制和管控策略等功能。
 
+![教师端设备视图](docs/images/teacher-device-view.png)
+
+## 核心优势
+
+### 界面简洁，启动快
+
+- 黑白灰原生界面，常用功能集中在顶部导航栏，没有多余装饰
+- 原生 UI 直接绘制，不依赖浏览器内核，程序体积小，打开即用
+- 学生端平时只显示一条置顶悬浮条，不打扰课堂操作
+- 默认窗口尺寸适中，可手动放大，列表区域均支持滚动
+
+### 防止学生伪装与破解
+
+- **防伪装教师**：教师端持有 Ed25519 身份密钥，发现广播和连接握手都带签名；学生端固定信任教师指纹，同网段其他人伪装成教师无法接管学生机
+- **通信加密**：X25519 密钥交换 + AES-256-GCM 会话加密，组播画面使用每次会话独立密钥，抓包无法查看或篡改内容
+- **退出受密码保护**：学生端退出、卸载、进入参数设置都需要首次安装时设置的密码，关闭窗口不能退出
+- **锁屏难绕过**：黑屏锁屏时拦截系统快捷键，解锁入口默认隐藏，只有输入学生端密码才能本地解锁
+- **教师端可重置**：学生忘记或被篡改的密码可由教师端远程重置
+
+### 连接快，丢包少
+
+- 基于 KCP 可靠 UDP 协议，重传更快，局域网内延迟明显低于普通 TCP
+- SMUX 多路复用，画面、消息、文件共用一条连接，互不阻塞
+- 屏幕广播走组播 + Reed-Solomon 前向纠错，少量丢包可直接恢复，无需重传
+- 频道 ID 自动发现教师端，支持多网卡监听，断线后自动持续重连
+- 文件分发支持断点续传和失败重试，大文件和文件夹也能稳定送达
+
+## 界面预览
+
+### 教师端
+
+| 屏幕监控 | 文件分发 |
+| --- | --- |
+| ![屏幕监控](docs/images/teacher-monitor.png) | ![文件分发](docs/images/teacher-file-distribute.png) |
+| **远程操作** | **设置** |
+| ![远程操作](docs/images/teacher-remote-exec.png) | ![设置](docs/images/teacher-settings.png) |
+
+### 学生端
+
+**课堂悬浮条**：平时置顶在屏幕顶部，自动收起，鼠标靠近时展开。
+
+![学生端悬浮条](docs/images/student-bar.png)
+
+| 点名签到 | 作业提交 |
+| --- | --- |
+| ![点名签到](docs/images/student-checkin.png) | ![作业提交](docs/images/student-homework.png) |
+
+**黑屏锁屏**：左下角可举手，连点五下中间文字才会出现密码解锁入口。
+
+![黑屏锁屏](docs/images/student-lock.png)
+
 ## 项目结构
 
 ```text
@@ -52,7 +103,7 @@ tools              构建辅助工具
 ## 技术栈
 
 - **语言**：Go
-- **界面**：MyGo 原生 UI，构建标签为 `mygo_nowebview`
+- **界面**：MyGo 原生 UI，构建标签为 `nexlab_nowebview`
 - **网络**：KCP ARQ、SMUX、UDP 广播发现、组播和 KCP 回退
 - **安全**：Ed25519 教师身份签名、X25519 密钥交换、AES-256-GCM 会话加密
 - **视频**：屏幕采集、Tile-Delta/Zstd 和平台硬件编码
@@ -68,7 +119,7 @@ tools              构建辅助工具
 ### 测试
 
 ```powershell
-go test -tags mygo_nowebview -count=1 ./...
+go test -tags nexlab_nowebview -count=1 ./...
 ```
 
 Linux CI 没有真实桌面、音频设备或 PipeWire/PulseAudio 时，测试会根据环境能力跳过硬件依赖部分，但仍执行协议、编码、传输和业务逻辑测试。
@@ -77,8 +128,8 @@ Linux CI 没有真实桌面、音频设备或 PipeWire/PulseAudio 时，测试�
 
 ```powershell
 New-Item -ItemType Directory -Force dist | Out-Null
-go build -tags mygo_nowebview -ldflags "-H windowsgui" -o dist\matrixclass-teacher.exe .\cmd\teacher
-go build -tags mygo_nowebview -ldflags "-H windowsgui" -o dist\matrixclass-student.exe .\cmd\student
+go build -tags nexlab_nowebview -ldflags "-H windowsgui" -o dist\matrixclass-teacher.exe .\cmd\teacher
+go build -tags nexlab_nowebview -ldflags "-H windowsgui" -o dist\matrixclass-student.exe .\cmd\student
 
 dist\matrixclass-teacher.exe --demo
 dist\matrixclass-student.exe --demo
