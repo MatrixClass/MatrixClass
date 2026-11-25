@@ -11,6 +11,8 @@ import (
 
 	"nexlab/internal/core"
 	"nexlab/internal/protocol"
+
+	"golang.org/x/net/ipv4"
 )
 
 // multicastFrameCipher returns the cipher for multicast datagrams: the
@@ -164,12 +166,25 @@ func (m *Manager) multicastReadLoop(pc net.PacketConn) {
 			// An authenticated student never trusts plaintext multicast.
 			continue
 		}
-		if m.processIncomingMulticastPacket(pkt) && m.role == core.RoleStudent && m.mcastAckSent.CompareAndSwap(false, true) {
-			if err := m.sendMulticastAck(); err != nil {
-				// Retry on the next multicast packet.
-				m.mcastAckSent.Store(false)
-			}
+		if m.processIncomingMulticastPacket(pkt) && m.role == core.RoleStudent {
+			m.maybeSendMulticastAck()
 		}
+	}
+}
+
+// maybeSendMulticastAck periodically re-confirms multicast delivery so the
+// teacher's confirmation lease stays fresh while packets keep arriving.
+func (m *Manager) maybeSendMulticastAck() {
+	now := time.Now().UnixNano()
+	last := m.mcastAckAt.Load()
+	if last != 0 && now-last < int64(mcastAckInterval) {
+		return
+	}
+	if !m.mcastAckAt.CompareAndSwap(last, now) {
+		return
+	}
+	if err := m.sendMulticastAck(); err != nil {
+		m.mcastAckAt.Store(0)
 	}
 }
 
@@ -214,7 +229,7 @@ func (m *Manager) resetMulticastRxState(sourceIP net.IP) {
 	m.mcastRxMu.Lock()
 	m.resetMulticastSeqLocked()
 	m.mcastRxMu.Unlock()
-	m.mcastAckSent.Store(false)
+	m.mcastAckAt.Store(0)
 }
 
 func (m *Manager) resetMulticastSeqLocked() {
@@ -597,13 +612,101 @@ func (m *Manager) writeMulticastPacket(conn *net.UDPConn, target *net.UDPAddr, p
 	if m.mcastLimiter != nil && m.ctx != nil {
 		_ = m.mcastLimiter.WaitN(m.ctx, len(out))
 	}
-	n, err := conn.WriteToUDP(out, target)
-	if err != nil {
-		return err
+	senders := m.multicastSenders()
+	if len(senders) == 0 {
+		senders = []*net.UDPConn{conn}
 	}
-	m.txBytesTotal.Add(uint64(n))
-	m.txPacketsTotal.Add(1)
+	var firstErr error
+	sent := false
+	for _, sender := range senders {
+		n, err := sender.WriteToUDP(out, target)
+		if err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		sent = true
+		m.txBytesTotal.Add(uint64(n))
+		m.txPacketsTotal.Add(1)
+	}
+	if !sent {
+		return firstErr
+	}
 	return nil
+}
+
+// multicastSenders returns one UDP socket per usable LAN interface, each
+// pinned with IP_MULTICAST_IF. Without this the OS sends multicast only via
+// the default route, which on machines running a VPN/TUN adapter is the
+// virtual interface, so classroom students never receive the broadcast.
+func (m *Manager) multicastSenders() []*net.UDPConn {
+	m.mcastSendersMu.Lock()
+	defer m.mcastSendersMu.Unlock()
+	if m.mcastSenders != nil && time.Since(m.mcastSendersAt) < mcastSenderRefresh {
+		return m.mcastSenders
+	}
+	ifaces, err := interfaceEnumerator()
+	if err != nil {
+		m.mcastSendersAt = time.Now()
+		return m.mcastSenders
+	}
+	var next []*net.UDPConn
+	for _, iface := range usableInterfacesWithConfig(ifaces, m.NetworkConfig()) {
+		if iface.Flags&net.FlagMulticast == 0 || !interfaceHasRoutableIPv4(iface) {
+			continue
+		}
+		conn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4zero, Port: 0})
+		if err != nil {
+			continue
+		}
+		pc := ipv4.NewPacketConn(conn)
+		ifaceCopy := iface
+		if err := pc.SetMulticastInterface(&ifaceCopy); err != nil {
+			_ = conn.Close()
+			continue
+		}
+		_ = pc.SetMulticastTTL(1)
+		_ = pc.SetMulticastLoopback(true)
+		_ = conn.SetWriteBuffer(2 * 1024 * 1024)
+		next = append(next, conn)
+	}
+	for _, old := range m.mcastSenders {
+		_ = old.Close()
+	}
+	m.mcastSenders = next
+	m.mcastSendersAt = time.Now()
+	return next
+}
+
+func (m *Manager) closeMulticastSenders() {
+	m.mcastSendersMu.Lock()
+	defer m.mcastSendersMu.Unlock()
+	for _, conn := range m.mcastSenders {
+		_ = conn.Close()
+	}
+	m.mcastSenders = nil
+	m.mcastSendersAt = time.Time{}
+}
+
+// interfaceHasRoutableIPv4 skips adapters that only carry link-local
+// (169.254/16) addresses, i.e. unplugged or unconfigured NICs.
+func interfaceHasRoutableIPv4(iface net.Interface) bool {
+	addrs, err := interfaceAddressEnumerator(iface)
+	if err != nil {
+		return false
+	}
+	for _, addr := range addrs {
+		ipNet, ok := addr.(*net.IPNet)
+		if !ok {
+			continue
+		}
+		ip4 := ipNet.IP.To4()
+		if ip4 != nil && !ip4.IsLinkLocalUnicast() && !ip4.IsLoopback() {
+			return true
+		}
+	}
+	return false
 }
 
 func (m *Manager) sendFallbackToAll(seq uint64, data []byte) error {
@@ -622,8 +725,9 @@ func (m *Manager) sendFallbackToAll(seq uint64, data []byte) error {
 
 func (m *Manager) unconfirmedSessionsLocked() []*SmuxSession {
 	var out []*SmuxSession
+	now := time.Now()
 	for _, s := range m.sessions {
-		if !m.mcastConfirmed[s] {
+		if at, ok := m.mcastConfirmed[s]; !ok || now.Sub(at) > mcastAckLease {
 			out = append(out, s)
 		}
 	}

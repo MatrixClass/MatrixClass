@@ -30,6 +30,15 @@ const (
 	internalMcastInfoReqID = "__nexlab_mcast_info__"
 	internalMcastAckReqID  = "__nexlab_mcast_ack__"
 
+	// mcastAckInterval is how often a student re-confirms multicast delivery;
+	// mcastAckLease is how long the teacher trusts one confirmation before it
+	// resumes the unicast KCP fallback for that session.
+	mcastAckInterval = 2 * time.Second
+	mcastAckLease    = 6 * time.Second
+	// mcastSenderRefresh bounds how long a per-interface sender set is reused
+	// before network interfaces are re-enumerated.
+	mcastSenderRefresh = 5 * time.Second
+
 	// maxMcastChunks bounds the number of chunks a single multicast frame may
 	// claim (about 9.8 MB at defaultMcastChunkSize) so a hostile or corrupt
 	// header cannot force huge reassembly allocations.
@@ -203,17 +212,22 @@ type Manager struct {
 	beacon      protocol.DiscoveryBeacon
 	mcastConn   *net.UDPConn
 	mcastTarget *net.UDPAddr
-	mcastRxConn net.PacketConn
-	mcastAddr   string
+	// mcastSenders holds one sender socket per usable LAN interface so
+	// multicast never leaks out only through a VPN/TUN default route.
+	mcastSenders   []*net.UDPConn
+	mcastSendersAt time.Time
+	mcastSendersMu sync.Mutex
+	mcastRxConn    net.PacketConn
+	mcastAddr      string
 	// mcastSourceIP is the teacher IP multicast packets must originate from
 	// (student role). nil disables filtering (unknown or loopback teacher).
 	mcastSourceIP net.IP
 
 	sessions         map[string]*SmuxSession
 	aliases          map[string]*SmuxSession
-	mcastConfirmed   map[*SmuxSession]bool
+	mcastConfirmed   map[*SmuxSession]time.Time
 	multicastEnabled atomic.Bool
-	mcastAckSent     atomic.Bool
+	mcastAckAt       atomic.Int64
 	reconnecting     atomic.Bool
 	networkWatcher   atomic.Bool
 	nackWatcher      atomic.Bool
@@ -295,7 +309,7 @@ func NewManager(opts ...ManagerOption) *Manager {
 		networkConfig:  DefaultNetworkConfig(),
 		sessions:       make(map[string]*SmuxSession),
 		aliases:        make(map[string]*SmuxSession),
-		mcastConfirmed: make(map[*SmuxSession]bool),
+		mcastConfirmed: make(map[*SmuxSession]time.Time),
 		ringSize:       defaultRingBufferSize,
 		mcastReasm:     make(map[uint64]*mcastReassembly),
 		mcastDelivered: make(map[uint64]struct{}),
@@ -1093,7 +1107,7 @@ func (m *Manager) handleEnvelope(sess core.Session, env protocol.Envelope) {
 		if sm, ok := sess.(*SmuxSession); ok {
 			m.mu.Lock()
 			if m.sessions[sm.ID()] == sm {
-				m.mcastConfirmed[sm] = true
+				m.mcastConfirmed[sm] = time.Now()
 			}
 			m.mu.Unlock()
 		}
@@ -1265,6 +1279,7 @@ func (m *Manager) Close() error {
 	if mcastRxConn != nil {
 		_ = mcastRxConn.Close()
 	}
+	m.closeMulticastSenders()
 	for _, s := range sessions {
 		_ = s.Close()
 	}

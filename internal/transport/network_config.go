@@ -41,6 +41,9 @@ func interfaceIgnored(iface net.Interface, cfg NetworkConfig) bool {
 	if cfg.IgnoreVPN && containsAny(name, "vpn", "tun", "tap", "ppp", "wireguard", "zerotier", "tailscale", "clash") {
 		return true
 	}
+	if cfg.IgnoreVPN && (name == "meta" || containsAny(name, "wintun", "mihomo", "sing-box", "singbox")) {
+		return true
+	}
 	if cfg.IgnoreVirtual && containsAny(name, "vmware", "virtual", "vbox", "hyper-v", "vethernet", "docker", "podman", "br-", "virbr") {
 		return true
 	}
